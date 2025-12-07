@@ -297,14 +297,15 @@ class AudioBriefingApp(ctk.CTk):
     def open_sources_editor(self):
         editor = ctk.CTkToplevel(self)
         editor.title("Edit News Sources")
-        editor.geometry("500x400")
+        editor.geometry("640x520")
+        editor.minsize(640, 520)
         editor.transient(self)
         editor.lift()
         
         lbl = ctk.CTkLabel(editor, text="Enable/disable sources and edit URLs:", font=ctk.CTkFont(weight="bold"))
         lbl.pack(pady=10, padx=10, anchor="w")
 
-        container = ctk.CTkScrollableFrame(editor, width=460, height=360)
+        container = ctk.CTkScrollableFrame(editor, width=600, height=380)
         container.pack(padx=10, pady=10, fill="both", expand=True)
         container.grid_columnconfigure(0, weight=1)
 
@@ -386,6 +387,9 @@ class AudioBriefingApp(ctk.CTk):
         ctk.CTkButton(btn_row, text="Add Source", command=add_source).pack(side="left", padx=5)
         ctk.CTkButton(btn_row, text="Bulk Import", command=bulk_import).pack(side="left", padx=5)
         ctk.CTkButton(btn_row, text="Save Changes", command=save_sources).pack(side="right", padx=5)
+        # Keep buttons visible even when content overflows
+        editor.update_idletasks()
+        editor.geometry(f"{max(editor.winfo_width(), 640)}x{max(editor.winfo_height(), 520)}")
 
     def upload_text_file(self):
         script_dir = os.path.dirname(__file__)
