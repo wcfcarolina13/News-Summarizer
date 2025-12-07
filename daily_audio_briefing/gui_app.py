@@ -77,15 +77,10 @@ class AudioBriefingApp(ctk.CTk):
         # Date range controls
         self.range_var = ctk.BooleanVar(value=False)
         self.chk_range = ctk.CTkCheckBox(self.frame_fetch_opts, text="Use date range", variable=self.range_var)
-        self.chk_range = ctk.CTkCheckBox(self.frame_fetch_opts, text="Use date range", variable=self.range_var, command=self.on_toggle_range)
-
         self.chk_range.pack(side="left", padx=(10, 5))
         self.start_date_entry = ctk.CTkEntry(self.frame_fetch_opts, width=120, placeholder_text="Start YYYY-MM-DD")
         self.start_date_entry.pack(side="left", padx=(0, 5))
         self.end_date_entry = ctk.CTkEntry(self.frame_fetch_opts, width=120, placeholder_text="End YYYY-MM-DD")
-        # Initialize state
-        self.on_toggle_range()
-
         self.end_date_entry.pack(side="left")
 
         # Row 3: Upload File
@@ -95,11 +90,6 @@ class AudioBriefingApp(ctk.CTk):
         # Audio Controls Frame
         self.frame_audio_controls = ctk.CTkFrame(self)
         self.frame_audio_controls.grid(row=3, column=0, padx=20, pady=(5, 20), sticky="ew")
-        # Move audio controls below to avoid overlap
-        self.grid_rowconfigure(3, minsize=0)
-        self.grid_rowconfigure(4, weight=0)
-        self.frame_audio_controls.grid(row=4, column=0, padx=20, pady=(5, 20), sticky="ew")
-
         self.frame_audio_controls.grid_columnconfigure((0, 1), weight=1)
 
         # Row 0: Fast Generation
@@ -116,20 +106,9 @@ class AudioBriefingApp(ctk.CTk):
 
         # Convert summaries by date
         self.btn_convert_dates = ctk.CTkButton(self.frame_audio_controls, text="Convert Selected Dates to Audio", command=self.select_dates_to_audio)
-        self.btn_convert_dates.grid(row=3, column=0, columnspan=2, padx=10, pady=(0, 10), sticky="ew")
-        # Reflow buttons to avoid overlap
-        # Reflow buttons to avoid overlap (create after btn_sample exists)
+        self.btn_convert_dates.grid(row=2, column=0, columnspan=2, padx=10, pady=(0, 10), sticky="ew")
 
-        self.btn_convert_dates.grid_configure(row=3, column=0, columnspan=2, padx=10, pady=(0, 10), sticky="ew")
-        
-
-                # Place sample button above to avoid overlap
-        self.btn_sample = ctk.CTkButton(self.frame_audio_controls, text="Play Sample", width=120, fg_color="gray", command=self.play_sample)
-        self.btn_sample.grid(row=1, column=1, padx=10, pady=(10, 0), sticky="e")
-        # Move convert button to row 3
-        self.btn_convert_dates.grid_configure(row=3)
-        # Remove old placement of sample button
-
+        self.btn_sample = ctk.CTkButton(self.frame_audio_controls, text="Play Sample", width=100, fg_color="gray", command=self.play_sample)
         self.btn_sample.grid(row=2, column=1, padx=10, pady=(0, 10), sticky="w")
 
         self.btn_quality = ctk.CTkButton(self.frame_audio_controls, text="Generate Quality (Kokoro)", command=self.start_quality_generation)
@@ -158,16 +137,6 @@ class AudioBriefingApp(ctk.CTk):
         # Load data
         self.load_current_summary()
         self.load_api_key()
-
-    def on_toggle_range(self):
-        use_range = bool(self.range_var.get())
-        state = "disabled" if use_range else "normal"
-        try:
-            self.entry_value.configure(state=state)
-            self.combo_mode.configure(state=state)
-        except Exception:
-            pass
-
 
         # Google Sign-In (disabled)
         # self.btn_google_signin = ctk.CTkButton(self.frame_audio_controls, text="Sign in to Google", fg_color="#4285F4", command=self.sign_in_google)
