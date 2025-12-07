@@ -514,14 +514,22 @@ class AudioBriefingApp(ctk.CTk):
                 # Quality with selected voice
                 voice = self.voice_var.get()
                 self.run_script("make_audio_quality.py", f"audio_quality_{date_str}.wav", extra_args=["--input", f, "--voice", voice])
-            dlg.destroy()
         ctk.CTkButton(btn_frame, text="Convert", command=do_convert).pack(side="left", padx=6)
         ctk.CTkButton(btn_frame, text="Cancel", fg_color="gray", command=dlg.destroy).pack(side="left", padx=6)
 
-            self.convert_summaries_to_audio(selected)
-            dlg.destroy()
-        ctk.CTkButton(dlg, text="Convert", command=start_conversion).pack(pady=10)
+        # Remove legacy block below to fix indentation
+        # Cleanup stray legacy code
+        # (start_conversion section removed)
 
+
+
+        # strip invalid legacy lines
+
+        # remove vestigial lines
+
+        # Removed legacy start_conversion block
+
+        
     def convert_summaries_to_audio(self, files):
         voice = self.voice_var.get()
         def task():
