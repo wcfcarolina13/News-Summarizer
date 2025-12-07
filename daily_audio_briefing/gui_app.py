@@ -73,6 +73,16 @@ class AudioBriefingApp(ctk.CTk):
         self.combo_mode = ctk.CTkComboBox(self.frame_fetch_opts, variable=self.mode_var, values=["Days", "Videos"], width=100)
         self.combo_mode.pack(side="left")
 
+
+        # Date range controls
+        self.range_var = ctk.BooleanVar(value=False)
+        self.chk_range = ctk.CTkCheckBox(self.frame_fetch_opts, text="Use date range", variable=self.range_var)
+        self.chk_range.pack(side="left", padx=(10, 5))
+        self.start_date_entry = ctk.CTkEntry(self.frame_fetch_opts, width=120, placeholder_text="Start YYYY-MM-DD")
+        self.start_date_entry.pack(side="left", padx=(0, 5))
+        self.end_date_entry = ctk.CTkEntry(self.frame_fetch_opts, width=120, placeholder_text="End YYYY-MM-DD")
+        self.end_date_entry.pack(side="left")
+
         # Row 3: Upload File
         self.btn_upload_file = ctk.CTkButton(self.frame_yt_api, text="Upload Text File", command=self.upload_text_file)  # Google Drive sync removed
         self.btn_upload_file.grid(row=3, column=0, columnspan=2, padx=10, pady=10, sticky="ew")
@@ -447,6 +457,17 @@ class AudioBriefingApp(ctk.CTk):
         self.save_api_key(api_key)
         days = int(value) if value.isdigit() else 1
         self.run_script("get_youtube_news.py", f"summary_{datetime.datetime.now().date()}.txt", extra_args=["--days", str(days)], env_vars={"GEMINI_API_KEY": api_key, "PYTHONUNBUFFERED": "1"})
+        extra = ["--days", str(days)]
+        if self.range_var.get():
+            start = self.start_date_entry.get().strip()
+            end = self.end_date_entry.get().strip()
+            if start and end:
+                extra = ["--start", start, "--end", end]
+        # Run with either days or date range
+        self.run_script("get_youtube_news.py", f"summary_{datetime.datetime.now().date()}.txt", extra_args=extra, env_vars={"GEMINI_API_KEY": api_key, "PYTHONUNBUFFERED": "1"})
+
+        self.run_script("get_youtube_news.py", f"summary_{datetime.datetime.now().date()}.txt", extra_args=extra, env_vars={"GEMINI_API_KEY": api_key, "PYTHONUNBUFFERED": "1"})
+
 
     def open_output_folder(self):
         try:

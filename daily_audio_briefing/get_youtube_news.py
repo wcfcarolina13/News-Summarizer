@@ -192,6 +192,9 @@ def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--days", type=int, default=1, help="Process this many days starting from today")
     args, _ = parser.parse_known_args()
+    parser.add_argument("--start", type=str, help="Start date YYYY-MM-DD")
+    parser.add_argument("--end", type=str, help="End date YYYY-MM-DD")
+
 
     script_dir = os.path.dirname(os.path.abspath(__file__))
     os.chdir(script_dir)
@@ -214,9 +217,32 @@ def main():
         log("Error: No sources configured.")
         return
 
+    # Build date list
+    dates_to_process = []
+    if args.start and args.end:
+        try:
+            start_dt = datetime.datetime.strptime(args.start, "%Y-%m-%d")
+            end_dt = datetime.datetime.strptime(args.end, "%Y-%m-%d")
+            if start_dt > end_dt:
+                start_dt, end_dt = end_dt, start_dt
+            cur = start_dt
+            while cur <= end_dt:
+                dates_to_process.append(cur)
+                cur += datetime.timedelta(days=1)
+        except Exception as e:
+            log(f"Invalid date range: {e}. Falling back to --days.")
+
+    if not dates_to_process:
+        for day_offset in range(args.days):
+            dates_to_process.append(datetime.datetime.now() - datetime.timedelta(days=day_offset))
+
+    for target_date in dates_to_process:
+
     shared_context = []
     total_summaries = 0
     for day_offset in range(args.days):
+    for target_date in dates_to_process:
+        
         target_date = datetime.datetime.now() - datetime.timedelta(days=day_offset)
         log(f"=== Processing date: {target_date.date()} ===")
         day_summaries = []
