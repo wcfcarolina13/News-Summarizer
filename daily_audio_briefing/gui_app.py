@@ -27,7 +27,7 @@ class AudioBriefingApp(ctk.CTk):
         super().__init__()
 
         self.title("Daily Audio Briefing")
-        self.geometry("700x950") # Increased height for new controls
+        self.geometry("950x900") # Wider default width to fit controls
 
         self.grid_columnconfigure(0, weight=1)
         self.grid_rowconfigure(1, weight=1)
