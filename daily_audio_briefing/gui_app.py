@@ -10,6 +10,11 @@ import qrcode
 from PIL import Image # PIL is imported by qrcode, but explicit import helps CTkImage
 
 from podcast_manager import PodcastServer # Import your podcast manager
+try:
+    from tkcalendar import DateEntry
+except Exception:
+    DateEntry = None
+
 # Google Drive sign-in and sync removed
 # from drive_manager import DriveManager
 
@@ -79,6 +84,23 @@ class AudioBriefingApp(ctk.CTk):
         self.chk_range = ctk.CTkCheckBox(self.frame_fetch_opts, text="Use date range", variable=self.range_var)
         self.chk_range.pack(side="left", padx=(10, 5))
         self.start_date_entry = ctk.CTkEntry(self.frame_fetch_opts, width=120, placeholder_text="Start YYYY-MM-DD")
+        # Calendar dropdowns beside entries
+        if DateEntry:
+            self.start_picker = DateEntry(self.frame_fetch_opts, width=12)
+            self.start_picker.pack(side="left", padx=(5, 5))
+            self.end_picker = DateEntry(self.frame_fetch_opts, width=12)
+            self.end_picker.pack(side="left", padx=(5, 5))
+            def _apply_start(e=None):
+                val = self.start_picker.get_date()
+                self.start_date_entry.delete(0, "end"); self.start_date_entry.insert(0, val.isoformat())
+                self.range_var.set(True); self.on_toggle_range()
+            def _apply_end(e=None):
+                val = self.end_picker.get_date()
+                self.end_date_entry.delete(0, "end"); self.end_date_entry.insert(0, val.isoformat())
+                self.range_var.set(True); self.on_toggle_range()
+            self.start_picker.bind("<<DateEntrySelected>>", _apply_start)
+            self.end_picker.bind("<<DateEntrySelected>>", _apply_end)
+
         self.start_date_entry.pack(side="left", padx=(0, 5))
         self.end_date_entry = ctk.CTkEntry(self.frame_fetch_opts, width=120, placeholder_text="End YYYY-MM-DD")
         self.end_date_entry.pack(side="left")
