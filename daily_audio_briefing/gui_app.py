@@ -11,6 +11,11 @@ from PIL import Image # PIL is imported by qrcode, but explicit import helps CTk
 
 from podcast_manager import PodcastServer # Import your podcast manager
 # Google Drive sign-in and sync removed
+try:
+    from tkcalendar import Calendar
+except Exception:
+    Calendar = None
+
 # from drive_manager import DriveManager
 
 # Configuration
@@ -78,6 +83,9 @@ class AudioBriefingApp(ctk.CTk):
         self.range_var = ctk.BooleanVar(value=False)
         self.chk_range = ctk.CTkCheckBox(self.frame_fetch_opts, text="Use date range", variable=self.range_var)
         self.chk_range = ctk.CTkCheckBox(self.frame_fetch_opts, text="Use date range", variable=self.range_var, command=self.on_toggle_range)
+        self.btn_pick_range = ctk.CTkButton(self.frame_fetch_opts, text="Pick Range", command=self.open_date_range_picker)
+        self.btn_pick_range.pack(side="left", padx=(10, 0))
+
 
         self.chk_range.pack(side="left", padx=(10, 5))
         self.start_date_entry = ctk.CTkEntry(self.frame_fetch_opts, width=120, placeholder_text="Start YYYY-MM-DD")
@@ -140,6 +148,44 @@ class AudioBriefingApp(ctk.CTk):
         # Row 3: Local HTTP Server (removed)
         # self.btn_http_server = ctk.CTkButton(self.frame_audio_controls, text="Start Local Server", fg_color="green", command=self.toggle_http_server)
         # self.btn_http_server.grid(row=4, column=0, columnspan=2, padx=10, pady=15, sticky="ew")
+
+    def open_date_range_picker(self):
+        dlg = ctk.CTkToplevel(self)
+        dlg.title("Select Date Range")
+        dlg.geometry("640x380")
+        dlg.transient(self)
+        container = ctk.CTkFrame(dlg)
+        container.pack(fill="both", expand=True, padx=10, pady=10)
+        if Calendar is None:
+            ctk.CTkLabel(container, text="Calendar unavailable. Install tkcalendar.").pack(pady=10)
+            ctk.CTkButton(container, text="Close", command=dlg.destroy).pack(pady=10)
+            return
+        left = ctk.CTkFrame(container)
+        right = ctk.CTkFrame(container)
+        left.pack(side="left", fill="both", expand=True, padx=10)
+        right.pack(side="left", fill="both", expand=True, padx=10)
+        ctk.CTkLabel(left, text="Start Date").pack(pady=(6,2))
+        cal_start = Calendar(left, selectmode='day')
+        cal_start.pack()
+        ctk.CTkLabel(right, text="End Date").pack(pady=(6,2))
+        cal_end = Calendar(right, selectmode='day')
+        cal_end.pack()
+        bar = ctk.CTkFrame(container)
+        bar.pack(fill="x", pady=10)
+        def apply():
+            s = cal_start.get_date(); e = cal_end.get_date()
+            import datetime as _dt
+            try:
+                s_dt = _dt.datetime.strptime(s, "%m/%d/%Y").date()
+                e_dt = _dt.datetime.strptime(e, "%m/%d/%Y").date()
+                self.start_date_entry.delete(0, "end"); self.start_date_entry.insert(0, s_dt.isoformat())
+                self.end_date_entry.delete(0, "end"); self.end_date_entry.insert(0, e_dt.isoformat())
+                self.range_var.set(True); self.on_toggle_range(); dlg.destroy()
+            except Exception:
+                pass
+        ctk.CTkButton(bar, text="Apply", command=apply).pack(side="right", padx=6)
+        ctk.CTkButton(bar, text="Cancel", fg_color="gray", command=dlg.destroy).pack(side="right", padx=6)
+
         # self.btn_broadcast.grid(row=4, column=0, columnspan=2, padx=10, pady=15, sticky="ew")
         
         # Row 4: Drive Sync Button
