@@ -116,6 +116,10 @@ class AudioBriefingApp(ctk.CTk):
         # Row 1: Quality Generation Options
         self.label_voice = ctk.CTkLabel(self.frame_audio_controls, text="Quality Voice:")
         self.label_voice.grid(row=1, column=0, padx=10, pady=(10, 0), sticky="w")
+        # Ensure distinct rows to avoid overlap
+        self.frame_audio_controls.grid_rowconfigure(2, weight=0)
+        self.frame_audio_controls.grid_rowconfigure(3, weight=0)
+
 
         self.voice_var = ctk.StringVar(value="af_sarah")
         self.combo_voices = ctk.CTkComboBox(self.frame_audio_controls, variable=self.voice_var, values=self.get_available_voices())
@@ -125,8 +129,8 @@ class AudioBriefingApp(ctk.CTk):
         self.btn_convert_dates = ctk.CTkButton(self.frame_audio_controls, text="Convert Selected Dates to Audio", command=self.select_dates_to_audio)
         self.btn_convert_dates.grid(row=2, column=0, columnspan=2, padx=10, pady=(0, 10), sticky="ew")
 
-        self.btn_sample = ctk.CTkButton(self.frame_audio_controls, text="Play Sample", width=100, fg_color="gray", command=self.play_sample)
-        self.btn_sample.grid(row=2, column=1, padx=10, pady=(0, 10), sticky="w")
+        self.btn_sample = ctk.CTkButton(self.frame_audio_controls, text="Play Sample", width=120, fg_color="gray", command=self.play_sample)
+        self.btn_sample.grid(row=3, column=1, padx=10, pady=(5, 10), sticky="e")
 
         self.btn_quality = ctk.CTkButton(self.frame_audio_controls, text="Generate Quality (Kokoro)", command=self.start_quality_generation)
         self.btn_quality.grid(row=5, column=0, columnspan=2, padx=10, pady=(5, 10), sticky="ew")
