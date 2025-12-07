@@ -84,22 +84,11 @@ class AudioBriefingApp(ctk.CTk):
         self.chk_range = ctk.CTkCheckBox(self.frame_fetch_opts, text="Use date range", variable=self.range_var)
         self.chk_range.pack(side="left", padx=(10, 5))
         self.start_date_entry = ctk.CTkEntry(self.frame_fetch_opts, width=120, placeholder_text="Start YYYY-MM-DD")
-        # Calendar dropdowns beside entries
-        if DateEntry:
-            self.start_picker = DateEntry(self.frame_fetch_opts, width=12, foreground='black', normalforeground='black', selectforeground='black')
-            self.start_picker.pack(side="left", padx=(5, 5))
-            self.end_picker = DateEntry(self.frame_fetch_opts, width=12, foreground='black', normalforeground='black', selectforeground='black')
-            self.end_picker.pack(side="left", padx=(5, 5))
-            def _apply_start(e=None):
-                val = self.start_picker.get_date()
-                self.start_date_entry.delete(0, "end"); self.start_date_entry.insert(0, val.isoformat())
-                self.range_var.set(True); self.on_toggle_range()
-            def _apply_end(e=None):
-                val = self.end_picker.get_date()
-                self.end_date_entry.delete(0, "end"); self.end_date_entry.insert(0, val.isoformat())
-                self.range_var.set(True); self.on_toggle_range()
-            self.start_picker.bind("<<DateEntrySelected>>", _apply_start)
-            self.end_picker.bind("<<DateEntrySelected>>", _apply_end)
+        # Calendar buttons beside entries (better UX)
+        self.btn_start_cal = ctk.CTkButton(self.frame_fetch_opts, width=28, text="📅", command=self.open_start_calendar)
+        self.btn_start_cal.pack(side="left", padx=(5, 5))
+        self.btn_end_cal = ctk.CTkButton(self.frame_fetch_opts, width=28, text="📅", command=self.open_end_calendar)
+        self.btn_end_cal.pack(side="left", padx=(5, 5))
 
         self.start_date_entry.pack(side="left", padx=(0, 5))
         self.end_date_entry = ctk.CTkEntry(self.frame_fetch_opts, width=120, placeholder_text="End YYYY-MM-DD")
@@ -159,6 +148,48 @@ class AudioBriefingApp(ctk.CTk):
         # Load data
         self.load_current_summary()
         self.load_api_key()
+
+    def _open_calendar_for(self, target_entry):
+        import calendar as _cal
+        dlg = ctk.CTkToplevel(self)
+        dlg.title("Select Date")
+        dlg.geometry("360x340")
+        body = ctk.CTkFrame(dlg); body.pack(fill="both", expand=True, padx=10, pady=10)
+        top = ctk.CTkFrame(body); top.pack(fill="x")
+        today = datetime.date.today()
+        ent_y = ctk.CTkEntry(top, width=70); ent_y.pack(side="left", padx=4); ent_y.insert(0, str(today.year))
+        ent_m = ctk.CTkEntry(top, width=50); ent_m.pack(side="left", padx=4); ent_m.insert(0, str(today.month))
+        grid = ctk.CTkFrame(body); grid.pack(fill="both", expand=True, pady=8)
+        sel = [None]
+        def render():
+            for w in grid.winfo_children(): w.destroy()
+            try:
+                y = int(ent_y.get()); m = int(ent_m.get())
+            except: return
+            cal = _cal.monthcalendar(y, m)
+            hdr = ["Mo","Tu","We","Th","Fr","Sa","Su"]
+            for i,h in enumerate(hdr): ctk.CTkLabel(grid, text=h).grid(row=0, column=i, padx=4, pady=2)
+            def click_day(d):
+                if d == 0: return
+                sel[0] = datetime.date(y,m,d)
+                target_entry.delete(0, "end"); target_entry.insert(0, sel[0].isoformat())
+                self.range_var.set(True); self.on_toggle_range(); dlg.destroy()
+            for r,row in enumerate(cal, start=1):
+                for c,d in enumerate(row):
+                    txt = "" if d==0 else str(d)
+                    ctk.CTkButton(grid, text=txt or " ", width=36, command=(lambda dd=d: click_day(dd))).grid(row=r, column=c, padx=2, pady=2)
+        render()
+        bar = ctk.CTkFrame(body); bar.pack(fill="x", pady=6)
+        ctk.CTkButton(bar, text="Prev", command=lambda: (ent_m.delete(0,"end"), ent_m.insert(0,str((int(ent_m.get())-2)%12+1)), render())).pack(side="left", padx=4)
+        ctk.CTkButton(bar, text="Next", command=lambda: (ent_m.delete(0,"end"), ent_m.insert(0,str((int(ent_m.get())%12)+1)), render())).pack(side="left", padx=4)
+        ctk.CTkButton(bar, text="Close", fg_color="gray", command=dlg.destroy).pack(side="right", padx=6)
+
+    def open_start_calendar(self):
+        self._open_calendar_for(self.start_date_entry)
+
+    def open_end_calendar(self):
+        self._open_calendar_for(self.end_date_entry)
+
 
         # Google Sign-In (disabled)
         # self.btn_google_signin = ctk.CTkButton(self.frame_audio_controls, text="Sign in to Google", fg_color="#4285F4", command=self.sign_in_google)
