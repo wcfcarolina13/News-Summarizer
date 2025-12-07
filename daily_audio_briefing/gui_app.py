@@ -129,7 +129,7 @@ class AudioBriefingApp(ctk.CTk):
         self.btn_sample.grid(row=2, column=1, padx=10, pady=(0, 10), sticky="w")
 
         self.btn_quality = ctk.CTkButton(self.frame_audio_controls, text="Generate Quality (Kokoro)", command=self.start_quality_generation)
-        self.btn_quality.grid(row=3, column=0, columnspan=2, padx=10, pady=10, sticky="ew")
+        self.btn_quality.grid(row=4, column=0, columnspan=2, padx=10, pady=10, sticky="ew")
         
         # Row 3: Broadcast Button (disabled)
         # self.btn_broadcast = ctk.CTkButton(self.frame_audio_controls, text="Broadcast to Phone", fg_color="green", command=self.toggle_podcast_server)
