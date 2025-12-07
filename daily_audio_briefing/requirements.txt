@@ -1,0 +1,12 @@
+gTTS
+kokoro-onnx
+soundfile
+numpy
+customtkinter
+scrapetube
+youtube-transcript-api
+google-generativeai
+python-dotenv
+dateparser
+qrcode
+Pillow

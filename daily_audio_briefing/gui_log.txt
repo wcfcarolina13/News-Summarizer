@@ -1,0 +1,42 @@
+--- Running get_youtube_news.py ---
+Args: ['--days', '2']
+Env keys: ['GEMINI_API_KEY', 'PYTHONUNBUFFERED']
+Return Code: 0
+STDOUT:
+[DEBUG] Using GEMINI_API_KEY from environment variable.
+[DEBUG] === Processing date: 2025-12-07 ===
+[DEBUG] --- Processing Channel: https://www.youtube.com/@CoinBureauTrading/videos ---
+[DEBUG] Fetched 20 recent videos.
+[DEBUG] No summaries for 2025-12-07
+[DEBUG] === Processing date: 2025-12-06 ===
+[DEBUG] --- Processing Channel: https://www.youtube.com/@CoinBureauTrading/videos ---
+[DEBUG] Fetched 20 recent videos.
+[DEBUG] PROCESSING: DECEMBER Is LOOKING GOOD For CRYPTO!! (21 hours ago)
+
+[download]    1.00KiB at  Unknown B/s (00:00:00)
+[download]    3.00KiB at    2.21MiB/s (00:00:00)
+[download]    7.00KiB at    3.54MiB/s (00:00:00)
+[download]   15.00KiB at    5.92MiB/s (00:00:00)
+[download]   31.00KiB at    2.18MiB/s (00:00:00)
+[download]   63.00KiB at    2.91MiB/s (00:00:00)
+[download]  127.00KiB at    3.48MiB/s (00:00:00)
+[download]  147.57KiB at    3.52MiB/s (00:00:00)
+[download] 100% of  147.57KiB in 00:00:00 at 791.81KiB/s
+                                                        
+[DEBUG]   -> Transcript retrieved. Summarizing...
+[DEBUG]   -> Summary generated.
+[DEBUG] PROCESSING: ETHEREUM MASSIVE BULLISH PATTERN FORMING!!! [TAKE NOTE BEFORE IT'S TOO LATE] (1 day ago)
+
+[download]    1.00KiB at  Unknown B/s (00:00:00)
+[download]    3.00KiB at  Unknown B/s (00:00:00)
+[download]    7.00KiB at  Unknown B/s (00:00:00)
+[download]   15.00KiB at    3.85MiB/s (00:00:00)
+[download]   31.00KiB at    2.27MiB/s (00:00:00)
+[download]   57.85KiB at    2.89MiB/s (00:00:00)
+[download] 100% of   57.85KiB in 00:00:00 at 393.70KiB/s
+                                                        
+[DEBUG]   -> Transcript retrieved. Summarizing...
+[DEBUG]   -> Gemini Skipped: Skipped DECEMBER Is LOOKING GOOD For CRYPTO!! as tutorial/promotion.
+[DEBUG] SUCCESS: 1 summaries for 2025-12-06 -> summary_2025-12-06.txt
+
+STDERR:
