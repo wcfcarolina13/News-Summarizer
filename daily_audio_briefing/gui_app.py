@@ -86,9 +86,9 @@ class AudioBriefingApp(ctk.CTk):
         self.start_date_entry = ctk.CTkEntry(self.frame_fetch_opts, width=120, placeholder_text="Start YYYY-MM-DD")
         # Calendar dropdowns beside entries
         if DateEntry:
-            self.start_picker = DateEntry(self.frame_fetch_opts, width=12)
+            self.start_picker = DateEntry(self.frame_fetch_opts, width=12, foreground='black', normalforeground='black', selectforeground='black')
             self.start_picker.pack(side="left", padx=(5, 5))
-            self.end_picker = DateEntry(self.frame_fetch_opts, width=12)
+            self.end_picker = DateEntry(self.frame_fetch_opts, width=12, foreground='black', normalforeground='black', selectforeground='black')
             self.end_picker.pack(side="left", padx=(5, 5))
             def _apply_start(e=None):
                 val = self.start_picker.get_date()
