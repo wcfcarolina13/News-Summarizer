@@ -83,6 +83,9 @@ class AudioBriefingApp(ctk.CTk):
         self.range_var = ctk.BooleanVar(value=False)
         self.chk_range = ctk.CTkCheckBox(self.frame_fetch_opts, text="Use date range", variable=self.range_var)
         self.chk_range.pack(side="left", padx=(10, 5))
+        # Grey out Fetch Limit when using date range
+        self.chk_range.configure(command=self.on_toggle_range)
+
         self.start_date_entry = ctk.CTkEntry(self.frame_fetch_opts, width=120, placeholder_text="Start YYYY-MM-DD")
         # Calendar buttons beside entries (better UX)
         self.btn_start_cal = ctk.CTkButton(self.frame_fetch_opts, width=28, text="📅", command=self.open_start_calendar)
@@ -91,6 +94,9 @@ class AudioBriefingApp(ctk.CTk):
         self.btn_end_cal.pack(side="left", padx=(5, 5))
 
         self.start_date_entry.pack(side="left", padx=(0, 5))
+        # Initialize state
+        self.on_toggle_range()
+
         self.end_date_entry = ctk.CTkEntry(self.frame_fetch_opts, width=120, placeholder_text="End YYYY-MM-DD")
         self.end_date_entry.pack(side="left")
 
@@ -146,6 +152,16 @@ class AudioBriefingApp(ctk.CTk):
         self.btn_open.grid(row=7, column=0, padx=20, pady=(0, 20)) # Row 7
 
         # Load data
+
+    def on_toggle_range(self):
+        use_range = bool(self.range_var.get())
+        state = "disabled" if use_range else "normal"
+        try:
+            self.entry_value.configure(state=state)
+            self.combo_mode.configure(state=state)
+        except Exception:
+            pass
+
         self.load_current_summary()
         self.load_api_key()
 
