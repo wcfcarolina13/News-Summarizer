@@ -10,6 +10,10 @@ import qrcode
 from PIL import Image # PIL is imported by qrcode, but explicit import helps CTkImage
 
 from podcast_manager import PodcastServer # Import your podcast manager
+from file_manager import FileManager
+from audio_generator import AudioGenerator
+from voice_manager import VoiceManager
+
 try:
     from tkcalendar import DateEntry
 except Exception:
@@ -31,6 +35,11 @@ class AudioBriefingApp(ctk.CTk):
 
         self.grid_columnconfigure(0, weight=1)
         self.grid_rowconfigure(1, weight=1)
+        
+        # Initialize managers
+        self.file_manager = FileManager()
+        self.audio_generator = AudioGenerator(status_callback=self._update_status)
+        self.voice_manager = VoiceManager()
         
         # self.podcast_server = PodcastServer()  # Disabled
         # self.drive_manager = None  # Google Drive features removed
@@ -148,7 +157,7 @@ class AudioBriefingApp(ctk.CTk):
 
 
         self.voice_var = ctk.StringVar(value="af_sarah")
-        self.combo_voices = ctk.CTkComboBox(self.frame_audio_controls, variable=self.voice_var, values=self.get_available_voices())
+        self.combo_voices = ctk.CTkComboBox(self.frame_audio_controls, variable=self.voice_var, values=self.voice_manager.get_available_voices())
         self.combo_voices.grid(row=2, column=0, padx=10, pady=(0, 5), sticky="ew")
         self.btn_sample = ctk.CTkButton(self.frame_audio_controls, text="Play Sample", width=120, fg_color="gray", command=self.play_sample)
         self.btn_sample.grid(row=2, column=1, padx=10, pady=(0, 5), sticky="e")
@@ -182,6 +191,15 @@ class AudioBriefingApp(ctk.CTk):
 
         # Load data
 
+    def _update_status(self, message, color="gray"):
+        """Callback for status updates from managers.
+        
+        Args:
+            message: Status message to display
+            color: Text color for the message
+        """
+        self.after(0, lambda: self.label_status.configure(text=message, text_color=color))
+    
     def on_toggle_range(self):
         use_range = bool(self.range_var.get())
         state = "disabled" if use_range else "normal"
@@ -239,85 +257,41 @@ class AudioBriefingApp(ctk.CTk):
         # Google Sign-In (disabled)
         # self.btn_google_signin = ctk.CTkButton(self.frame_audio_controls, text="Sign in to Google", fg_color="#4285F4", command=self.sign_in_google)
         # self.btn_google_signin.grid(row=5, column=0, columnspan=2, padx=10, pady=10, sticky="ew")
-    def get_available_voices(self):
-        voices_dir = os.path.join(os.path.dirname(__file__), "voices")
-        voices = []
-        if os.path.exists(voices_dir):
-            files = glob.glob(os.path.join(voices_dir, "*.npy"))
-            voices = [os.path.basename(f).replace(".npy", "") for f in files]
-        if not voices:
-            voices = ["af_sarah", "af_bella"]
-        return sorted(voices)
 
     def load_current_summary(self):
-        summary_path = os.path.join(os.path.dirname(__file__), "summary.txt")
-        if os.path.exists(summary_path):
-            try:
-                with open(summary_path, "r", encoding="utf-8") as f:
-                    content = f.read()
-                    self.textbox.delete("0.0", "end")
-                    self.textbox.insert("0.0", content)
-            except Exception as e:
-                print(f"Error reading summary: {e}")
+        """Load current summary from file into textbox."""
+        content = self.file_manager.load_summary()
+        if content:
+            self.textbox.delete("0.0", "end")
+            self.textbox.insert("0.0", content)
 
     def load_api_key(self):
-        env_path = os.path.join(os.path.dirname(__file__), ".env")
-        if os.path.exists(env_path):
-            try:
-                with open(env_path, "r") as f:
-                    for line in f:
-                        if line.strip().startswith("GEMINI_API_KEY="):
-                            key = line.split("=", 1)[1].strip()
-                            self.gemini_key_entry.delete(0, "end")
-                            self.gemini_key_entry.insert(0, key)
-                            break
-            except Exception as e:
-                print(f"Error reading .env: {e}")
+        """Load API key from file into entry widget."""
+        key = self.file_manager.load_api_key()
+        if key:
+            self.gemini_key_entry.delete(0, "end")
+            self.gemini_key_entry.insert(0, key)
 
     def save_api_key(self, key):
-        env_path = os.path.join(os.path.dirname(__file__), ".env")
-        lines = []
-        if os.path.exists(env_path):
-            with open(env_path, "r") as f:
-                lines = f.readlines()
+        """Save API key to file.
         
-        lines = [line for line in lines if not line.strip().startswith("GEMINI_API_KEY=")]
-        lines.append("GEMINI_API_KEY=" + key + "\n") # Use \n for literal newline in file.
-        
-        with open(env_path, "w") as f:
-            f.writelines(lines)
+        Args:
+            key: API key to save
+        """
+        self.file_manager.save_api_key(key)
 
     def save_summary(self):
+        """Save textbox content to summary file.
+        
+        Returns:
+            bool: True if successful, False otherwise
+        """
         text = self.textbox.get("0.0", "end-1c")
-        summary_path = os.path.join(os.path.dirname(__file__), "summary.txt")
-        try:
-            with open(summary_path, "w", encoding="utf-8") as f:
-                f.write(text)
+        if self.file_manager.save_summary(text):
             return True
-        except Exception as e:
-            self.label_status.configure(text=f"Error saving file: {e}", text_color="red")
+        else:
+            self.label_status.configure(text="Error saving file", text_color="red")
             return False
-
-    # Google Drive sync removed
-    # def sync_drive_action(self):
-    #     pass
-            file_name = os.path.basename(local_file)
-            query = f"name='{file_name}' and '{folder_id}' in parents and trashed=false"
-            file = self.drive_manager.service.files().list(q=query, fields="files(id, webViewLink, webContentLink)").execute().get('files', [])
-            link = None
-            if file:
-                file_id = file[0]['id']
-                try:
-                    self.drive_manager.service.permissions().create(fileId=file_id, body={"type":"anyone","role":"reader"}).execute()
-                except Exception:
-                    pass
-                link = file[0].get('webContentLink') or file[0].get('webViewLink')
-            self.label_status.configure(text=msg, text_color="green")
-            if link:
-                self.show_qr_code(link)
-        except Exception as e:
-            self.label_status.configure(text=f"Drive sync error: {e}", text_color="red")
-
 
     def open_sources_editor(self):
         editor = ctk.CTkToplevel(self)
@@ -417,57 +391,39 @@ class AudioBriefingApp(ctk.CTk):
         editor.geometry(f"{max(editor.winfo_width(), 640)}x{max(editor.winfo_height(), 520)}")
 
     def upload_text_file(self):
+        """Open file dialog and upload a text file as the summary."""
         script_dir = os.path.dirname(__file__)
-        file_path = filedialog.askopenfilename(initialdir=script_dir, filetypes=(("Text files", "*.txt"), ("All files", "*.*")))
+        file_path = filedialog.askopenfilename(
+            initialdir=script_dir, 
+            filetypes=(("Text files", "*.txt"), ("All files", "*.*"))
+        )
         if file_path:
-            try:
-                with open(file_path, "r", encoding="utf-8") as f:
-                    content = f.read()
-                out_file = os.path.join(script_dir, "summary.txt")
-                with open(out_file, "w", encoding="utf-8") as f:
-                    f.write(content)
+            if self.file_manager.load_text_file(file_path):
+                self.load_current_summary()
+            else:
+                self.label_status.configure(text="Error loading file", text_color="red")
 
-            except Exception as e:
-                self.label_status.configure(text=f"Error loading file: {e}", text_color="red")
-    # Google Drive prompt removed
-    # def prompt_credentials_json(self):
-    #     return False
-
-    # Local HTTP Server removed
     def toggle_http_server(self):
+        """Placeholder for removed HTTP server feature."""
         self.label_status.configure(text="Local server feature removed", text_color="orange")
 
-    # Local IP helper removed
-
-    # QR code display removed
-
-    # Broadcast/QR features disabled
     def play_sample(self):
+        """Play a voice sample using the audio generator."""
         voice = self.voice_var.get()
-        self.label_status.configure(text=f"Generating sample for {voice}...", text_color="orange")
-        def task():
-            try:
-                script_dir = os.path.dirname(__file__)
-                python_exe = "/usr/bin/env python3" if getattr(sys, "frozen", False) else sys.executable
-                sample_file = os.path.join(script_dir, "sample_temp.wav")
-                if os.path.exists(sample_file): os.remove(sample_file)
-                cmd = [python_exe, os.path.join(script_dir, "make_audio_quality.py"), "--voice", voice, "--text", "This is a sample.", "--output", sample_file]
-                result = subprocess.run(cmd, capture_output=True, text=True, cwd=script_dir)
-                if result.returncode == 0 and os.path.exists(sample_file):
-                    self.after(0, lambda: self.label_status.configure(text="Playing sample...", text_color="green"))
-                    if sys.platform == "darwin": subprocess.run(["afplay", sample_file])
-                    elif sys.platform == "win32":
-                        import winsound
-                        winsound.PlaySound(sample_file, winsound.SND_FILENAME)
-                    else: subprocess.run(["aplay", sample_file])
-                    self.after(0, lambda: self.label_status.configure(text="Ready", text_color="gray"))
-                else:
-                    self.after(0, lambda: self.label_status.configure(text="Sample Error", text_color="red"))
-            except Exception as e:
-                self.after(0, lambda: self.label_status.configure(text=f"Exception: {e}", text_color="red"))
-        threading.Thread(target=task, daemon=True).start()
+        self.audio_generator.play_sample(voice)
 
-    def run_script(self, script_name, output_name, extra_args=[], env_vars=None):
+    def run_script(self, script_name, output_name, extra_args=None, env_vars=None):
+        """Run a script using the audio generator.
+        
+        Args:
+            script_name: Name of script to run
+            output_name: Description of expected output
+            extra_args: Additional command line arguments
+            env_vars: Additional environment variables
+        """
+        extra_args = extra_args or []
+        
+        # Disable buttons during execution
         self.btn_fast.configure(state="disabled")
         self.btn_quality.configure(state="disabled")
         self.btn_get_yt_news.configure(state="disabled")
@@ -475,72 +431,32 @@ class AudioBriefingApp(ctk.CTk):
         self.btn_upload_file.configure(state="disabled")
         self.label_status.configure(text=f"Running {script_name}...", text_color="orange")
         
+        # Save summary before running (except for get_youtube_news)
         if script_name != "get_youtube_news.py" and not self.save_summary():
             self.enable_buttons()
             return
-
-        def task():
-            try:
-                script_dir = os.path.dirname(__file__)
-                python_exe = "/usr/bin/env python3" if getattr(sys, "frozen", False) else sys.executable
-                log_path = os.path.join(script_dir, "gui_log.txt")
-                cmd = [python_exe, os.path.join(script_dir, script_name)] + extra_args
-                process_env = os.environ.copy()
-                if env_vars: process_env.update(env_vars)
-                
-                try:
-                    result = subprocess.run(cmd, capture_output=True, text=True, cwd=script_dir, env=process_env, timeout=3600)
-                except subprocess.TimeoutExpired as tex:
-                    with open(log_path, "w", encoding="utf-8") as log:
-                        log.write("--- Timeout running " + script_name + " ---\n")
-                        log.write("Args: " + str(extra_args) + "\n")
-                        log.write("Env keys: " + str(list(env_vars.keys()) if env_vars else "None") + "\n")
-                        log.write("Timeout after: " + str(tex.timeout) + "s\n")
-                    self.after(0, lambda: self.label_status.configure(text="Task timed out. See gui_log.txt", text_color="red"))
-                    return
-                
-                with open(log_path, "w", encoding="utf-8") as log:
-                    log.write("--- Running " + script_name + " ---\n")
-                    log.write("Args: " + str(extra_args) + "\n")
-                    log.write("Env keys: " + str(list(env_vars.keys()) if env_vars else "None") + "\n")
-                    log.write("Expected output: " + output_name + "\n")
-                    log.write("Script directory: " + script_dir + "\n")
-                    log.write("Return Code: " + str(result.returncode) + "\n")
-                    log.write("STDOUT:\n")
-                    log.write(result.stdout)
-                    log.write("\nSTDERR:\n")
-                    log.write(result.stderr)
-
-
-                if result.returncode == 0:
-                    if script_name == "get_youtube_news.py":
-                        self.after(0, lambda: self.label_status.configure(text=f"Done! Generated {output_name}", text_color="green"))
-                        self.after(0, self.load_current_summary)
-                    else:
-                        self.after(0, lambda: self.label_status.configure(text=f"Done! Saved {output_name}", text_color="green"))
-                else:
-                    last_err = result.stderr.splitlines()[-1] if result.stderr else "(no stderr)"
-                    self.after(0, lambda: self.label_status.configure(text=f"Error. See gui_log.txt: {last_err[:120]}", text_color="red"))
-            except Exception as e:
-                 self.after(0, lambda: self.label_status.configure(text=f"Exception: {e}", text_color="red"))
-            finally:
-                 self.after(0, self.enable_buttons)
-
-        threading.Thread(target=task, daemon=True).start()
-
-    # Google Sign-In fully removed
-
+        
+        def completion_handler(success):
+            """Handle completion of script execution."""
+            if success and script_name == "get_youtube_news.py":
+                self.load_current_summary()
+            self.enable_buttons()
+        
+        self.audio_generator.run_script(
+            script_name, 
+            output_name, 
+            extra_args=extra_args,
+            env_vars=env_vars,
+            completion_callback=completion_handler
+        )
 
     def enable_buttons(self):
+        """Re-enable all control buttons."""
         self.btn_fast.configure(state="normal")
         self.btn_quality.configure(state="normal")
         self.btn_get_yt_news.configure(state="normal")
         self.btn_edit_sources.configure(state="normal")
         self.btn_upload_file.configure(state="normal")
-
-    # Google Drive sync removed
-    # def sync_drive_action(self):
-    #     pass
 
     def start_fast_generation(self):
         self.run_script("make_audio_fast.py", "daily_fast.mp3")
@@ -593,13 +509,8 @@ class AudioBriefingApp(ctk.CTk):
 
 
     def open_output_folder(self):
-        try:
-            script_dir = os.path.dirname(__file__)
-            if sys.platform == "darwin": subprocess.run(["open", script_dir])
-            elif sys.platform == "win32": os.startfile(script_dir)
-            else: subprocess.run(["xdg-open", script_dir])
-        except Exception:
-            pass
+        """Open the output folder in file browser."""
+        self.audio_generator.open_folder()
 
     def select_dates_to_audio(self):
         script_dir = os.path.dirname(__file__)
