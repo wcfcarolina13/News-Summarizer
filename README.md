@@ -142,5 +142,20 @@ High-quality voices are located in the `voices/` directory. Preview any voice us
 ✅ Batch audio conversion for historical summaries
 ✅ Source management interface
 ✅ Voice preview system
+✅ Refactored codebase with separated concerns
 
 Ready for production use!
+
+## Architecture
+
+The application follows a modular design with separated responsibilities:
+
+- **gui_app.py**: Main GUI application and event handling
+- **file_manager.py**: File I/O operations (summaries, API keys, text files)
+- **audio_generator.py**: Audio generation and subprocess management
+- **voice_manager.py**: Voice preset management
+- **get_youtube_news.py**: YouTube video fetching and AI summarization
+- **make_audio_fast.py**: Fast audio generation using gTTS
+- **make_audio_quality.py**: High-quality audio generation using Kokoro TTS
+
+This modular structure makes the code easier to test, maintain, and extend.
