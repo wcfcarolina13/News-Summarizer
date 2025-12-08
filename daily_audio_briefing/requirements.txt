@@ -10,3 +10,4 @@ python-dotenv
 dateparser
 qrcode
 Pillow
+faster-whisper

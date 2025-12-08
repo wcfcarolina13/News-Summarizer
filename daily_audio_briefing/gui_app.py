@@ -15,6 +15,16 @@ from audio_generator import AudioGenerator
 from voice_manager import VoiceManager
 from convert_to_mp3 import check_ffmpeg
 
+# Helper functions for transcription dependency checks
+def check_faster_whisper_installed():
+    try:
+        import faster_whisper
+        return True
+    except ImportError:
+        return False
+
+# Re-use check_ffmpeg from transcriber.py for consistency
+from transcriber import check_ffmpeg
 try:
     from tkcalendar import DateEntry
 except Exception:
@@ -39,6 +49,7 @@ class AudioBriefingApp(ctk.CTk):
         
         # Initialize managers
         self.file_manager = FileManager()
+        self.selected_file_paths = []
         self.audio_generator = AudioGenerator(status_callback=self._update_status)
         self.voice_manager = VoiceManager()
         
@@ -53,7 +64,19 @@ class AudioBriefingApp(ctk.CTk):
         self.textbox = ctk.CTkTextbox(self, width=600, height=200, font=ctk.CTkFont(size=14))
         self.textbox.grid(row=1, column=0, padx=20, pady=10, sticky="ew")
         
-        # Controls
+        # Non-textual placeholder overlay
+        self._placeholder = ctk.CTkLabel(self.textbox, text="Paste or edit the news summary here. You can also load it via Get YouTube News or Upload File.", text_color="gray")
+        self._placeholder.place(relx=0.02, rely=0.02, anchor="nw")
+        def _toggle_placeholder(event=None):
+            has_text = bool(self.textbox.get("0.0", "end-1c").strip())
+            if has_text:
+                self._placeholder.place_forget()
+            else:
+                self._placeholder.place(relx=0.02, rely=0.02, anchor="nw")
+        self.textbox.bind("<KeyRelease>", _toggle_placeholder)
+        self.textbox.bind("<FocusIn>", _toggle_placeholder)
+        self.textbox.bind("<FocusOut>", _toggle_placeholder)
+
         self.frame_yt_api = ctk.CTkFrame(self)
         self.frame_yt_api.grid(row=2, column=0, padx=20, pady=(10, 5), sticky="ew")
         self.frame_yt_api.grid_columnconfigure(0, weight=0)
@@ -106,8 +129,9 @@ class AudioBriefingApp(ctk.CTk):
         self.entry_value.insert(0, "7") # Default to 7
         
         self.mode_var = ctk.StringVar(value="Days")
-        self.combo_mode = ctk.CTkComboBox(self.frame_fetch_opts, variable=self.mode_var, values=["Days", "Videos"], width=100)
+        self.combo_mode = ctk.CTkComboBox(self.frame_fetch_opts, variable=self.mode_var, values=["Days", "Videos"], width=120)
         self.combo_mode.pack(side="left")
+        self.combo_mode.configure(command=self.on_mode_changed)
 
 
         # Date range controls
@@ -133,8 +157,23 @@ class AudioBriefingApp(ctk.CTk):
         self.on_toggle_range()
 
         # Row 4: Upload File
-        self.btn_upload_file = ctk.CTkButton(self.frame_yt_api, text="Upload Text File", command=self.upload_text_file)
+        self.btn_upload_file = ctk.CTkButton(self.frame_yt_api, text="Upload File (.txt, .mp3, .wav, .m4a)", command=self.upload_text_file)
         self.btn_upload_file.grid(row=4, column=0, columnspan=2, padx=10, pady=10, sticky="ew")
+        # Selected files panel
+        self.selected_panel = ctk.CTkFrame(self.frame_yt_api, fg_color=("gray90", "gray20"))
+        self.selected_panel.grid(row=5, column=0, columnspan=2, padx=10, pady=(0,10), sticky="ew")
+        self.selected_panel.grid_columnconfigure(0, weight=1)
+        self.files_combo = ctk.CTkComboBox(self.selected_panel, values=["No files selected"], width=250, state="readonly")
+        self.files_combo.grid(row=0, column=0, sticky="ew", padx=10, pady=5)
+        self.files_combo.set("No files selected")
+        self.btn_clear_selected = ctk.CTkButton(self.selected_panel, text="Clear", width=80, command=self._clear_selected_file)
+        self.btn_clear_selected.grid(row=0, column=1, padx=(10,10), pady=5)
+        self.btn_transcribe = ctk.CTkButton(self.selected_panel, text="Transcribe", width=100, command=self.start_transcription, state="disabled", fg_color="green")
+        self.btn_transcribe.grid(row=0, column=2, padx=(0,10), pady=5)
+
+        # Button: Specific URLs
+        self.btn_specific_urls = ctk.CTkButton(self.frame_yt_api, text="Specific URLs", command=self.open_specific_urls_dialog)
+        self.btn_specific_urls.grid(row=6, column=0, columnspan=2, padx=10, pady=(0, 10), sticky="ew")
 
         # Audio Controls Frame
         self.frame_audio_controls = ctk.CTkFrame(self)
@@ -200,10 +239,45 @@ class AudioBriefingApp(ctk.CTk):
         )
         self.label_compression.grid(row=7, column=0, padx=20, pady=(0, 10))
         self.label_compression.bind("<Button-1>", lambda e: self.show_compression_guide())
+        # Transcription Status Indicator
+        self.transcription_ffmpeg_enabled = check_ffmpeg()
+        self.transcription_whisper_installed = check_faster_whisper_installed()
 
+        transcription_text = ""
+        transcription_color = ""
+        cursor_type = "arrow"
+
+        if self.transcription_ffmpeg_enabled and self.transcription_whisper_installed:
+            transcription_text = "✓ Transcription ready"
+            transcription_color = "green"
+        elif not self.transcription_ffmpeg_enabled and not self.transcription_whisper_installed:
+            transcription_text = "⚠ Transcription disabled - Install ffmpeg & faster-whisper"
+            transcription_color = "orange"
+            cursor_type = "hand2"
+        elif not self.transcription_ffmpeg_enabled:
+            transcription_text = "⚠ Transcription disabled - Install ffmpeg"
+            transcription_color = "orange"
+            cursor_type = "hand2"
+        elif not self.transcription_whisper_installed:
+            transcription_text = "⚠ Transcription disabled - Install faster-whisper"
+            transcription_color = "orange"
+            cursor_type = "hand2"
+
+        self.label_transcription = ctk.CTkLabel(
+            self,
+            text=transcription_text,
+            text_color=transcription_color,
+            font=("Arial", 11),
+            cursor=cursor_type
+        )
+        self.label_transcription.grid(row=8, column=0, padx=20, pady=(0, 10))
+        self.label_transcription.bind("<Button-1>", lambda e: self.show_transcription_guide(
+            missing_ffmpeg=not self.transcription_ffmpeg_enabled,
+            missing_whisper=not self.transcription_whisper_installed
+        ))
         # Open Folder Button
         self.btn_open = ctk.CTkButton(self, text="Open Output Folder", fg_color="transparent", border_width=2, text_color=("gray10", "#DCE4EE"), command=self.open_output_folder)
-        self.btn_open.grid(row=8, column=0, padx=20, pady=(0, 20)) # Row 8
+        self.btn_open.grid(row=9, column=0, padx=20, pady=(0, 20)) # Row 8
 
         # Load data
 
@@ -215,6 +289,34 @@ class AudioBriefingApp(ctk.CTk):
             color: Text color for the message
         """
         self.after(0, lambda: self.label_status.configure(text=message, text_color=color))
+    
+    def on_mode_changed(self, *args):
+        """Handle mode dropdown changes (Days/Videos/Specific URLs)."""
+        mode = self.mode_var.get()
+        
+        if mode == "Specific URLs":
+            # Disable date range controls for Specific URLs mode
+            self.range_var.set(False)
+            self.chk_range.configure(state="disabled")
+            self.start_date_entry.configure(state="disabled")
+            self.end_date_entry.configure(state="disabled")
+            self.btn_start_cal.configure(state="disabled")
+            self.btn_end_cal.configure(state="disabled")
+            
+            # Change entry placeholder to indicate URL input
+            self.entry_value.delete(0, "end")
+            self.entry_value.configure(placeholder_text="Enter video URLs, one per line (or click to expand)")
+        else:
+            # Re-enable date range controls for Days/Videos modes
+            self.chk_range.configure(state="normal")
+            if not self.range_var.get():
+                self.entry_value.configure(state="normal")
+                self.combo_mode.configure(state="normal")
+            
+            # Restore normal placeholder
+            self.entry_value.configure(placeholder_text="")
+            if not self.entry_value.get():
+                self.entry_value.insert(0, "7")
     
     def on_toggle_range(self):
         use_range = bool(self.range_var.get())
@@ -411,24 +513,154 @@ class AudioBriefingApp(ctk.CTk):
         ctk.CTkButton(btn_row, text="Bulk Import", command=bulk_import).pack(side="left", padx=5)
         ctk.CTkButton(btn_row, text="Select All", command=select_all, fg_color="green").pack(side="left", padx=5)
         ctk.CTkButton(btn_row, text="Deselect All", command=deselect_all, fg_color="gray").pack(side="left", padx=5)
+    def _clear_selected_file(self):
+        self.selected_file_paths = []
+        if hasattr(self, "btn_transcribe"):
+            self.btn_transcribe.configure(state="disabled")
+        if hasattr(self, "files_combo"):
+            self.files_combo.configure(values=["No files selected"])
+            self.files_combo.set("No files selected")
+
         ctk.CTkButton(btn_row, text="Save Changes", command=save_sources).pack(side="right", padx=5)
         # Keep buttons visible even when content overflows
         editor.update_idletasks()
         editor.geometry(f"{max(editor.winfo_width(), 640)}x{max(editor.winfo_height(), 520)}")
 
     def upload_text_file(self):
-        """Open file dialog and upload a text file as the summary."""
+        """Open file dialog and upload one or more text/audio files."""
         script_dir = os.path.dirname(__file__)
-        file_path = filedialog.askopenfilename(
-            initialdir=script_dir, 
-            filetypes=(("Text files", "*.txt"), ("All files", "*.*"))
+        file_paths = filedialog.askopenfilenames(
+            initialdir=script_dir,
+            filetypes=(("Supported files", "*.txt *.mp3 *.wav *.m4a"), ("Text files", "*.txt"), ("Audio files", "*.mp3 *.wav *.m4a"), ("All files", "*.*"))
         )
-        if file_path:
-            if self.file_manager.load_text_file(file_path):
-                self.load_current_summary()
-            else:
-                self.label_status.configure(text="Error loading file", text_color="red")
 
+        if not file_paths:
+            return
+
+        self.selected_file_paths = list(file_paths)
+        
+        # Update combo
+        count = len(file_paths)
+        filenames = [os.path.basename(fp) for fp in file_paths]
+        
+        if count == 1:
+            self.files_combo.configure(values=filenames)
+            self.files_combo.set(filenames[0])
+            self.label_status.configure(text="1 file selected. Press Transcribe.", text_color="blue")
+        else:
+            header = f"{count} files selected"
+            self.files_combo.configure(values=[header] + filenames)
+            self.files_combo.set(header)
+            self.label_status.configure(text=f"{count} files selected. Press Transcribe.", text_color="blue")
+            
+        # Enable transcribe button
+        self.btn_transcribe.configure(state="normal")
+
+    def start_transcription(self):
+        """Process selected files: transcribe audio and save to Transcriptions folder."""
+        if not self.selected_file_paths:
+            self.label_status.configure(text="No files selected.", text_color="orange")
+            return
+
+        # Check dependencies once
+        has_audio = any(os.path.splitext(fp)[1].lower() in {".mp3", ".wav", ".m4a"} for fp in self.selected_file_paths)
+        if has_audio:
+            if not self.transcription_ffmpeg_enabled or not self.transcription_whisper_installed:
+                self.label_status.configure(text="Transcription dependencies missing.", text_color="red")
+                self.show_transcription_guide(
+                    missing_ffmpeg=not self.transcription_ffmpeg_enabled,
+                    missing_whisper=not self.transcription_whisper_installed
+                )
+                return
+
+        self.btn_transcribe.configure(state="disabled")
+        self.btn_upload_file.configure(state="disabled")
+        
+        # Create output directory
+        out_dir = os.path.join(os.path.dirname(__file__), "Transcriptions")
+        os.makedirs(out_dir, exist_ok=True)
+
+        def process_thread():
+            processed_count = 0
+            total = len(self.selected_file_paths)
+            
+            for i, file_path in enumerate(self.selected_file_paths, 1):
+                ext = os.path.splitext(file_path)[1].lower()
+                filename = os.path.basename(file_path)
+                
+                # Generate output filename with timestamp
+                timestamp = datetime.datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
+                out_name = f"{timestamp}_{filename}.txt"
+                out_path = os.path.join(out_dir, out_name)
+                
+                try:
+                    result_text = ""
+                    if ext == ".txt":
+                        # Just copy/save text file content
+                        with open(file_path, 'r', encoding='utf-8') as f:
+                            result_text = f.read()
+                        self.after(0, lambda f=filename: self.label_status.configure(text=f"[{i}/{total}] Saving text: {f}...", text_color="blue"))
+                    
+                    elif ext in {".mp3", ".wav", ".m4a"}:
+                        self.after(0, lambda f=filename: self.label_status.configure(text=f"[{i}/{total}] Transcribing: {f}...", text_color="orange"))
+                        from transcriber import transcribe_audio
+                        transcript = transcribe_audio(file_path, model_size="base")
+                        if transcript:
+                            result_text = transcript
+                        else:
+                            result_text = "(No speech detected)"
+                    
+                    # Write to file
+                    if result_text:
+                        with open(out_path, "w", encoding="utf-8") as f:
+                            f.write(result_text)
+                        processed_count += 1
+                        
+                except Exception as e:
+                    self.after(0, lambda f=filename, err=str(e): self.label_status.configure(text=f"Error {f}: {err}", text_color="red"))
+            
+            def finish():
+                self.btn_transcribe.configure(state="normal")
+                self.btn_upload_file.configure(state="normal")
+                if processed_count > 0:
+                    self.label_status.configure(text=f"Done! {processed_count} files saved to 'Transcriptions/'", text_color="green")
+                    # Optionally open the folder?
+                    # if sys.platform == "darwin": subprocess.run(["open", out_dir])
+                else:
+                    self.label_status.configure(text="Processing complete. No output generated.", text_color="orange")
+
+            self.after(0, finish)
+
+        threading.Thread(target=process_thread, daemon=True).start()
+    def show_transcription_guide(self, missing_ffmpeg=False, missing_whisper=False):
+        dlg = ctk.CTkToplevel(self)
+        dlg.title("Transcription Setup Guide")
+        dlg.geometry("600x420")
+        dlg.minsize(600, 420)
+        frame = ctk.CTkScrollableFrame(dlg)
+        frame.pack(fill="both", expand=True, padx=12, pady=12)
+        title = ctk.CTkLabel(frame, text="Enable Local Transcription (Whisper)", font=ctk.CTkFont(size=18, weight="bold"))
+        title.pack(anchor="w", pady=(0,8))
+        info = []
+        info.append("This app uses faster-whisper (OpenAI Whisper) for offline speech-to-text.")
+        if missing_whisper:
+            info.append("• Python package missing: faster-whisper")
+        if missing_ffmpeg:
+            info.append("• System dependency missing: ffmpeg")
+        info.append("")
+        info.append("Install steps:")
+        info.append("1) Python deps: pip install faster-whisper")
+        info.append("2) ffmpeg:")
+        info.append("   • macOS: brew install ffmpeg")
+        info.append("   • Windows: choco install ffmpeg (or download from ffmpeg.org)")
+        info.append("   • Linux: sudo apt install ffmpeg")
+        info.append("")
+        info.append("After installation, restart the app and try Upload File again.")
+        text = ctk.CTkTextbox(frame, width=560, height=300)
+        text.pack(fill="both", expand=True)
+        text.insert("0.0", "\n".join(info))
+        text.configure(state="disabled")
+        ctk.CTkButton(dlg, text="Close", fg_color="gray", command=dlg.destroy).pack(pady=8)
     def toggle_http_server(self):
         """Placeholder for removed HTTP server feature."""
         self.label_status.configure(text="Local server feature removed", text_color="orange")
@@ -476,10 +708,105 @@ class AudioBriefingApp(ctk.CTk):
             completion_callback=completion_handler
         )
 
+    def open_url_input_dialog(self, api_key):
+        """Open dialog for entering specific video URLs."""
+        dialog = ctk.CTkToplevel(self)
+        dialog.title("Summarize Specific Videos")
+        dialog.geometry("700x500")
+        dialog.transient(self)
+        dialog.geometry("800x600")
+        dialog.minsize(800, 600)
+
+        dialog.lift()
+        dialog.grab_set()
+        
+        # Header
+        header = ctk.CTkLabel(
+            dialog, 
+            text="📹 Enter YouTube Video URLs", 
+            font=ctk.CTkFont(size=18, weight="bold")
+        )
+        header.pack(pady=(20, 10))
+        
+        # Instructions
+        instructions = ctk.CTkLabel(
+            dialog,
+            text="Enter one or more YouTube video URLs (one per line):",
+            font=ctk.CTkFont(size=12)
+        )
+        instructions.pack(pady=(0, 10))
+        
+        # URL text area
+        url_frame = ctk.CTkFrame(dialog)
+        url_frame.pack(padx=20, pady=10, fill="both", expand=True)
+        
+        url_textbox = ctk.CTkTextbox(url_frame, width=650, height=300, font=ctk.CTkFont(size=12))
+        url_textbox.pack(padx=10, pady=10, fill="both", expand=True)
+        url_textbox.insert("0.0", "https://www.youtube.com/watch?v=")
+        
+        # Info label
+        info_text = "Each video will be summarized using the selected AI model. Videos without transcripts will be skipped."
+        info_label = ctk.CTkLabel(dialog, text=info_text, font=ctk.CTkFont(size=10), text_color="gray", wraplength=650)
+        info_label.pack(pady=(0, 10))
+        
+        # Button frame
+        btn_frame = ctk.CTkFrame(dialog, fg_color="transparent")
+        btn_frame.pack(pady=10)
+        
+        def process_urls():
+            urls_text = url_textbox.get("0.0", "end").strip()
+            if not urls_text:
+                return
+            
+            # Parse URLs (one per line)
+            urls = [line.strip() for line in urls_text.split('\n') if line.strip() and 'youtube.com' in line]
+            
+            if not urls:
+                self.label_status.configure(text="Error: No valid YouTube URLs found.", text_color="red")
+                dialog.destroy()
+                return
+            
+            # Map user-friendly model name to API model name
+            model_mapping = {
+                "Fast (FREE)": "gemini-2.5-flash",
+                "Balanced (FREE)": "gemini-2.5-flash",
+                "Best (FREE, 50/day)": "gemini-2.5-pro"
+            }
+            selected_model = model_mapping.get(self.model_var.get(), "gemini-2.5-flash")
+            
+            # Save API key
+            self.save_api_key(api_key)
+            
+            # Build args for get_youtube_news.py with --urls
+            extra = ["--urls"] + urls + ["--model", selected_model]
+            output_desc = f"specific video list for {len(urls)} URL(s)"
+            
+            dialog.destroy()
+            
+            # Run the script
+            env_vars = {"GEMINI_API_KEY": api_key}
+            self.run_script("get_youtube_news.py", "specific-video-list.txt", extra_args=extra, env_vars=env_vars)
+        
+        def cancel():
+            dialog.destroy()
+        
+        btn_cancel = ctk.CTkButton(btn_frame, text="Cancel", command=cancel, fg_color="gray", width=120)
+        btn_cancel.pack(side="left", padx=10)
+        
+        btn_process = ctk.CTkButton(btn_frame, text="Summarize Videos", command=process_urls, width=150)
+        btn_process.pack(side="left", padx=10)
+    
     def enable_buttons(self):
         """Re-enable all control buttons."""
         self.btn_fast.configure(state="normal")
         self.btn_quality.configure(state="normal")
+    def open_specific_urls_dialog(self):
+        api_key = self.gemini_key_entry.get().strip()
+        if not api_key:
+            self.label_status.configure(text="Error: Gemini API Key is required.", text_color="red")
+            return
+        self.open_url_input_dialog(api_key)
+
         self.btn_get_yt_news.configure(state="normal")
         self.btn_edit_sources.configure(state="normal")
         self.btn_upload_file.configure(state="normal")
@@ -559,8 +886,12 @@ class AudioBriefingApp(ctk.CTk):
             self.label_status.configure(text="Error: Gemini API Key is required.", text_color="red")
             return
         
-        mode = self.mode_var.get().lower()
+        mode = self.mode_var.get()
         value = self.entry_value.get().strip()
+        
+        # Specific URLs moved to dedicated button dialog
+        
+        # Handle Days/Videos modes
         if not value.isdigit():
             value = "7"
             
@@ -1041,3 +1372,4 @@ This will incur charges to your Google Cloud account!
 if __name__ == "__main__":
     app = AudioBriefingApp()
     app.mainloop()
+

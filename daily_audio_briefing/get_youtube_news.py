@@ -14,6 +14,7 @@ load_dotenv()
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
 
 OUTPUT_FILE = "summary.txt"
+SPECIFIC_OUTPUT_DIR = "Specific Video Lists"
 CHANNELS_FILE = "channels.txt"
 SOURCES_JSON = "sources.json"
 
@@ -215,6 +216,7 @@ def main():
     parser.add_argument("--end", type=str, help="End date YYYY-MM-DD")
     parser.add_argument("--model", type=str, default="gemini-2.5-flash", 
                         help="Gemini model to use (gemini-2.5-flash, gemini-2.5-pro)")
+    parser.add_argument("--urls", nargs="+", help="Specific YouTube video URLs to summarize")
     args = parser.parse_args()
 
 
@@ -222,6 +224,54 @@ def main():
     os.chdir(script_dir)
 
     model = setup_gemini(args.model)
+
+    # If specific URLs provided, process them directly and write summary.txt
+    if args.urls:
+        summaries = []
+        for url in args.urls:
+            vid = None
+            try:
+                # Extract video ID from full URL
+                if "watch?v=" in url:
+                    vid = url.split("watch?v=")[-1].split("&")[0]
+                elif "/shorts/" in url:
+                    vid = url.split("/shorts/")[-1].split("?")[0]
+                elif "/live/" in url:
+                    vid = url.split("/live/")[-1].split("?")[0]
+            except Exception:
+                vid = None
+            if not vid:
+                log(f"Skipping invalid URL: {url}")
+                continue
+            log(f"=== Processing specific video: {url} ===")
+            transcript = get_transcript_text(vid)
+            if not transcript:
+                log("  -> SKIPPING: No transcript found.")
+                continue
+            summary = summarize_text(model, transcript, "")
+            if summary.strip().startswith("Skipped"):
+                log(f"  -> Gemini Skipped: {summary.strip()}")
+                continue
+            entry = f"Summary for {url}:\n{summary}\n"
+            summaries.append(entry)
+        if summaries:
+            # Ensure output directory exists
+            out_dir = os.path.join(script_dir, SPECIFIC_OUTPUT_DIR)
+            os.makedirs(out_dir, exist_ok=True)
+            # Timestamped filename
+            ts = datetime.datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
+            filename = f"specific-video-list_{ts}.txt"
+            save_path = os.path.join(out_dir, filename)
+            try:
+                with open(save_path, "w", encoding="utf-8") as f:
+                    f.write("\n\n".join(summaries))
+                log(f"SUCCESS: Wrote {len(summaries)} specific video summaries -> {save_path}")
+            except Exception as e:
+                log(f"ERROR: Failed to write {save_path}: {e}")
+            return
+        else:
+            log("WARNING: No summaries created for provided URLs.")
+            return
 
     # Load sources from sources.json if present, else fallback to channels.txt
     channels = []
