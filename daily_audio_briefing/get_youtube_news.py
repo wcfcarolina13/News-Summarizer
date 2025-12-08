@@ -21,19 +21,32 @@ def log(msg):
     print(f"[DEBUG] {msg}")
     sys.stdout.flush()
 
-def setup_gemini():
+def get_week_folder(target_date):
+    """Create and return week-based folder path matching audio file organization"""
+    year, week, _ = target_date.isocalendar()
+    folder_name = f"Week_{week}_{year}"
+    
+    if not os.path.exists(folder_name):
+        os.makedirs(folder_name)
+        log(f"Created new folder: {folder_name}")
+        
+    return folder_name
+
+def setup_gemini(model_name="gemini-2.5-flash"):
     env_key = os.environ.get("GEMINI_API_KEY")
     if env_key:
-        log("Using GEMINI_API_KEY from environment variable.")
+        log(f"Using GEMINI_API_KEY from environment variable.")
+        log(f"Using model: {model_name}")
         genai.configure(api_key=env_key)
-        return genai.GenerativeModel("models/gemini-flash-latest")
+        return genai.GenerativeModel(model_name)
 
     if not GEMINI_API_KEY:
          log("Error: GEMINI_API_KEY not found in .env file or environment.")
          sys.exit(1)
              
     genai.configure(api_key=GEMINI_API_KEY)
-    return genai.GenerativeModel("models/gemini-flash-latest")
+    log(f"Using model: {model_name}")
+    return genai.GenerativeModel(model_name)
 
 def clean_vtt(text):
     lines = text.splitlines()
@@ -144,6 +157,7 @@ def process_channel(channel_url, model, shared_context, cutoff_date):
     # cutoff_date provided by caller
     
     processed_count = 0
+    videos_on_target_date = 0
     for video in videos:
 
 
@@ -161,8 +175,9 @@ def process_channel(channel_url, model, shared_context, cutoff_date):
             # only keep videos published on the target day
             if pub_date.date() != cutoff_date.date():
                 continue
+            videos_on_target_date += 1
 
-        log(f"PROCESSING: {title} ({date_info})")
+        log(f"DEBUG: Video on {cutoff_date.date()}: {title} ({date_info})")
         transcript = get_transcript_text(video_id)
         if not transcript:
             log("  -> SKIPPING: No transcript found.")
@@ -185,21 +200,28 @@ def process_channel(channel_url, model, shared_context, cutoff_date):
         shared_context.append(f"Title: {title}\nSummary: {summary}")
         processed_count += 1
         log("  -> Summary generated.")
+    
+    if videos_on_target_date > 0:
+        log(f"DEBUG: Found {videos_on_target_date} videos on {cutoff_date.date()}, created {len(new_summaries)} summaries")
+    else:
+        log(f"DEBUG: No videos found on {cutoff_date.date()} from this channel")
 
     return new_summaries, shared_context
 
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--days", type=int, default=1, help="Process this many days starting from today")
-    args, _ = parser.parse_known_args()
     parser.add_argument("--start", type=str, help="Start date YYYY-MM-DD")
     parser.add_argument("--end", type=str, help="End date YYYY-MM-DD")
+    parser.add_argument("--model", type=str, default="gemini-2.5-flash", 
+                        help="Gemini model to use (gemini-2.5-flash, gemini-2.5-pro)")
+    args = parser.parse_args()
 
 
     script_dir = os.path.dirname(os.path.abspath(__file__))
     os.chdir(script_dir)
 
-    model = setup_gemini()
+    model = setup_gemini(args.model)
 
     # Load sources from sources.json if present, else fallback to channels.txt
     channels = []
@@ -238,12 +260,12 @@ def main():
 
     for target_date in dates_to_process:
 
+        pass
+        # placeholder to satisfy indentation; actual processing happens below
     shared_context = []
     total_summaries = 0
-    for day_offset in range(args.days):
+    log(f"DEBUG: Will save summaries in {os.path.dirname(__file__)}")
     for target_date in dates_to_process:
-        
-        target_date = datetime.datetime.now() - datetime.timedelta(days=day_offset)
         log(f"=== Processing date: {target_date.date()} ===")
         day_summaries = []
         for channel in channels:
@@ -251,12 +273,28 @@ def main():
             day_summaries.extend(summaries)
         if day_summaries:
             out_name = f"summary_{target_date.date()}.txt"
-            with open(out_name, "w", encoding="utf-8") as f:
-                f.write("\n\n".join(day_summaries))
-            log(f"SUCCESS: {len(day_summaries)} summaries for {target_date.date()} -> {out_name}")
+            week_folder = get_week_folder(target_date)
+            save_path = os.path.join(week_folder, out_name)
+            log(f"DEBUG: Attempting to write {len(day_summaries)} summaries to: {save_path}")
+            log(f"DEBUG: Week folder: {week_folder}")
+            log(f"DEBUG: Week folder exists: {os.path.exists(week_folder)}")
+            log(f"DEBUG: Week folder writable: {os.access(week_folder, os.W_OK)}")
+            try:
+                with open(save_path, "w", encoding="utf-8") as f:
+                    f.write("\n\n".join(day_summaries))
+                log(f"DEBUG: File write completed. Verifying...")
+                if os.path.exists(save_path):
+                    file_size = os.path.getsize(save_path)
+                    log(f"SUCCESS: {len(day_summaries)} summaries for {target_date.date()} -> {save_path} ({file_size} bytes)")
+                else:
+                    log(f"ERROR: File was written but does not exist at {save_path}")
+            except Exception as e:
+                log(f"ERROR: Failed to write {save_path}: {e}")
+                import traceback
+                log(f"ERROR: Traceback: {traceback.format_exc()}")
             total_summaries += len(day_summaries)
         else:
-            log(f"No summaries for {target_date.date()}")
+            log(f"WARNING: No summaries found for {target_date.date()} - no videos published on this date from configured channels")
     if total_summaries == 0:
         log("FINISHED: No summaries created for selected days.")
 

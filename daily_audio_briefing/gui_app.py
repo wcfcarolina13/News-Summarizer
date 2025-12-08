@@ -40,35 +40,56 @@ class AudioBriefingApp(ctk.CTk):
         self.label_header.grid(row=0, column=0, padx=20, pady=(20, 10), sticky="ew")
 
         # Text Area
-        self.textbox = ctk.CTkTextbox(self, width=600, font=ctk.CTkFont(size=14))
-        self.textbox.grid(row=1, column=0, padx=20, pady=10, sticky="nsew")
+        self.textbox = ctk.CTkTextbox(self, width=600, height=200, font=ctk.CTkFont(size=14))
+        self.textbox.grid(row=1, column=0, padx=20, pady=10, sticky="ew")
         
         # Controls
         self.frame_yt_api = ctk.CTkFrame(self)
         self.frame_yt_api.grid(row=2, column=0, padx=20, pady=(10, 5), sticky="ew")
-        self.frame_yt_api.grid_columnconfigure(0, weight=1)
+        self.frame_yt_api.grid_columnconfigure(0, weight=0)
         self.frame_yt_api.grid_columnconfigure(1, weight=1)
 
-        # Row 0: API Key
-        self.label_gemini_key = ctk.CTkLabel(self.frame_yt_api, text="Gemini API Key:")
-        self.label_gemini_key.grid(row=0, column=0, padx=10, pady=(10, 0), sticky="w")
-        self.gemini_key_entry = ctk.CTkEntry(self.frame_yt_api, show="*")
-        self.gemini_key_entry.grid(row=0, column=1, padx=10, pady=(10, 0), sticky="ew")
+        # Row 0: API Key with inline Model selection
+        frame_row0 = ctk.CTkFrame(self.frame_yt_api, fg_color="transparent")
+        frame_row0.grid(row=0, column=0, columnspan=2, padx=10, pady=(10, 5), sticky="ew")
+        frame_row0.grid_columnconfigure(1, weight=1)
         
-        # Row 1: Get YouTube News & Edit Sources
+        ctk.CTkLabel(frame_row0, text="API Key:").grid(row=0, column=0, padx=(0, 10), sticky="w")
+        
+        self.gemini_key_entry = ctk.CTkEntry(frame_row0, show="*")
+        self.gemini_key_entry.grid(row=0, column=1, sticky="ew", padx=(0, 10))
+        
+        ctk.CTkLabel(frame_row0, text="Model:").grid(row=0, column=2, padx=(0, 5), sticky="w")
+        
+        self.model_var = ctk.StringVar(value="Fast (FREE)")
+        self.model_combo = ctk.CTkComboBox(
+            frame_row0, 
+            variable=self.model_var,
+            values=["Fast (FREE)", "Balanced (FREE)", "Best (FREE, 50/day)"],
+            width=180,
+            state="readonly"
+        )
+        self.model_combo.grid(row=0, column=3, sticky="w")
+        
+        # Row 1: Help text
+        help_text = "💡 Fast: 4000/min | Balanced: 1500/day | Best: 50/day (highest quality)"
+        ctk.CTkLabel(self.frame_yt_api, text=help_text, font=ctk.CTkFont(size=10), text_color="gray").grid(
+            row=1, column=0, columnspan=2, padx=10, pady=(0, 10), sticky="w"
+        )
+        
+        # Row 2: Get YouTube News & Edit Sources
         self.btn_get_yt_news = ctk.CTkButton(self.frame_yt_api, text="Get YouTube News", command=self.get_youtube_news_from_channels)
-        # Google Sign-In removed
-        self.btn_get_yt_news.grid(row=1, column=0, padx=10, pady=10, sticky="ew")
+        self.btn_get_yt_news.grid(row=2, column=0, padx=10, pady=(5, 10), sticky="ew")
 
         self.btn_edit_sources = ctk.CTkButton(self.frame_yt_api, text="Edit Sources", fg_color="gray", command=self.open_sources_editor)
-        self.btn_edit_sources.grid(row=1, column=1, padx=10, pady=10, sticky="ew")
+        self.btn_edit_sources.grid(row=2, column=1, padx=10, pady=(5, 10), sticky="ew")
 
-        # Row 2: Fetch Options
-        self.label_mode = ctk.CTkLabel(self.frame_yt_api, text="Fetch Limit:")
-        self.label_mode.grid(row=2, column=0, padx=10, pady=(0, 10), sticky="e") # Align right next to input
+        # Row 3: Fetch Options
+        self.label_mode = ctk.CTkLabel(self.frame_yt_api, text="Fetch:")
+        self.label_mode.grid(row=3, column=0, padx=10, pady=(5, 10), sticky="w")
         
         self.frame_fetch_opts = ctk.CTkFrame(self.frame_yt_api, fg_color="transparent")
-        self.frame_fetch_opts.grid(row=2, column=1, padx=10, pady=(0, 10), sticky="w")
+        self.frame_fetch_opts.grid(row=3, column=1, padx=10, pady=(5, 10), sticky="w")
         
         self.entry_value = ctk.CTkEntry(self.frame_fetch_opts, width=50)
         self.entry_value.pack(side="left", padx=(0, 5))
@@ -87,22 +108,23 @@ class AudioBriefingApp(ctk.CTk):
         self.chk_range.configure(command=self.on_toggle_range)
 
         self.start_date_entry = ctk.CTkEntry(self.frame_fetch_opts, width=120, placeholder_text="Start YYYY-MM-DD")
-        # Calendar buttons beside entries (better UX)
+        self.start_date_entry.pack(side="left", padx=(5, 2))
+        
         self.btn_start_cal = ctk.CTkButton(self.frame_fetch_opts, width=28, text="📅", command=self.open_start_calendar)
-        self.btn_start_cal.pack(side="left", padx=(5, 5))
-        self.btn_end_cal = ctk.CTkButton(self.frame_fetch_opts, width=28, text="📅", command=self.open_end_calendar)
-        self.btn_end_cal.pack(side="left", padx=(5, 5))
+        self.btn_start_cal.pack(side="left", padx=(0, 10))
 
-        self.start_date_entry.pack(side="left", padx=(0, 5))
+        self.end_date_entry = ctk.CTkEntry(self.frame_fetch_opts, width=120, placeholder_text="End YYYY-MM-DD")
+        self.end_date_entry.pack(side="left", padx=(0, 2))
+        
+        self.btn_end_cal = ctk.CTkButton(self.frame_fetch_opts, width=28, text="📅", command=self.open_end_calendar)
+        self.btn_end_cal.pack(side="left", padx=(0, 5))
+        
         # Initialize state
         self.on_toggle_range()
 
-        self.end_date_entry = ctk.CTkEntry(self.frame_fetch_opts, width=120, placeholder_text="End YYYY-MM-DD")
-        self.end_date_entry.pack(side="left")
-
-        # Row 3: Upload File
-        self.btn_upload_file = ctk.CTkButton(self.frame_yt_api, text="Upload Text File", command=self.upload_text_file)  # Google Drive sync removed
-        self.btn_upload_file.grid(row=3, column=0, columnspan=2, padx=10, pady=10, sticky="ew")
+        # Row 4: Upload File
+        self.btn_upload_file = ctk.CTkButton(self.frame_yt_api, text="Upload Text File", command=self.upload_text_file)
+        self.btn_upload_file.grid(row=4, column=0, columnspan=2, padx=10, pady=10, sticky="ew")
 
         # Audio Controls Frame
         self.frame_audio_controls = ctk.CTkFrame(self)
@@ -151,7 +173,7 @@ class AudioBriefingApp(ctk.CTk):
         # (button removed)
 
         # Status Label
-        self.label_status = ctk.CTkLabel(self, text="Ready", text_color="gray")
+        self.label_status = ctk.CTkLabel(self, text="Ready", text_color=("gray10", "#DCE4EE"), font=("Arial", 14, "bold"))
         self.label_status.grid(row=6, column=0, padx=20, pady=(0, 10)) # Row 6
 
         # Open Folder Button
@@ -467,7 +489,7 @@ class AudioBriefingApp(ctk.CTk):
                 if env_vars: process_env.update(env_vars)
                 
                 try:
-                    result = subprocess.run(cmd, capture_output=True, text=True, cwd=script_dir, env=process_env, timeout=900)
+                    result = subprocess.run(cmd, capture_output=True, text=True, cwd=script_dir, env=process_env, timeout=3600)
                 except subprocess.TimeoutExpired as tex:
                     with open(log_path, "w", encoding="utf-8") as log:
                         log.write("--- Timeout running " + script_name + " ---\n")
@@ -481,6 +503,8 @@ class AudioBriefingApp(ctk.CTk):
                     log.write("--- Running " + script_name + " ---\n")
                     log.write("Args: " + str(extra_args) + "\n")
                     log.write("Env keys: " + str(list(env_vars.keys()) if env_vars else "None") + "\n")
+                    log.write("Expected output: " + output_name + "\n")
+                    log.write("Script directory: " + script_dir + "\n")
                     log.write("Return Code: " + str(result.returncode) + "\n")
                     log.write("STDOUT:\n")
                     log.write(result.stdout)
@@ -489,9 +513,11 @@ class AudioBriefingApp(ctk.CTk):
 
 
                 if result.returncode == 0:
-                    self.after(0, lambda: self.label_status.configure(text=f"Done! Saved {output_name}", text_color="green"))
                     if script_name == "get_youtube_news.py":
+                        self.after(0, lambda: self.label_status.configure(text=f"Done! Generated {output_name}", text_color="green"))
                         self.after(0, self.load_current_summary)
+                    else:
+                        self.after(0, lambda: self.label_status.configure(text=f"Done! Saved {output_name}", text_color="green"))
                 else:
                     last_err = result.stderr.splitlines()[-1] if result.stderr else "(no stderr)"
                     self.after(0, lambda: self.label_status.configure(text=f"Error. See gui_log.txt: {last_err[:120]}", text_color="red"))
@@ -535,18 +561,35 @@ class AudioBriefingApp(ctk.CTk):
             value = "7"
             
         self.save_api_key(api_key)
-        days = int(value) if value.isdigit() else 1
-        self.run_script("get_youtube_news.py", f"summary_{datetime.datetime.now().date()}.txt", extra_args=["--days", str(days)], env_vars={"GEMINI_API_KEY": api_key, "PYTHONUNBUFFERED": "1"})
-        extra = ["--days", str(days)]
+        
+        # Map user-friendly model name to API model name
+        model_mapping = {
+            "Fast (FREE)": "gemini-2.5-flash",
+            "Balanced (FREE)": "gemini-2.5-flash",
+            "Best (FREE, 50/day)": "gemini-2.5-pro"
+        }
+        selected_model = model_mapping.get(self.model_var.get(), "gemini-2.5-flash")
+        
+        # Build args based on range checkbox
+        extra = []
+        output_desc = ""
         if self.range_var.get():
             start = self.start_date_entry.get().strip()
             end = self.end_date_entry.get().strip()
             if start and end:
-                extra = ["--start", start, "--end", end]
-        # Run with either days or date range
-        self.run_script("get_youtube_news.py", f"summary_{datetime.datetime.now().date()}.txt", extra_args=extra, env_vars={"GEMINI_API_KEY": api_key, "PYTHONUNBUFFERED": "1"})
-
-        self.run_script("get_youtube_news.py", f"summary_{datetime.datetime.now().date()}.txt", extra_args=extra, env_vars={"GEMINI_API_KEY": api_key, "PYTHONUNBUFFERED": "1"})
+                extra = ["--start", start, "--end", end, "--model", selected_model]
+                output_desc = f"summaries from {start} to {end}"
+            else:
+                days = int(value) if value.isdigit() else 1
+                extra = ["--days", str(days), "--model", selected_model]
+                output_desc = f"summary for last {days} day(s)"
+        else:
+            days = int(value) if value.isdigit() else 1
+            extra = ["--days", str(days), "--model", selected_model]
+            output_desc = f"summary for last {days} day(s)"
+        
+        # Run script once with the appropriate arguments
+        self.run_script("get_youtube_news.py", output_desc, extra_args=extra, env_vars={"GEMINI_API_KEY": api_key, "PYTHONUNBUFFERED": "1"})
 
 
     def open_output_folder(self):
@@ -560,56 +603,139 @@ class AudioBriefingApp(ctk.CTk):
 
     def select_dates_to_audio(self):
         script_dir = os.path.dirname(__file__)
-        files = sorted([f for f in os.listdir(script_dir) if f.startswith("summary_") and f.endswith(".txt")])
+        
+        # Find all summary files in Week_* folders
+        files = []
+        for week_folder in sorted(glob.glob(os.path.join(script_dir, "Week_*"))):
+            if os.path.isdir(week_folder):
+                week_summaries = sorted([
+                    os.path.join(week_folder, f) 
+                    for f in os.listdir(week_folder) 
+                    if f.startswith("summary_") and f.endswith(".txt")
+                ])
+                files.extend(week_summaries)
+        
         if not files:
-            self.label_status.configure(text="No per-date summaries found.", text_color="orange")
+            self.label_status.configure(text="No per-date summaries found in Week folders.", text_color="orange")
             return
+            
         dlg = ctk.CTkToplevel(self)
         dlg.title("Select Dates to Convert")
         dlg.geometry("500x500")
         frame = ctk.CTkScrollableFrame(dlg, width=460, height=380)
         frame.pack(padx=10, pady=10, fill="both", expand=True)
         checks = []
-        for i, f in enumerate(files):
+        for i, filepath in enumerate(files):
+            filename = os.path.basename(filepath)
+            date_label = filename.replace("summary_", "").replace(".txt", "")
             var = ctk.BooleanVar(value=True)
-            ctk.CTkCheckBox(frame, text=f.replace("summary_", "").replace(".txt", ""), variable=var).grid(row=i, column=0, sticky="w", padx=8, pady=4)
-            checks.append((f, var))
-        def start_conversion():
-            selected = [os.path.join(script_dir, f) for f, var in checks if var.get()]
-            if not selected:
-                self.label_status.configure(text="No dates selected.", text_color="red")
-                return
+            ctk.CTkCheckBox(frame, text=date_label, variable=var).grid(row=i, column=0, sticky="w", padx=8, pady=4)
+            checks.append((filepath, var))
+            
         btn_frame = ctk.CTkFrame(dlg)
         btn_frame.pack(pady=10)
+        
         def do_convert():
-            selected = [f for f, v in checks if v.get()]
+            selected = [filepath for filepath, v in checks if v.get()]
             if not selected:
                 dlg.destroy()
                 return
-            # Generate unique names with dates
-            for f in selected:
-                date_str = f.replace("summary_", "").replace(".txt", "")
-                # Fast
-                self.run_script("make_audio_fast.py", f"audio_fast_{date_str}.mp3", extra_args=["--input", f])
-                # Quality with selected voice
-                voice = self.voice_var.get()
-                self.run_script("make_audio_quality.py", f"audio_quality_{date_str}.wav", extra_args=["--input", f, "--voice", voice])
+            dlg.destroy()
+            
+            # Convert each selected file in SEQUENTIAL queue (one at a time to avoid CPU overload)
+            voice = self.voice_var.get()
+            
+            def task():
+                import time
+                script_dir = os.path.dirname(__file__)
+                python_exe = sys.executable
+                log_path = os.path.join(script_dir, "gui_log.txt")
+                
+                total = len(selected)
+                for idx, filepath in enumerate(selected, 1):
+                    try:
+                        filename = os.path.basename(filepath)
+                        date_str = filename.replace("summary_", "").replace(".txt", "")
+                        week_folder = os.path.dirname(filepath)
+                        output_file = os.path.join(week_folder, f"audio_quality_{date_str}.wav")
+                        
+                        # Update GUI frequently
+                        self.after(0, lambda d=date_str, i=idx, t=total: self.label_status.configure(
+                            text=f"Converting {i}/{t}: {d}...", text_color="black"))
+                        
+                        cmd = [python_exe, os.path.join(script_dir, "make_audio_quality.py"), 
+                               "--input", filepath, "--voice", voice, "--output", output_file]
+                        
+                        # Enhanced logging for debugging
+                        with open(log_path, "a", encoding="utf-8") as log:
+                            log.write(f"\n{'='*60}\n")
+                            log.write(f"[{time.strftime('%Y-%m-%d %H:%M:%S')}] Converting {idx}/{total}: {date_str}\n")
+                            log.write(f"Input: {filepath}\n")
+                            log.write(f"Output: {output_file}\n")
+                            log.write(f"Command: {' '.join(cmd)}\n")
+                            log.flush()
+                        
+                        start_time = time.time()
+                        result = subprocess.run(cmd, capture_output=True, text=True, cwd=script_dir, timeout=3600)
+                        elapsed = time.time() - start_time
+                        
+                        # Log result details
+                        with open(log_path, "a", encoding="utf-8") as log:
+                            log.write(f"Return code: {result.returncode}\n")
+                            log.write(f"Elapsed time: {elapsed:.1f}s\n")
+                            if result.stdout:
+                                log.write(f"STDOUT:\n{result.stdout}\n")
+                            if result.stderr:
+                                log.write(f"STDERR:\n{result.stderr}\n")
+                            log.write(f"Output file exists: {os.path.exists(output_file)}\n")
+                            if os.path.exists(output_file):
+                                log.write(f"Output file size: {os.path.getsize(output_file)} bytes\n")
+                            log.flush()
+                        
+                        if result.returncode != 0:
+                            error_msg = f"Error converting {date_str}: {result.stderr[:100]}"
+                            self.after(0, lambda m=error_msg: self.label_status.configure(
+                                text=m, text_color="red"))
+                            with open(log_path, "a", encoding="utf-8") as log:
+                                log.write(f"ERROR: Conversion failed\n")
+                            continue  # Continue with next file instead of stopping
+                        
+                        # Success message
+                        with open(log_path, "a", encoding="utf-8") as log:
+                            log.write(f"SUCCESS: {date_str} converted in {elapsed:.1f}s\n")
+                    
+                    except subprocess.TimeoutExpired:
+                        # Check if file was actually created despite timeout
+                        if os.path.exists(output_file) and os.path.getsize(output_file) > 0:
+                            file_size_mb = os.path.getsize(output_file) / (1024*1024)
+                            with open(log_path, "a", encoding="utf-8") as log:
+                                log.write(f"TIMEOUT but file created: {file_size_mb:.1f}MB\n")
+                            success_msg = f"✓ {date_str} completed (took >1hr)"
+                            self.after(0, lambda m=success_msg: self.label_status.configure(
+                                text=m, text_color="green"))
+                        else:
+                            error_msg = f"✗ Timeout on {date_str} - no output file"
+                            self.after(0, lambda m=error_msg: self.label_status.configure(
+                                text=m, text_color="red"))
+                            with open(log_path, "a", encoding="utf-8") as log:
+                                log.write(f"ERROR: Timeout after 3600s, no output file\n")
+                        continue  # Move to next file
+                    except Exception as e:
+                        self.after(0, lambda err=str(e): self.label_status.configure(
+                            text=f"Error: {err}", text_color="red"))
+                        with open(log_path, "a", encoding="utf-8") as log:
+                            log.write(f"EXCEPTION: {e}\n")
+                        continue  # Move to next file
+                
+                # All conversions completed
+                self.after(0, lambda t=total: self.label_status.configure(
+                    text=f"✓ Converted {t} audio files! Check Week folders.", text_color="green"))
+            
+            threading.Thread(target=task, daemon=True).start()
+
+                
         ctk.CTkButton(btn_frame, text="Convert", command=do_convert).pack(side="left", padx=6)
         ctk.CTkButton(btn_frame, text="Cancel", fg_color="gray", command=dlg.destroy).pack(side="left", padx=6)
-
-        # Remove legacy block below to fix indentation
-        # Cleanup stray legacy code
-        # (start_conversion section removed)
-
-
-
-        # strip invalid legacy lines
-
-        # remove vestigial lines
-
-        # Removed legacy start_conversion block
-
-        
     def convert_summaries_to_audio(self, files):
         voice = self.voice_var.get()
         def task():

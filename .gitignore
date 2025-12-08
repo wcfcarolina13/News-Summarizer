@@ -1,4 +1,18 @@
 
 daily_audio_briefing/kokoro-v1.0.onnx
-
+daily_audio_briefing/voices.bin
+daily_audio_briefing/.env
+daily_audio_briefing/summary*.txt
+daily_audio_briefing/Week_*/
+daily_audio_briefing/temp_sub_*
+daily_audio_briefing/*.mp3
+daily_audio_briefing/*.wav
+daily_audio_briefing/__pycache__/
+daily_audio_briefing/*.pyc
+daily_audio_briefing/gui_log.txt
+daily_audio_briefing/cli_launch_log.txt
+daily_audio_briefing/sample_temp.wav
 .DS_Store
+.env
+*.pyc
+__pycache__/

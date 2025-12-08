@@ -50,6 +50,7 @@ def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--voice", default="af_sarah", help="Voice ID to use")
     parser.add_argument("--text", default=None, help="Text to speak (overrides summary.txt)")
+    parser.add_argument("--input", default=None, help="Input text file path (overrides summary.txt)")
     parser.add_argument("--output", default="daily_quality.wav", help="Output filename")
     args = parser.parse_args()
 
@@ -62,11 +63,13 @@ def main():
 
     text = args.text
     if not text:
-        if not os.path.exists(TEXT_FILE):
-            print(f"Error: {TEXT_FILE} not found.")
+        # Use --input if provided, otherwise fallback to summary.txt
+        input_file = args.input if args.input else TEXT_FILE
+        if not os.path.exists(input_file):
+            print(f"Error: {input_file} not found.")
             return
 
-        with open(TEXT_FILE, "r", encoding="utf-8") as f:
+        with open(input_file, "r", encoding="utf-8") as f:
             text = f.read().strip()
 
     if not text:

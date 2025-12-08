@@ -1,6 +1,7 @@
 from gtts import gTTS
 import os
 import datetime
+import argparse
 
 TEXT_FILE = "summary.txt"
 
@@ -16,18 +17,26 @@ def get_output_path(filename):
     return os.path.join(folder_name, filename)
 
 def main():
-    if not os.path.exists(TEXT_FILE):
-        print(f"Error: {TEXT_FILE} not found.")
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--input", default=None, help="Input text file path (overrides summary.txt)")
+    parser.add_argument("--output", default="daily_fast.mp3", help="Output filename")
+    args = parser.parse_args()
+    
+    # Use --input if provided, otherwise fallback to summary.txt
+    input_file = args.input if args.input else TEXT_FILE
+    
+    if not os.path.exists(input_file):
+        print(f"Error: {input_file} not found.")
         return
 
-    with open(TEXT_FILE, "r", encoding="utf-8") as f:
+    with open(input_file, "r", encoding="utf-8") as f:
         text = f.read().strip()
 
     if not text:
-        print("Warning: summary.txt is empty. No audio generated.")
+        print(f"Warning: {input_file} is empty. No audio generated.")
         return
 
-    output_file = get_output_path("daily_fast.mp3")
+    output_file = get_output_path(args.output)
 
     print("Generating audio using gTTS...")
     tts = gTTS(text=text, lang="en", tld="com")
