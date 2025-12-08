@@ -481,6 +481,68 @@ class AudioBriefingApp(ctk.CTk):
         voice = self.voice_var.get()
         self.run_script("make_audio_quality.py", "daily_quality.wav", extra_args=["--voice", voice])
         
+    def estimate_api_usage(self):
+        """Estimate API requests and cost based on current settings."""
+        # Count enabled channels
+        import json
+        sources_json = os.path.join(os.path.dirname(__file__), "sources.json")
+        enabled_channels = 0
+        
+        if os.path.exists(sources_json):
+            try:
+                data = json.load(open(sources_json))
+                enabled_channels = sum(1 for s in data.get("sources", []) if s.get("enabled", True))
+            except:
+                enabled_channels = 1
+        else:
+            channels_file = os.path.join(os.path.dirname(__file__), "channels.txt")
+            if os.path.exists(channels_file):
+                with open(channels_file, "r") as f:
+                    enabled_channels = sum(1 for line in f if line.strip())
+        
+        # Calculate days
+        days = 1
+        if self.range_var.get():
+            start = self.start_date_entry.get().strip()
+            end = self.end_date_entry.get().strip()
+            if start and end:
+                try:
+                    start_dt = datetime.datetime.strptime(start, "%Y-%m-%d")
+                    end_dt = datetime.datetime.strptime(end, "%Y-%m-%d")
+                    days = abs((end_dt - start_dt).days) + 1
+                except:
+                    days = 1
+        else:
+            value = self.entry_value.get().strip()
+            days = int(value) if value.isdigit() else 1
+        
+        # Estimate: ~3-5 videos per channel per day (use 4 as average)
+        avg_videos_per_channel_per_day = 4
+        estimated_requests = enabled_channels * days * avg_videos_per_channel_per_day
+        
+        # Get model limits and costs
+        model_name = self.model_var.get()
+        if "50/day" in model_name:  # Pro model
+            free_limit = 50
+            cost_per_1k = 1.25  # $1.25 per 1000 requests for Pro
+        else:  # Flash
+            free_limit = 1500
+            cost_per_1k = 0.075  # $0.075 per 1000 requests for Flash
+        
+        estimated_cost = 0
+        if estimated_requests > free_limit:
+            paid_requests = estimated_requests - free_limit
+            estimated_cost = (paid_requests / 1000) * cost_per_1k
+        
+        return {
+            "channels": enabled_channels,
+            "days": days,
+            "estimated_requests": estimated_requests,
+            "free_limit": free_limit,
+            "estimated_cost": estimated_cost,
+            "model": model_name
+        }
+    
     def get_youtube_news_from_channels(self):
         api_key = self.gemini_key_entry.get().strip()
         if not api_key:
@@ -520,8 +582,120 @@ class AudioBriefingApp(ctk.CTk):
             extra = ["--days", str(days), "--model", selected_model]
             output_desc = f"summary for last {days} day(s)"
         
-        # Run script once with the appropriate arguments
-        self.run_script("get_youtube_news.py", output_desc, extra_args=extra, env_vars={"GEMINI_API_KEY": api_key, "PYTHONUNBUFFERED": "1"})
+        # Estimate usage and show confirmation dialog
+        usage = self.estimate_api_usage()
+        
+        # Show confirmation dialog with usage estimate
+        self.show_usage_confirmation(usage, extra, output_desc, api_key, selected_model)
+    
+    def show_usage_confirmation(self, usage, extra_args, output_desc, api_key, selected_model):
+        """Show confirmation dialog with API usage estimate."""
+        dialog = ctk.CTkToplevel(self)
+        dialog.title("Confirm API Usage")
+        dialog.geometry("550x400")
+        dialog.transient(self)
+        dialog.lift()
+        dialog.grab_set()  # Make modal
+        
+        # Header
+        header = ctk.CTkLabel(
+            dialog, 
+            text="📊 API Usage Estimate", 
+            font=ctk.CTkFont(size=18, weight="bold")
+        )
+        header.pack(pady=(20, 10))
+        
+        # Info frame
+        info_frame = ctk.CTkFrame(dialog)
+        info_frame.pack(padx=20, pady=10, fill="both", expand=True)
+        
+        # Display estimates
+        info_text = f"""
+Configuration:
+  • Enabled channels: {usage['channels']}
+  • Days to process: {usage['days']}
+  • Model: {usage['model']}
+
+Estimated Usage:
+  • API requests: ~{usage['estimated_requests']} calls
+  • Free tier limit: {usage['free_limit']} requests/day
+  
+"""
+        
+        if usage['estimated_requests'] > usage['free_limit']:
+            paid_requests = usage['estimated_requests'] - usage['free_limit']
+            info_text += f"""⚠️ WARNING: Exceeds Free Tier
+  • Requests beyond free tier: ~{paid_requests}
+  • Estimated cost: ${usage['estimated_cost']:.2f}
+
+This will incur charges to your Google Cloud account!
+"""
+            warning_color = "orange"
+        else:
+            remaining = usage['free_limit'] - usage['estimated_requests']
+            info_text += f"""✓ Within Free Tier
+  • Remaining free requests: ~{remaining}
+  • Estimated cost: $0.00
+"""
+            warning_color = "green"
+        
+        info_label = ctk.CTkLabel(
+            info_frame, 
+            text=info_text,
+            font=ctk.CTkFont(size=12),
+            justify="left"
+        )
+        info_label.pack(padx=15, pady=15)
+        
+        # Note
+        note_text = "Note: This is an estimate based on ~4 videos per channel per day.\nActual usage may vary."
+        note_label = ctk.CTkLabel(
+            dialog,
+            text=note_text,
+            font=ctk.CTkFont(size=10),
+            text_color="gray"
+        )
+        note_label.pack(pady=(0, 10))
+        
+        # Buttons
+        button_frame = ctk.CTkFrame(dialog, fg_color="transparent")
+        button_frame.pack(pady=(0, 20))
+        
+        def proceed():
+            dialog.destroy()
+            # Run script with the provided arguments
+            self.run_script("get_youtube_news.py", output_desc, extra_args=extra_args, 
+                          env_vars={"GEMINI_API_KEY": api_key, "PYTHONUNBUFFERED": "1"})
+        
+        def cancel():
+            dialog.destroy()
+            self.label_status.configure(text="Operation cancelled", text_color="gray")
+        
+        # Different button text based on whether it will cost money
+        if usage['estimated_requests'] > usage['free_limit']:
+            proceed_text = f"Proceed (will cost ~${usage['estimated_cost']:.2f})"
+            proceed_color = "orange"
+        else:
+            proceed_text = "Proceed (Free)"
+            proceed_color = "green"
+        
+        proceed_btn = ctk.CTkButton(
+            button_frame,
+            text=proceed_text,
+            command=proceed,
+            fg_color=proceed_color,
+            width=200
+        )
+        proceed_btn.pack(side="left", padx=10)
+        
+        cancel_btn = ctk.CTkButton(
+            button_frame,
+            text="Cancel",
+            command=cancel,
+            fg_color="gray",
+            width=120
+        )
+        cancel_btn.pack(side="left", padx=10)
 
 
     def open_output_folder(self):
