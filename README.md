@@ -133,6 +133,7 @@ High-quality voices are located in the `voices/` directory. Preview any voice us
 - Summaries are optimized for audio playback (no bullet points, natural speech)
 - Generated files are organized weekly for easy management
 - Calendar buttons allow easy date selection for date range queries
+- **Audio files**: WAV files are large (~100MB+). See [Audio Compression Guide](AUDIO_COMPRESSION_GUIDE.md) for MP3 conversion options to reduce file size by ~90%
 
 ## Progress
 

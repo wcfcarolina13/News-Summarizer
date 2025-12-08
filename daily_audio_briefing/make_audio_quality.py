@@ -46,12 +46,61 @@ def get_output_path(filename):
         
     return os.path.join(folder_name, filename)
 
+def convert_to_mp3(wav_file, bitrate='128k'):
+    """Convert WAV file to MP3 using ffmpeg.
+    
+    Args:
+        wav_file: Path to WAV file
+        bitrate: MP3 bitrate (default: 128k)
+        
+    Returns:
+        str: Path to MP3 file if successful, None otherwise
+    """
+    try:
+        import subprocess
+        mp3_file = os.path.splitext(wav_file)[0] + '.mp3'
+        
+        cmd = [
+            'ffmpeg',
+            '-i', wav_file,
+            '-codec:a', 'libmp3lame',
+            '-b:a', bitrate,
+            '-y',  # Overwrite output file
+            mp3_file
+        ]
+        
+        result = subprocess.run(cmd, capture_output=True, text=True)
+        
+        if result.returncode == 0:
+            # Delete WAV file after successful conversion
+            os.remove(wav_file)
+            
+            # Show file size info
+            mp3_size = os.path.getsize(mp3_file) / (1024 * 1024)
+            print(f"Converted to MP3: {mp3_size:.1f}MB")
+            return mp3_file
+        else:
+            print(f"Warning: Could not convert to MP3. Keeping WAV file.")
+            return wav_file
+            
+    except FileNotFoundError:
+        print("Note: ffmpeg not found. Install with 'brew install ffmpeg' for automatic MP3 conversion.")
+        return wav_file
+    except Exception as e:
+        print(f"Warning: MP3 conversion failed ({e}). Keeping WAV file.")
+        return wav_file
+
+
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--voice", default="af_sarah", help="Voice ID to use")
     parser.add_argument("--text", default=None, help="Text to speak (overrides summary.txt)")
     parser.add_argument("--input", default=None, help="Input text file path (overrides summary.txt)")
     parser.add_argument("--output", default="daily_quality.wav", help="Output filename")
+    parser.add_argument("--format", choices=['wav', 'mp3'], default='mp3', 
+                        help="Output format (default: mp3)")
+    parser.add_argument("--bitrate", default='128k', 
+                        help="MP3 bitrate (default: 128k). Use 192k or 256k for higher quality")
     args = parser.parse_args()
 
     try:
@@ -107,7 +156,14 @@ def main():
             final_audio = np.concatenate(audio_chunks)
             print(f"Saving to {output_file}...")
             sf.write(output_file, final_audio, sample_rate)
-            print("Done!")
+            
+            # Convert to MP3 if requested
+            if args.format == 'mp3':
+                print("Converting to MP3...")
+                final_file = convert_to_mp3(output_file, args.bitrate)
+                print(f"Done! Saved to {final_file}")
+            else:
+                print("Done!")
         else:
             print("No audio generated.")
     except Exception as e:
