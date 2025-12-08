@@ -13,6 +13,7 @@ from podcast_manager import PodcastServer # Import your podcast manager
 from file_manager import FileManager
 from audio_generator import AudioGenerator
 from voice_manager import VoiceManager
+from convert_to_mp3 import check_ffmpeg
 
 try:
     from tkcalendar import DateEntry
@@ -185,9 +186,24 @@ class AudioBriefingApp(ctk.CTk):
         self.label_status = ctk.CTkLabel(self, text="Ready", text_color=("gray10", "#DCE4EE"), font=("Arial", 14, "bold"))
         self.label_status.grid(row=6, column=0, padx=20, pady=(0, 10)) # Row 6
 
+        # Compression Status Indicator
+        self.compression_enabled = check_ffmpeg()
+        compression_text = "✓ Compression enabled" if self.compression_enabled else "⚠ Compression disabled - see installation guide"
+        compression_color = "green" if self.compression_enabled else "orange"
+        
+        self.label_compression = ctk.CTkLabel(
+            self, 
+            text=compression_text, 
+            text_color=compression_color,
+            font=("Arial", 11),
+            cursor="hand2"  # Show clickable cursor
+        )
+        self.label_compression.grid(row=7, column=0, padx=20, pady=(0, 10))
+        self.label_compression.bind("<Button-1>", lambda e: self.show_compression_guide())
+
         # Open Folder Button
         self.btn_open = ctk.CTkButton(self, text="Open Output Folder", fg_color="transparent", border_width=2, text_color=("gray10", "#DCE4EE"), command=self.open_output_folder)
-        self.btn_open.grid(row=7, column=0, padx=20, pady=(0, 20)) # Row 7
+        self.btn_open.grid(row=8, column=0, padx=20, pady=(0, 20)) # Row 8
 
         # Load data
 
@@ -511,6 +527,38 @@ class AudioBriefingApp(ctk.CTk):
     def open_output_folder(self):
         """Open the output folder in file browser."""
         self.audio_generator.open_folder()
+
+    def show_compression_guide(self):
+        """Show the audio compression installation guide in a popup window."""
+        guide_window = ctk.CTkToplevel(self)
+        guide_window.title("Audio Compression Guide")
+        guide_window.geometry("800x600")
+        guide_window.transient(self)
+        guide_window.lift()
+        
+        # Load the markdown content
+        guide_path = os.path.join(os.path.dirname(os.path.dirname(__file__)), "AUDIO_COMPRESSION_GUIDE.md")
+        guide_content = ""
+        
+        try:
+            with open(guide_path, "r", encoding="utf-8") as f:
+                guide_content = f.read()
+        except Exception as e:
+            guide_content = f"Error loading guide: {e}\n\nPlease check AUDIO_COMPRESSION_GUIDE.md in the project root."
+        
+        # Create scrollable text widget
+        text_frame = ctk.CTkScrollableFrame(guide_window, width=760, height=520)
+        text_frame.pack(padx=20, pady=20, fill="both", expand=True)
+        
+        # Display the content
+        text_widget = ctk.CTkTextbox(text_frame, width=740, height=500, font=("Courier", 12))
+        text_widget.pack(fill="both", expand=True)
+        text_widget.insert("1.0", guide_content)
+        text_widget.configure(state="disabled")  # Make read-only
+        
+        # Close button
+        close_btn = ctk.CTkButton(guide_window, text="Close", command=guide_window.destroy)
+        close_btn.pack(pady=(0, 20))
 
     def select_dates_to_audio(self):
         script_dir = os.path.dirname(__file__)
