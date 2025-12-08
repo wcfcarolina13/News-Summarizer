@@ -381,6 +381,14 @@ class AudioBriefingApp(ctk.CTk):
                 dlg.destroy()
             ctk.CTkButton(dlg, text="Import", command=apply_import).pack(pady=10)
 
+        def select_all():
+            for entry, var_enabled in widgets:
+                var_enabled.set(True)
+        
+        def deselect_all():
+            for entry, var_enabled in widgets:
+                var_enabled.set(False)
+        
         def save_sources():
             new_sources = []
             for entry, var_enabled in widgets:
@@ -401,6 +409,8 @@ class AudioBriefingApp(ctk.CTk):
         btn_row.pack(fill="x", padx=10, pady=10)
         ctk.CTkButton(btn_row, text="Add Source", command=add_source).pack(side="left", padx=5)
         ctk.CTkButton(btn_row, text="Bulk Import", command=bulk_import).pack(side="left", padx=5)
+        ctk.CTkButton(btn_row, text="Select All", command=select_all, fg_color="green").pack(side="left", padx=5)
+        ctk.CTkButton(btn_row, text="Deselect All", command=deselect_all, fg_color="gray").pack(side="left", padx=5)
         ctk.CTkButton(btn_row, text="Save Changes", command=save_sources).pack(side="right", padx=5)
         # Keep buttons visible even when content overflows
         editor.update_idletasks()
@@ -706,9 +716,21 @@ This will incur charges to your Google Cloud account!
         """Show the audio compression installation guide in a popup window."""
         guide_window = ctk.CTkToplevel(self)
         guide_window.title("Audio Compression Guide")
-        guide_window.geometry("800x600")
+        guide_window.geometry("900x700")
         guide_window.transient(self)
         guide_window.lift()
+        
+        # Header with icon
+        header_frame = ctk.CTkFrame(guide_window, fg_color=("gray85", "gray25"))
+        header_frame.pack(fill="x", padx=0, pady=0)
+        
+        header_label = ctk.CTkLabel(
+            header_frame,
+            text="🎵 Audio Compression Installation Guide",
+            font=ctk.CTkFont(size=20, weight="bold"),
+            pady=20
+        )
+        header_label.pack()
         
         # Load the markdown content
         guide_path = os.path.join(os.path.dirname(os.path.dirname(__file__)), "AUDIO_COMPRESSION_GUIDE.md")
@@ -720,19 +742,146 @@ This will incur charges to your Google Cloud account!
         except Exception as e:
             guide_content = f"Error loading guide: {e}\n\nPlease check AUDIO_COMPRESSION_GUIDE.md in the project root."
         
-        # Create scrollable text widget
-        text_frame = ctk.CTkScrollableFrame(guide_window, width=760, height=520)
-        text_frame.pack(padx=20, pady=20, fill="both", expand=True)
+        # Create scrollable frame for content
+        scroll_frame = ctk.CTkScrollableFrame(guide_window, width=860, height=540)
+        scroll_frame.pack(padx=20, pady=(10, 10), fill="both", expand=True)
         
-        # Display the content
-        text_widget = ctk.CTkTextbox(text_frame, width=740, height=500, font=("Courier", 12))
-        text_widget.pack(fill="both", expand=True)
-        text_widget.insert("1.0", guide_content)
-        text_widget.configure(state="disabled")  # Make read-only
+        # Parse and format markdown content
+        self._render_markdown(scroll_frame, guide_content)
         
-        # Close button
-        close_btn = ctk.CTkButton(guide_window, text="Close", command=guide_window.destroy)
-        close_btn.pack(pady=(0, 20))
+        # Close button - always visible at bottom
+        button_frame = ctk.CTkFrame(guide_window, fg_color="transparent")
+        button_frame.pack(fill="x", padx=20, pady=(0, 20))
+        
+        close_btn = ctk.CTkButton(
+            button_frame,
+            text="Close",
+            command=guide_window.destroy,
+            width=200,
+            height=40,
+            font=ctk.CTkFont(size=14, weight="bold")
+        )
+        close_btn.pack(pady=10)
+    
+    def _render_markdown(self, parent, markdown_text):
+        """Render markdown text with formatted styling."""
+        lines = markdown_text.split('\n')
+        i = 0
+        
+        while i < len(lines):
+            line = lines[i]
+            
+            # Skip empty lines
+            if not line.strip():
+                i += 1
+                continue
+            
+            # H1 Headers
+            if line.startswith('# '):
+                text = line[2:].strip()
+                label = ctk.CTkLabel(
+                    parent,
+                    text=text,
+                    font=ctk.CTkFont(size=24, weight="bold"),
+                    anchor="w",
+                    justify="left"
+                )
+                label.pack(fill="x", padx=10, pady=(20, 10))
+            
+            # H2 Headers
+            elif line.startswith('## '):
+                text = line[3:].strip()
+                label = ctk.CTkLabel(
+                    parent,
+                    text=text,
+                    font=ctk.CTkFont(size=18, weight="bold"),
+                    anchor="w",
+                    justify="left",
+                    text_color=("gray10", "#3b8ed0")
+                )
+                label.pack(fill="x", padx=10, pady=(15, 8))
+            
+            # H3 Headers
+            elif line.startswith('### '):
+                text = line[4:].strip()
+                label = ctk.CTkLabel(
+                    parent,
+                    text=text,
+                    font=ctk.CTkFont(size=14, weight="bold"),
+                    anchor="w",
+                    justify="left"
+                )
+                label.pack(fill="x", padx=10, pady=(10, 5))
+            
+            # Code blocks
+            elif line.startswith('```'):
+                i += 1
+                code_lines = []
+                while i < len(lines) and not lines[i].startswith('```'):
+                    code_lines.append(lines[i])
+                    i += 1
+                
+                code_frame = ctk.CTkFrame(parent, fg_color=("gray90", "gray20"))
+                code_frame.pack(fill="x", padx=15, pady=8)
+                
+                code_text = '\n'.join(code_lines)
+                code_label = ctk.CTkLabel(
+                    code_frame,
+                    text=code_text,
+                    font=ctk.CTkFont(family="Courier", size=12),
+                    anchor="w",
+                    justify="left"
+                )
+                code_label.pack(fill="x", padx=15, pady=10)
+            
+            # Bullet points
+            elif line.startswith('- ') or line.startswith('* '):
+                text = line[2:].strip()
+                # Handle bold text
+                text = text.replace('**', '')
+                
+                bullet_frame = ctk.CTkFrame(parent, fg_color="transparent")
+                bullet_frame.pack(fill="x", padx=20, pady=2)
+                
+                bullet = ctk.CTkLabel(
+                    bullet_frame,
+                    text="•",
+                    font=ctk.CTkFont(size=14, weight="bold"),
+                    width=20
+                )
+                bullet.pack(side="left", anchor="n")
+                
+                content = ctk.CTkLabel(
+                    bullet_frame,
+                    text=text,
+                    font=ctk.CTkFont(size=13),
+                    anchor="w",
+                    justify="left",
+                    wraplength=800
+                )
+                content.pack(side="left", fill="x", expand=True)
+            
+            # Regular paragraphs
+            else:
+                # Skip lines that look like metadata or separators
+                if not line.strip() or line.strip() == '---':
+                    i += 1
+                    continue
+                
+                # Handle bold text
+                text = line.replace('**', '')
+                
+                label = ctk.CTkLabel(
+                    parent,
+                    text=text,
+                    font=ctk.CTkFont(size=13),
+                    anchor="w",
+                    justify="left",
+                    wraplength=850
+                )
+                label.pack(fill="x", padx=15, pady=3)
+            
+            i += 1
 
     def select_dates_to_audio(self):
         script_dir = os.path.dirname(__file__)
