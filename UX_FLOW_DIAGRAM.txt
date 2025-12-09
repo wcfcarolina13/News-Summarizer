@@ -1,0 +1,111 @@
+
+                   AUDIO BRIEFING - UX FLOW                          
+
+
+BEFORE (Two Modes):
+
+
+ Fetch Mode 
+
+     
+ 
+ VideosDays  
+ 
+     
+[Entry: 7] [Date Range Controls]
+     
+ Process from Channels
+
+
+AFTER (Three Modes):
+
+
+ Fetch Mode 
+
+     
+ 
+   NEW!Specific  URLs Videos Days  
+ 
+                           
+                           
+ [Date Controls: DISABLED]
+               [Placeholder: "URLs..."]                
+                                   
+               [Get YouTube News]                
+                                   
+                           
+  URL Input Dialog                                
+                               
+ Paste URLs   here                              
+ (one per   line)                               
+                               
+  [Cancel][Summarize]                             
+                           
+                                   
+              Process Individual                
+              Videos (no date                
+              filtering)                
+                
+                
+[Entry: N] [Date Range Controls]
+     
+ Process from Channels
+                     (existing behavior)
+
+
+KEY DIFFERENCES:
+
+
+   Days/ Specific                  URLs  Videos    
+            {                 echo ___BEGIN___COMMAND_OUTPUT_MARKER___;                 grep -rn "selectBestToolForBlock" /Users/roti/AI-Player-checkpoint/src/main/java/net/shasankp000/ --include="*.java" | head -20;                 EC=$?;                 echo "___BEGIN___COMMAND_DONE_MARKER___$EC";             }
+ From  From  Data source     URLs      channels    
+ Date  No  Date handling   filtering   filtered    
+ Week  summary. Output location txt    folders     
+ Count  All  Quantity        URLs       limited    
+ Direct  Dialog  User flow       opens   run       
+
+
+
+COMMAND LINE EQUIVALENT:
+
+Days Mode:
+  python get_youtube_news.py --days 7
+
+Date Range Mode:
+  python get_youtube_news.py --start 2024-12-01 --end 2024-12-07
+
+Specific URLs Mode (NEW):
+  python get_youtube_news.py --urls \
+    https://youtube.com/watch?v=VIDEO1 \
+    https://youtube.com/watch?v=VIDEO2
+
+
+BACKEND FLOW:
+
+get_youtube_news.py main():
+  
+Check args.urls?
+  
+ process_single_video() for each URL
+       
+   Extract video ID  
+       
+   Get video info (yt-dlp)  
+       
+   Get transcript  
+       
+   Summarize with Gemini  
+       
+   Return summary  
+       
+   Write to summary.txt  
+       
+   EXIT  
+  
+ Load channels from sources.json
+  
+Build date list
+  
+Process each channel + date
+  
+Write to Week_N_YYYY/summary_YYYY-MM-DD.txt

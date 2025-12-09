@@ -143,7 +143,7 @@ def summarize_text(model, text, previous_context=""):
         log(f"  -> Gemini Error: {e}")
         return f"Error summarizing: {e}"
 
-def process_channel(channel_url, model, shared_context, cutoff_date):
+def process_channel(channel_url, model, shared_context, cutoff_date, cutoff_time=None):
     log(f"--- Processing Channel: {channel_url} ---")
     limit = 20
     try:
@@ -155,7 +155,7 @@ def process_channel(channel_url, model, shared_context, cutoff_date):
         return [], shared_context
 
     new_summaries = []
-    # cutoff_date provided by caller
+    # cutoff_date provided by caller; cutoff_time for hours mode
     
     processed_count = 0
     videos_on_target_date = 0
@@ -171,14 +171,21 @@ def process_channel(channel_url, model, shared_context, cutoff_date):
         if date_info:
             pub_date = dateparser.parse(date_info)
         
-        if cutoff_date is not None:
+        if cutoff_time is not None:
+            # Hours mode: filter by timestamp
+            if not pub_date: continue
+            if pub_date < cutoff_time:
+                continue
+            videos_on_target_date += 1
+        elif cutoff_date is not None:
+            # Days mode: filter by date
             if not pub_date: continue
             # only keep videos published on the target day
             if pub_date.date() != cutoff_date.date():
                 continue
             videos_on_target_date += 1
 
-        log(f"DEBUG: Video on {cutoff_date.date()}: {title} ({date_info})")
+        log(f"DEBUG: Video matches filter: {title} ({date_info})")
         transcript = get_transcript_text(video_id)
         if not transcript:
             log("  -> SKIPPING: No transcript found.")
@@ -202,16 +209,19 @@ def process_channel(channel_url, model, shared_context, cutoff_date):
         processed_count += 1
         log("  -> Summary generated.")
     
-    if videos_on_target_date > 0:
+    if cutoff_time:
+        log(f"DEBUG: Found {videos_on_target_date} videos since {cutoff_time}, created {len(new_summaries)} summaries")
+    elif videos_on_target_date > 0:
         log(f"DEBUG: Found {videos_on_target_date} videos on {cutoff_date.date()}, created {len(new_summaries)} summaries")
     else:
-        log(f"DEBUG: No videos found on {cutoff_date.date()} from this channel")
+        log(f"DEBUG: No videos found matching filter from this channel")
 
     return new_summaries, shared_context
 
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--days", type=int, default=1, help="Process this many days starting from today")
+    parser.add_argument("--hours", type=int, help="Process videos from the last N hours")
     parser.add_argument("--start", type=str, help="Start date YYYY-MM-DD")
     parser.add_argument("--end", type=str, help="End date YYYY-MM-DD")
     parser.add_argument("--model", type=str, default="gemini-2.5-flash", 
@@ -291,7 +301,17 @@ def main():
 
     # Build date list
     dates_to_process = []
-    if args.start and args.end:
+    hours_mode = False
+    cutoff_time = None
+    
+    if args.hours:
+        # Hours mode: process all videos from the last N hours (single processing pass)
+        hours_mode = True
+        cutoff_time = datetime.datetime.now() - datetime.timedelta(hours=args.hours)
+        log(f"Hours mode: Processing videos from the last {args.hours} hour(s) (since {cutoff_time})")
+        # Use current date as the target for saving
+        dates_to_process.append(datetime.datetime.now())
+    elif args.start and args.end:
         try:
             start_dt = datetime.datetime.strptime(args.start, "%Y-%m-%d")
             end_dt = datetime.datetime.strptime(args.end, "%Y-%m-%d")
@@ -316,13 +336,19 @@ def main():
     total_summaries = 0
     log(f"DEBUG: Will save summaries in {os.path.dirname(__file__)}")
     for target_date in dates_to_process:
-        log(f"=== Processing date: {target_date.date()} ===")
+        if hours_mode:
+            log(f"=== Processing videos from last {args.hours} hour(s) ===")
+        else:
+            log(f"=== Processing date: {target_date.date()} ===")
         day_summaries = []
         for channel in channels:
-            summaries, shared_context = process_channel(channel, model, shared_context, target_date)
+            summaries, shared_context = process_channel(channel, model, shared_context, target_date, cutoff_time)
             day_summaries.extend(summaries)
         if day_summaries:
-            out_name = f"summary_{target_date.date()}.txt"
+            if hours_mode:
+                out_name = f"summary_last_{args.hours}h.txt"
+            else:
+                out_name = f"summary_{target_date.date()}.txt"
             week_folder = get_week_folder(target_date)
             save_path = os.path.join(week_folder, out_name)
             log(f"DEBUG: Attempting to write {len(day_summaries)} summaries to: {save_path}")
@@ -335,7 +361,10 @@ def main():
                 log(f"DEBUG: File write completed. Verifying...")
                 if os.path.exists(save_path):
                     file_size = os.path.getsize(save_path)
-                    log(f"SUCCESS: {len(day_summaries)} summaries for {target_date.date()} -> {save_path} ({file_size} bytes)")
+                    if hours_mode:
+                        log(f"SUCCESS: {len(day_summaries)} summaries for last {args.hours} hour(s) -> {save_path} ({file_size} bytes)")
+                    else:
+                        log(f"SUCCESS: {len(day_summaries)} summaries for {target_date.date()} -> {save_path} ({file_size} bytes)")
                 else:
                     log(f"ERROR: File was written but does not exist at {save_path}")
             except Exception as e:
@@ -344,9 +373,15 @@ def main():
                 log(f"ERROR: Traceback: {traceback.format_exc()}")
             total_summaries += len(day_summaries)
         else:
-            log(f"WARNING: No summaries found for {target_date.date()} - no videos published on this date from configured channels")
+            if hours_mode:
+                log(f"WARNING: No summaries found for last {args.hours} hour(s) - no videos published in this time range from configured channels")
+            else:
+                log(f"WARNING: No summaries found for {target_date.date()} - no videos published on this date from configured channels")
     if total_summaries == 0:
-        log("FINISHED: No summaries created for selected days.")
+        if hours_mode:
+            log(f"FINISHED: No summaries created for last {args.hours} hour(s).")
+        else:
+            log("FINISHED: No summaries created for selected days.")
 
 if __name__ == "__main__":
     main()

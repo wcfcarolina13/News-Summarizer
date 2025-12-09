@@ -129,7 +129,7 @@ class AudioBriefingApp(ctk.CTk):
         self.entry_value.insert(0, "7") # Default to 7
         
         self.mode_var = ctk.StringVar(value="Days")
-        self.combo_mode = ctk.CTkComboBox(self.frame_fetch_opts, variable=self.mode_var, values=["Days", "Videos"], width=120)
+        self.combo_mode = ctk.CTkComboBox(self.frame_fetch_opts, variable=self.mode_var, values=["Hours", "Days", "Videos"], width=120)
         self.combo_mode.pack(side="left")
         self.combo_mode.configure(command=self.on_mode_changed)
 
@@ -414,16 +414,16 @@ class AudioBriefingApp(ctk.CTk):
     def open_sources_editor(self):
         editor = ctk.CTkToplevel(self)
         editor.title("Edit News Sources")
-        editor.geometry("640x520")
-        editor.minsize(640, 520)
+        editor.geometry("750x600")
+        editor.minsize(750, 520)
         editor.transient(self)
         editor.lift()
         
         lbl = ctk.CTkLabel(editor, text="Enable/disable sources and edit URLs:", font=ctk.CTkFont(weight="bold"))
         lbl.pack(pady=10, padx=10, anchor="w")
 
-        container = ctk.CTkScrollableFrame(editor, width=600, height=380)
-        container.pack(padx=10, pady=10, fill="both", expand=True)
+        container = ctk.CTkScrollableFrame(editor, width=700, height=350)
+        container.pack(padx=10, pady=(10, 5), fill="both", expand=True)
         container.grid_columnconfigure(0, weight=1)
 
         sources_json = os.path.join(os.path.dirname(__file__), "sources.json")
@@ -507,12 +507,26 @@ class AudioBriefingApp(ctk.CTk):
             except Exception as e:
                 self.label_status.configure(text=f"Error saving sources: {e}", text_color="red")
 
-        btn_row = ctk.CTkFrame(editor)
-        btn_row.pack(fill="x", padx=10, pady=10)
-        ctk.CTkButton(btn_row, text="Add Source", command=add_source).pack(side="left", padx=5)
-        ctk.CTkButton(btn_row, text="Bulk Import", command=bulk_import).pack(side="left", padx=5)
-        ctk.CTkButton(btn_row, text="Select All", command=select_all, fg_color="green").pack(side="left", padx=5)
-        ctk.CTkButton(btn_row, text="Deselect All", command=deselect_all, fg_color="gray").pack(side="left", padx=5)
+        # Button row - always visible at bottom, stacked in two rows if needed
+        btn_row = ctk.CTkFrame(editor, fg_color="transparent")
+        btn_row.pack(fill="x", padx=10, pady=(5, 15), side="bottom")
+        
+        # First row of buttons
+        btn_row1 = ctk.CTkFrame(btn_row, fg_color="transparent")
+        btn_row1.pack(fill="x", pady=(0, 5))
+        
+        ctk.CTkButton(btn_row1, text="Add Source", command=add_source, width=110).pack(side="left", padx=5)
+        ctk.CTkButton(btn_row1, text="Bulk Import", command=bulk_import, width=110).pack(side="left", padx=5)
+        ctk.CTkButton(btn_row1, text="Select All", command=select_all, fg_color="green", width=110).pack(side="left", padx=5)
+        ctk.CTkButton(btn_row1, text="Deselect All", command=deselect_all, fg_color="gray", width=110).pack(side="left", padx=5)
+        
+        # Second row with Save button prominently placed
+        btn_row2 = ctk.CTkFrame(btn_row, fg_color="transparent")
+        btn_row2.pack(fill="x")
+        
+        ctk.CTkButton(btn_row2, text="Save Changes", command=save_sources, width=200, height=35, 
+                     font=ctk.CTkFont(size=14, weight="bold")).pack(side="right", padx=5)
+
     def _clear_selected_file(self):
         self.selected_file_paths = []
         if hasattr(self, "btn_transcribe"):
@@ -520,11 +534,6 @@ class AudioBriefingApp(ctk.CTk):
         if hasattr(self, "files_combo"):
             self.files_combo.configure(values=["No files selected"])
             self.files_combo.set("No files selected")
-
-        ctk.CTkButton(btn_row, text="Save Changes", command=save_sources).pack(side="right", padx=5)
-        # Keep buttons visible even when content overflows
-        editor.update_idletasks()
-        editor.geometry(f"{max(editor.winfo_width(), 640)}x{max(editor.winfo_height(), 520)}")
 
     def upload_text_file(self):
         """Open file dialog and upload one or more text/audio files."""
@@ -837,8 +846,10 @@ class AudioBriefingApp(ctk.CTk):
                 with open(channels_file, "r") as f:
                     enabled_channels = sum(1 for line in f if line.strip())
         
-        # Calculate days
+        # Calculate days based on mode
         days = 1
+        mode = self.mode_var.get()
+        
         if self.range_var.get():
             start = self.start_date_entry.get().strip()
             end = self.end_date_entry.get().strip()
@@ -851,11 +862,16 @@ class AudioBriefingApp(ctk.CTk):
                     days = 1
         else:
             value = self.entry_value.get().strip()
-            days = int(value) if value.isdigit() else 1
+            if mode == "Hours":
+                # Convert hours to fractional days for estimation
+                hours = int(value) if value.isdigit() else 24
+                days = hours / 24.0
+            else:
+                days = int(value) if value.isdigit() else 1
         
         # Estimate: ~3-5 videos per channel per day (use 4 as average)
         avg_videos_per_channel_per_day = 4
-        estimated_requests = enabled_channels * days * avg_videos_per_channel_per_day
+        estimated_requests = int(enabled_channels * days * avg_videos_per_channel_per_day)
         
         # Get model limits and costs
         model_name = self.model_var.get()
@@ -891,7 +907,7 @@ class AudioBriefingApp(ctk.CTk):
         
         # Specific URLs moved to dedicated button dialog
         
-        # Handle Days/Videos modes
+        # Handle Hours/Days/Videos modes
         if not value.isdigit():
             value = "7"
             
@@ -905,7 +921,7 @@ class AudioBriefingApp(ctk.CTk):
         }
         selected_model = model_mapping.get(self.model_var.get(), "gemini-2.5-flash")
         
-        # Build args based on range checkbox
+        # Build args based on range checkbox and mode
         extra = []
         output_desc = ""
         if self.range_var.get():
@@ -915,13 +931,24 @@ class AudioBriefingApp(ctk.CTk):
                 extra = ["--start", start, "--end", end, "--model", selected_model]
                 output_desc = f"summaries from {start} to {end}"
             else:
+                # Fallback to hours/days
+                if mode == "Hours":
+                    hours = int(value) if value.isdigit() else 24
+                    extra = ["--hours", str(hours), "--model", selected_model]
+                    output_desc = f"summary for last {hours} hour(s)"
+                else:
+                    days = int(value) if value.isdigit() else 1
+                    extra = ["--days", str(days), "--model", selected_model]
+                    output_desc = f"summary for last {days} day(s)"
+        else:
+            if mode == "Hours":
+                hours = int(value) if value.isdigit() else 24
+                extra = ["--hours", str(hours), "--model", selected_model]
+                output_desc = f"summary for last {hours} hour(s)"
+            else:
                 days = int(value) if value.isdigit() else 1
                 extra = ["--days", str(days), "--model", selected_model]
                 output_desc = f"summary for last {days} day(s)"
-        else:
-            days = int(value) if value.isdigit() else 1
-            extra = ["--days", str(days), "--model", selected_model]
-            output_desc = f"summary for last {days} day(s)"
         
         # Estimate usage and show confirmation dialog
         usage = self.estimate_api_usage()
@@ -1248,6 +1275,17 @@ This will incur charges to your Google Cloud account!
         btn_frame = ctk.CTkFrame(dlg)
         btn_frame.pack(pady=10)
         
+        def select_all():
+            for filepath, var in checks:
+                var.set(True)
+        
+        def deselect_all():
+            for filepath, var in checks:
+                var.set(False)
+        
+        ctk.CTkButton(btn_frame, text="Select All", command=select_all, fg_color="green", width=100).pack(side="left", padx=5)
+        ctk.CTkButton(btn_frame, text="Deselect All", command=deselect_all, fg_color="gray", width=100).pack(side="left", padx=5)
+        
         def do_convert():
             selected = [filepath for filepath, v in checks if v.get()]
             if not selected:
@@ -1274,7 +1312,7 @@ This will incur charges to your Google Cloud account!
                         
                         # Update GUI frequently
                         self.after(0, lambda d=date_str, i=idx, t=total: self.label_status.configure(
-                            text=f"Converting {i}/{t}: {d}...", text_color="black"))
+                            text=f"Converting {i}/{t}: {d}...", text_color=("gray10", "#DCE4EE")))
                         
                         cmd = [python_exe, os.path.join(script_dir, "make_audio_quality.py"), 
                                "--input", filepath, "--voice", voice, "--output", output_file]
@@ -1347,8 +1385,8 @@ This will incur charges to your Google Cloud account!
             threading.Thread(target=task, daemon=True).start()
 
                 
-        ctk.CTkButton(btn_frame, text="Convert", command=do_convert).pack(side="left", padx=6)
-        ctk.CTkButton(btn_frame, text="Cancel", fg_color="gray", command=dlg.destroy).pack(side="left", padx=6)
+        ctk.CTkButton(btn_frame, text="Convert", command=do_convert, width=100).pack(side="left", padx=5)
+        ctk.CTkButton(btn_frame, text="Cancel", fg_color="gray", command=dlg.destroy, width=100).pack(side="left", padx=5)
     def convert_summaries_to_audio(self, files):
         voice = self.voice_var.get()
         def task():
