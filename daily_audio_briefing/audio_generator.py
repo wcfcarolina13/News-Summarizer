@@ -120,13 +120,19 @@ class AudioGenerator:
                     python_exe, 
                     os.path.join(self.base_dir, "make_audio_quality.py"),
                     "--voice", voice,
-                    "--text", "This is a sample.",
-                    "--output", sample_file
+                    "--text", "This is a sample of the selected voice.",
+                    "--output", sample_file,
+                    "--format", "wav"  # Always use WAV for samples (faster, no ffmpeg needed)
                 ]
                 
                 result = subprocess.run(cmd, capture_output=True, text=True, cwd=self.base_dir)
                 
-                if result.returncode == 0 and os.path.exists(sample_file):
+                if result.returncode != 0:
+                    error_msg = result.stderr or result.stdout or "Unknown error"
+                    self.status_callback(f"Sample Error: {error_msg[:50]}", "red")
+                    return
+                
+                if os.path.exists(sample_file):
                     self.status_callback("Playing sample...", "green")
                     
                     # Play audio based on platform
@@ -138,12 +144,18 @@ class AudioGenerator:
                     else:
                         subprocess.run(["aplay", sample_file])
                     
+                    # Clean up sample file
+                    try:
+                        os.remove(sample_file)
+                    except:
+                        pass
+                    
                     self.status_callback("Ready", "gray")
                 else:
-                    self.status_callback("Sample Error", "red")
+                    self.status_callback("Sample Error: File not created", "red")
                     
             except Exception as e:
-                self.status_callback(f"Exception: {e}", "red")
+                self.status_callback(f"Sample Error: {str(e)[:50]}", "red")
         
         threading.Thread(target=task, daemon=True).start()
     

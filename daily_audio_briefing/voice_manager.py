@@ -10,22 +10,28 @@ class VoiceManager:
         """Initialize VoiceManager.
         
         Args:
-            base_dir: Base directory containing voices folder
+            base_dir: Base directory containing voices.bin
         """
         self.base_dir = base_dir or os.path.dirname(os.path.abspath(__file__))
-        self.voices_dir = os.path.join(self.base_dir, "voices")
+        self.voices_bin = os.path.join(self.base_dir, "voices.bin")
+        self.model_file = os.path.join(self.base_dir, "kokoro-v1.0.onnx")
     
     def get_available_voices(self):
-        """Get list of available voice names.
+        """Get list of available voice names from Kokoro.
         
         Returns:
             list: Sorted list of voice names
         """
         voices = []
         
-        if os.path.exists(self.voices_dir):
-            files = glob.glob(os.path.join(self.voices_dir, "*.npy"))
-            voices = [os.path.basename(f).replace(".npy", "") for f in files]
+        # Try to get voices from Kokoro if model and voices.bin exist
+        if os.path.exists(self.model_file) and os.path.exists(self.voices_bin):
+            try:
+                from kokoro_onnx import Kokoro
+                kokoro = Kokoro(self.model_file, self.voices_bin)
+                voices = kokoro.get_voices()
+            except Exception as e:
+                print(f"Warning: Could not load voices from Kokoro: {e}")
         
         # Fallback to default voices if none found
         if not voices:
