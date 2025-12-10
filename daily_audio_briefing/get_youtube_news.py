@@ -112,8 +112,21 @@ def get_transcript_text(video_id):
         except: pass
     return clean_vtt(content)
 
+def load_custom_instructions():
+    """Load custom instructions from file if it exists."""
+    try:
+        if os.path.exists("custom_instructions.txt"):
+            with open("custom_instructions.txt", "r", encoding="utf-8") as f:
+                return f.read().strip()
+    except Exception:
+        pass
+    return ""
+
 def summarize_text(model, text, previous_context=""):
     try:
+        custom_instructions = load_custom_instructions()
+        custom_section = f"\n\nUSER PROFILE & PREFERENCES:\n{custom_instructions}\n" if custom_instructions else ""
+        
         prompt = (
             "You are an expert news analyst producing content for an AUDIO BRIEFING.\n"
             "Use the following rules to summarize the provided video transcript.\n\n"
@@ -124,17 +137,27 @@ def summarize_text(model, text, previous_context=""):
             "RULES:\n"
             "1. Cross-Message Deduplication: If duplicative, output ONLY: \"Skipped [Video Title] as duplicative.\"\n"
             "2. Tutorials/Promotions: If tutorial/promo, output ONLY: \"Skipped [Video Title] as tutorial/promotion.\"\n"
-            "3. Technical Analysis: Focus on big picture/sentiment.\n"
-            "4. Format Requirements for AUDIO (Text-to-Speech):\n"
+            "3. Comprehensive Coverage: Extract ALL key insights, unique perspectives, and actionable information. "
+            "Don't skip important details, data points, analysis, or unique angles that provide value or 'alpha'.\n"
+            "4. Technical Analysis: Include both big picture/sentiment AND specific technical details, price levels, "
+            "indicators, or trading insights when mentioned.\n"
+            "5. Key Points to Capture:\n"
+            "   - All significant data, statistics, and metrics\n"
+            "   - Unique insights, contrarian views, or novel analysis\n"
+            "   - Actionable information and specific recommendations\n"
+            "   - Important context, reasoning, and causal relationships\n"
+            "   - Notable predictions, forecasts, or forward-looking statements\n"
+            "6. Format Requirements for AUDIO (Text-to-Speech):\n"
             "   - Write in a natural, conversational style suitable for reading aloud.\n"
             "   - DO NOT use symbols like #, *, -, or bullet points.\n"
-            "   - Use phrases like First, Additionally, Finally, instead of lists.\n"
+            "   - Use phrases like First, Additionally, Furthermore, Moreover, Finally, instead of lists.\n"
             "   - Write out dates (e.g., December fifth).\n"
             "   - NO timestamps.\n"
-            "   - Prioritize stats, data, events, reasoning.\n\n"
+            "   - Organize into coherent paragraphs with smooth transitions.\n"
+            f"{custom_section}\n"
             
             "TRANSCRIPT:\n"
-            f"{text[:30000]}"
+            f"{text[:50000]}"
         )
         
         response = model.generate_content(prompt)
@@ -243,11 +266,13 @@ def main():
             try:
                 # Extract video ID from full URL
                 if "watch?v=" in url:
-                    vid = url.split("watch?v=")[-1].split("&")[0]
+                    vid = url.split("watch?v=")[-1].split("&")[0].split("?")[0]
                 elif "/shorts/" in url:
                     vid = url.split("/shorts/")[-1].split("?")[0]
                 elif "/live/" in url:
                     vid = url.split("/live/")[-1].split("?")[0]
+                elif "youtu.be/" in url:
+                    vid = url.split("youtu.be/")[-1].split("?")[0]
             except Exception:
                 vid = None
             if not vid:

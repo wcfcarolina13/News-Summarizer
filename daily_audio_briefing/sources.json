@@ -99,6 +99,10 @@
     {
       "url": "https://www.youtube.com/@CoinBureauTrading/videos",
       "enabled": true
+    },
+    {
+      "url": "https://www.youtube.com/@TheJayMartinShow/videos",
+      "enabled": true
     }
   ]
 }

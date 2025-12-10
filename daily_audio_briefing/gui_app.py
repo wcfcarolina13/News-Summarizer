@@ -111,11 +111,20 @@ class AudioBriefingApp(ctk.CTk):
         )
         
         # Row 2: Get YouTube News & Edit Sources
-        self.btn_get_yt_news = ctk.CTkButton(self.frame_yt_api, text="Get YouTube News", command=self.get_youtube_news_from_channels)
-        self.btn_get_yt_news.grid(row=2, column=0, padx=10, pady=(5, 10), sticky="ew")
+        frame_row2 = ctk.CTkFrame(self.frame_yt_api, fg_color="transparent")
+        frame_row2.grid(row=2, column=0, columnspan=2, padx=10, pady=(5, 10), sticky="ew")
+        frame_row2.grid_columnconfigure(0, weight=1)
+        frame_row2.grid_columnconfigure(1, weight=1)
+        frame_row2.grid_columnconfigure(2, weight=1)
+        
+        self.btn_get_yt_news = ctk.CTkButton(frame_row2, text="Get YouTube News", command=self.get_youtube_news_from_channels)
+        self.btn_get_yt_news.grid(row=0, column=0, padx=(0, 5), sticky="ew")
 
-        self.btn_edit_sources = ctk.CTkButton(self.frame_yt_api, text="Edit Sources", fg_color="gray", command=self.open_sources_editor)
-        self.btn_edit_sources.grid(row=2, column=1, padx=10, pady=(5, 10), sticky="ew")
+        self.btn_edit_sources = ctk.CTkButton(frame_row2, text="Edit Sources", fg_color="gray", command=self.open_sources_editor)
+        self.btn_edit_sources.grid(row=0, column=1, padx=5, sticky="ew")
+        
+        self.btn_edit_instructions = ctk.CTkButton(frame_row2, text="Custom Instructions", fg_color="gray", command=self.open_instructions_editor)
+        self.btn_edit_instructions.grid(row=0, column=2, padx=(5, 0), sticky="ew")
 
         # Row 3: Fetch Options
         self.label_mode = ctk.CTkLabel(self.frame_yt_api, text="Fetch:")
@@ -527,6 +536,68 @@ class AudioBriefingApp(ctk.CTk):
         ctk.CTkButton(btn_row2, text="Save Changes", command=save_sources, width=200, height=35, 
                      font=ctk.CTkFont(size=14, weight="bold")).pack(side="right", padx=5)
 
+    def open_instructions_editor(self):
+        """Open editor for custom summarization instructions."""
+        editor = ctk.CTkToplevel(self)
+        editor.title("Edit Custom Instructions")
+        editor.geometry("800x650")
+        editor.minsize(700, 500)
+        editor.transient(self)
+        editor.lift()
+        
+        lbl = ctk.CTkLabel(
+            editor, 
+            text="Customize how summaries are generated:", 
+            font=ctk.CTkFont(weight="bold", size=14)
+        )
+        lbl.pack(pady=(15, 5), padx=15, anchor="w")
+        
+        help_text = ctk.CTkLabel(
+            editor,
+            text="Example: \"I'm a crypto trader interested in Bitcoin, DeFi, and AI. Include all price levels, technical indicators, and alpha.\"",
+            font=ctk.CTkFont(size=11),
+            text_color="gray",
+            wraplength=750
+        )
+        help_text.pack(pady=(0, 10), padx=15, anchor="w")
+        
+        # Text area for custom instructions
+        txt_frame = ctk.CTkFrame(editor)
+        txt_frame.pack(padx=15, pady=10, fill="both", expand=True)
+        
+        instructions_text = ctk.CTkTextbox(txt_frame, width=750, height=400, font=ctk.CTkFont(size=13))
+        instructions_text.pack(padx=10, pady=10, fill="both", expand=True)
+        
+        # Load existing instructions
+        instructions_file = os.path.join(os.path.dirname(__file__), "custom_instructions.txt")
+        if os.path.exists(instructions_file):
+            try:
+                with open(instructions_file, "r", encoding="utf-8") as f:
+                    instructions_text.insert("1.0", f.read())
+            except Exception as e:
+                self.label_status.configure(text=f"Error loading instructions: {e}", text_color="red")
+        
+        def save_instructions():
+            content = instructions_text.get("1.0", "end-1c")
+            try:
+                with open(instructions_file, "w", encoding="utf-8") as f:
+                    f.write(content)
+                editor.destroy()
+                self.label_status.configure(text="Custom instructions saved.", text_color="green")
+            except Exception as e:
+                self.label_status.configure(text=f"Error saving instructions: {e}", text_color="red")
+        
+        def clear_instructions():
+            instructions_text.delete("1.0", "end")
+        
+        # Button row
+        btn_frame = ctk.CTkFrame(editor, fg_color="transparent")
+        btn_frame.pack(fill="x", padx=15, pady=(5, 15), side="bottom")
+        
+        ctk.CTkButton(btn_frame, text="Clear", command=clear_instructions, fg_color="gray", width=120).pack(side="left", padx=5)
+        ctk.CTkButton(btn_frame, text="Save Instructions", command=save_instructions, width=200, height=35,
+                     font=ctk.CTkFont(size=14, weight="bold")).pack(side="right", padx=5)
+
     def _clear_selected_file(self):
         self.selected_file_paths = []
         if hasattr(self, "btn_transcribe"):
@@ -768,7 +839,7 @@ class AudioBriefingApp(ctk.CTk):
                 return
             
             # Parse URLs (one per line)
-            urls = [line.strip() for line in urls_text.split('\n') if line.strip() and 'youtube.com' in line]
+            urls = [line.strip() for line in urls_text.split('\n') if line.strip() and ('youtube.com' in line or 'youtu.be' in line)]
             
             if not urls:
                 self.label_status.configure(text="Error: No valid YouTube URLs found.", text_color="red")

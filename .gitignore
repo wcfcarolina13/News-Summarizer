@@ -16,3 +16,6 @@ daily_audio_briefing/sample_temp.wav
 .env
 *.pyc
 __pycache__/
+# Specific video lists - temporary files
+daily_audio_briefing/Specific Video Lists/
+daily_audio_briefing/Transcriptions/
