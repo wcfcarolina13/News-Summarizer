@@ -1,7 +1,7 @@
 # Render.com deployment config
 services:
   - type: web
-    name: data-csv-processor
+    name: news-summarizer-csv
     runtime: python
     rootDir: daily_audio_briefing
     buildCommand: pip install flask gunicorn beautifulsoup4 lxml requests
