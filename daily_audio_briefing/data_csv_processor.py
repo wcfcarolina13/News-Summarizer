@@ -931,6 +931,54 @@ class DataCSVProcessor:
         """
         return self.csv_manager.write_items(items, output_path, custom_columns)
 
+    def enrich_with_grid(self, items: List[ExtractedItem], api_key: str = None) -> List[ExtractedItem]:
+        """
+        Enrich extracted items with The Grid API data.
+
+        Adds to each item's custom_fields:
+        - grid_matched: TRUE/FALSE
+        - grid_entity_id: The Grid entity ID
+        - grid_entity_name: Entity name in The Grid
+        - grid_entity_type: profile/product/asset
+        - grid_category: Category from The Grid
+        - grid_tags: Tags from The Grid
+        - tgs_recommendation: Recommended TGS data to use
+
+        Args:
+            items: List of ExtractedItem objects
+            api_key: Optional Grid API key
+
+        Returns:
+            Items with Grid data added to custom_fields
+        """
+        try:
+            from grid_api import GridEntityMatcher
+        except ImportError:
+            print("  [!] Grid API module not available")
+            return items
+
+        print(f"\n[*] Enriching {len(items)} items with Grid data...")
+
+        matcher = GridEntityMatcher(api_key=api_key)
+
+        for i, item in enumerate(items):
+            match = matcher.match_entity(item.title, item.url, item.description)
+
+            # Add Grid data to custom_fields
+            grid_data = match.to_dict()
+            for key, value in grid_data.items():
+                item.custom_fields[key] = value
+
+            if match.matched:
+                print(f"  [{i+1}] ✓ {item.title[:40]}... → {match.entity_name}")
+            else:
+                print(f"  [{i+1}] ✗ {item.title[:40]}...")
+
+        matched_count = sum(1 for item in items if item.custom_fields.get("grid_matched"))
+        print(f"\n[*] Matched {matched_count}/{len(items)} items to Grid entities")
+
+        return items
+
     def deduplicate_csv(self, csv_path: str, key_column: str = 'url') -> int:
         """Remove duplicates from CSV file."""
         return self.csv_manager.deduplicate(csv_path, key_column)

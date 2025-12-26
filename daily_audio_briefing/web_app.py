@@ -837,6 +837,14 @@ HTML_TEMPLATE = '''
                     <option value="cryptosum">CryptoSum Newsletter</option>
                 </select>
 
+                <div class="toggle-row" style="margin: 12px 0;">
+                    <span>Enrich with The Grid data</span>
+                    <div class="toggle" id="gridToggle" onclick="toggleGrid()"></div>
+                </div>
+                <p style="font-size: 0.75rem; color: var(--text-muted); margin-bottom: 12px;">
+                    Match entities to The Grid's Web3 database and add TGS recommendations
+                </p>
+
                 <button class="btn btn-primary" onclick="startExtract()">
                     Extract Links
                 </button>
@@ -846,9 +854,14 @@ HTML_TEMPLATE = '''
                 <div class="card-title">
                     Extracted Links (<span id="extractCount">0</span>)
                 </div>
-                <button class="btn btn-success" onclick="downloadExtractedCSV()">
-                    Download CSV
-                </button>
+                <div class="btn-row">
+                    <button class="btn btn-success" onclick="downloadExtractedCSV()">
+                        Download CSV
+                    </button>
+                    <button class="btn btn-secondary" onclick="copyExtractedText()">
+                        Copy Text
+                    </button>
+                </div>
                 <div id="extractList" style="margin-top: 12px;"></div>
             </div>
         </div>
@@ -1146,12 +1159,20 @@ HTML_TEMPLATE = '''
             document.getElementById('extractHtmlSection').classList.toggle('hidden', mode !== 'html');
         }
 
+        let enrichGrid = false;
+
+        function toggleGrid() {
+            enrichGrid = !enrichGrid;
+            document.getElementById('gridToggle').classList.toggle('active', enrichGrid);
+        }
+
         async function startExtract() {
             const config = document.getElementById('extractConfig').value;
 
             let requestData = {
                 mode: extractMode,
-                config
+                config,
+                enrichGrid
             };
 
             if (extractMode === 'url') {
@@ -1161,7 +1182,8 @@ HTML_TEMPLATE = '''
                 requestData.sourceUrl = document.getElementById('extractSourceUrl').value;
             }
 
-            showStatus('Extracting links...', 'info', true);
+            const statusMsg = enrichGrid ? 'Extracting links and enriching with Grid data...' : 'Extracting links...';
+            showStatus(statusMsg, 'info', true);
 
             try {
                 const data = await api('/api/extract', requestData);
@@ -1171,7 +1193,12 @@ HTML_TEMPLATE = '''
                 } else {
                     extractedItems = data.items || [];
                     showExtractResults(extractedItems);
-                    showStatus('Extracted ' + extractedItems.length + ' links', 'success');
+                    const matchedCount = extractedItems.filter(i => i.grid_matched).length;
+                    let msg = 'Extracted ' + extractedItems.length + ' links';
+                    if (enrichGrid) {
+                        msg += ` (${matchedCount} matched in Grid)`;
+                    }
+                    showStatus(msg, 'success');
                 }
             } catch (e) {
                 showStatus('Error: ' + e.message, 'error');
@@ -1182,21 +1209,38 @@ HTML_TEMPLATE = '''
             document.getElementById('extractCount').textContent = items.length;
             document.getElementById('extractResults').style.display = 'block';
 
-            document.getElementById('extractList').innerHTML = items.slice(0, 50).map(item => `
-                <div class="result-item">
-                    <div class="category">${item.category || 'General'}</div>
-                    <div class="title">${item.title || 'Untitled'}</div>
-                    <div class="url"><a href="${item.url}" target="_blank">${item.url}</a></div>
-                </div>
-            `).join('');
+            document.getElementById('extractList').innerHTML = items.slice(0, 50).map(item => {
+                const gridBadge = item.grid_matched
+                    ? `<span style="background: var(--success); color: white; padding: 2px 8px; border-radius: 12px; font-size: 0.7rem; margin-left: 8px;">✓ Grid: ${item.grid_entity_name || 'Matched'}</span>`
+                    : '';
+                const tgsNote = item.tgs_recommendation
+                    ? `<div style="font-size: 0.7rem; color: var(--accent); margin-top: 4px;">TGS: ${item.tgs_recommendation}</div>`
+                    : '';
+                return `
+                    <div class="result-item">
+                        <div class="category">${item.category || 'General'}${gridBadge}</div>
+                        <div class="title">${item.title || 'Untitled'}</div>
+                        <div class="url"><a href="${item.url}" target="_blank">${item.url}</a></div>
+                        ${tgsNote}
+                    </div>
+                `;
+            }).join('');
         }
 
         function downloadExtractedCSV() {
             if (!extractedItems.length) return;
 
-            const headers = ['title', 'url', 'category', 'source_name', 'date_published'];
+            // Base headers
+            let headers = ['title', 'url', 'category', 'source_name', 'date_published'];
+
+            // Add Grid headers if any item has grid data
+            const hasGridData = extractedItems.some(i => i.grid_matched !== undefined);
+            if (hasGridData) {
+                headers = [...headers, 'grid_matched', 'grid_entity_name', 'grid_entity_type', 'grid_category', 'tgs_recommendation'];
+            }
+
             const rows = extractedItems.map(item =>
-                headers.map(h => '"' + (item[h] || '').replace(/"/g, '""') + '"').join(',')
+                headers.map(h => '"' + String(item[h] || '').replace(/"/g, '""') + '"').join(',')
             );
             const csv = [headers.join(','), ...rows].join('\\n');
 
@@ -1207,6 +1251,26 @@ HTML_TEMPLATE = '''
             a.download = 'extracted_' + new Date().toISOString().slice(0,10) + '.csv';
             a.click();
             URL.revokeObjectURL(url);
+        }
+
+        function copyExtractedText() {
+            if (!extractedItems.length) return;
+
+            const text = extractedItems.map(item => {
+                let line = `[${item.category}] ${item.title}\n${item.url}`;
+                if (item.grid_matched) {
+                    line += `\n→ Grid: ${item.grid_entity_name} (${item.grid_entity_type})`;
+                }
+                if (item.tgs_recommendation) {
+                    line += `\n→ TGS: ${item.tgs_recommendation}`;
+                }
+                return line;
+            }).join('\n\n');
+
+            navigator.clipboard.writeText(text).then(() => {
+                showStatus('Copied to clipboard!', 'success');
+                setTimeout(hideStatus, 2000);
+            });
         }
 
         // Audio page
@@ -1509,6 +1573,7 @@ def api_extract():
     data = request.json
     mode = data.get('mode', 'url')
     config_name = data.get('config', 'default')
+    enrich_grid = data.get('enrichGrid', False)
 
     # Load config
     custom_instructions = None
@@ -1535,14 +1600,24 @@ def api_extract():
                 return jsonify({'error': 'URL required'}), 400
             items = processor.process_url(url, custom_instructions)
 
+        # Optionally enrich with Grid data
+        if enrich_grid and items:
+            items = processor.enrich_with_grid(items)
+
         # Convert to JSON
-        result_items = [{
-            'title': item.title,
-            'url': item.url,
-            'category': item.category,
-            'source_name': item.source_name,
-            'date_published': item.date_published
-        } for item in items]
+        result_items = []
+        for item in items:
+            item_dict = {
+                'title': item.title,
+                'url': item.url,
+                'category': item.category,
+                'source_name': item.source_name,
+                'date_published': item.date_published
+            }
+            # Add Grid fields if enriched
+            if item.custom_fields:
+                item_dict.update(item.custom_fields)
+            result_items.append(item_dict)
 
         return jsonify({'items': result_items})
 
