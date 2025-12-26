@@ -947,23 +947,23 @@ HTML_TEMPLATE = '''
 
     <!-- Bottom Navigation -->
     <nav class="nav-bottom">
-        <a class="nav-item active" href="javascript:void(0)" onclick="navigateTo('home')">
+        <a class="nav-item active" href="javascript:void(0)" data-page="home" onclick="navigateTo('home')">
             <svg fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M3 12l2-2m0 0l7-7 7 7M5 10v10a1 1 0 001 1h3m10-11l2 2m-2-2v10a1 1 0 01-1 1h-3m-6 0a1 1 0 001-1v-4a1 1 0 011-1h2a1 1 0 011 1v4a1 1 0 001 1m-6 0h6"/></svg>
             Home
         </a>
-        <a class="nav-item" href="javascript:void(0)" onclick="navigateTo('summarize')">
+        <a class="nav-item" href="javascript:void(0)" data-page="summarize" onclick="navigateTo('summarize')">
             <svg fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15 10l4.553-2.276A1 1 0 0121 8.618v6.764a1 1 0 01-1.447.894L15 14M5 18h8a2 2 0 002-2V8a2 2 0 00-2-2H5a2 2 0 00-2 2v8a2 2 0 002 2z"/></svg>
             News
         </a>
-        <a class="nav-item" href="javascript:void(0)" onclick="navigateTo('extract')">
+        <a class="nav-item" href="javascript:void(0)" data-page="extract" onclick="navigateTo('extract')">
             <svg fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M13.828 10.172a4 4 0 00-5.656 0l-4 4a4 4 0 105.656 5.656l1.102-1.101m-.758-4.899a4 4 0 005.656 0l4-4a4 4 0 00-5.656-5.656l-1.1 1.1"/></svg>
             Extract
         </a>
-        <a class="nav-item" href="javascript:void(0)" onclick="navigateTo('audio')">
+        <a class="nav-item" href="javascript:void(0)" data-page="audio" onclick="navigateTo('audio')">
             <svg fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 11a7 7 0 01-7 7m0 0a7 7 0 01-7-7m7 7v4m0 0H8m4 0h4m-4-8a3 3 0 01-3-3V5a3 3 0 116 0v6a3 3 0 01-3 3z"/></svg>
             Audio
         </a>
-        <a class="nav-item" href="javascript:void(0)" onclick="navigateTo('settings')">
+        <a class="nav-item" href="javascript:void(0)" data-page="settings" onclick="navigateTo('settings')">
             <svg fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M10.325 4.317c.426-1.756 2.924-1.756 3.35 0a1.724 1.724 0 002.573 1.066c1.543-.94 3.31.826 2.37 2.37a1.724 1.724 0 001.065 2.572c1.756.426 1.756 2.924 0 3.35a1.724 1.724 0 00-1.066 2.573c.94 1.543-.826 3.31-2.37 2.37a1.724 1.724 0 00-2.572 1.065c-.426 1.756-2.924 1.756-3.35 0a1.724 1.724 0 00-2.573-1.066c-1.543.94-3.31-.826-2.37-2.37a1.724 1.724 0 00-1.065-2.572c-1.756-.426-1.756-2.924 0-3.35a1.724 1.724 0 001.066-2.573c-.94-1.543.826-3.31 2.37-2.37.996.608 2.296.07 2.572-1.065z"/><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15 12a3 3 0 11-6 0 3 3 0 016 0z"/></svg>
             Settings
         </a>
@@ -980,19 +980,36 @@ HTML_TEMPLATE = '''
 
         // Navigation
         function navigateTo(page) {
-            document.querySelectorAll('.page').forEach(p => p.classList.remove('active'));
-            document.getElementById('page-' + page).classList.add('active');
+            try {
+                // Hide all pages, show target page
+                var pages = document.querySelectorAll('.page');
+                for (var i = 0; i < pages.length; i++) {
+                    pages[i].classList.remove('active');
+                }
+                var targetPage = document.getElementById('page-' + page);
+                if (targetPage) {
+                    targetPage.classList.add('active');
+                }
 
-            document.querySelectorAll('.nav-item').forEach(n => n.classList.remove('active'));
-            event?.target?.closest('.nav-item')?.classList.add('active');
+                // Update nav highlighting
+                var navItems = document.querySelectorAll('.nav-item');
+                for (var j = 0; j < navItems.length; j++) {
+                    navItems[j].classList.remove('active');
+                    if (navItems[j].getAttribute('data-page') === page) {
+                        navItems[j].classList.add('active');
+                    }
+                }
 
-            currentPage = page;
+                currentPage = page;
 
-            // Load page-specific data
-            if (page === 'home') loadRecentSummaries();
-            if (page === 'settings') loadSettings();
-            if (page === 'summarize') loadSourceCount();
-            if (page === 'audio') loadDependencies();
+                // Load page-specific data
+                if (page === 'home') loadRecentSummaries();
+                if (page === 'settings') loadSettings();
+                if (page === 'summarize') loadSourceCount();
+                if (page === 'audio') loadDependencies();
+            } catch (e) {
+                console.error('Navigation error:', e);
+            }
         }
 
         // Status messages
