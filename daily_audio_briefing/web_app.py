@@ -700,6 +700,169 @@ HTML_TEMPLATE = '''
             margin-bottom: 16px;
             opacity: 0.5;
         }
+
+        /* ========================================
+           DESKTOP RESPONSIVE STYLES (768px+)
+           ======================================== */
+        @media (min-width: 768px) {
+            body {
+                padding-bottom: 0;
+                padding-left: 240px;
+            }
+
+            /* Sidebar Navigation */
+            .nav-bottom {
+                position: fixed;
+                top: 0;
+                left: 0;
+                bottom: 0;
+                right: auto;
+                width: 240px;
+                flex-direction: column;
+                justify-content: flex-start;
+                padding: 20px 0;
+                border-top: none;
+                border-right: 1px solid var(--border);
+            }
+
+            .nav-item {
+                flex-direction: row;
+                justify-content: flex-start;
+                padding: 14px 24px;
+                font-size: 0.9rem;
+                gap: 12px;
+            }
+
+            .nav-item svg {
+                margin-bottom: 0;
+            }
+
+            /* Sidebar Logo */
+            .nav-bottom::before {
+                content: 'Daily Audio Briefing';
+                display: block;
+                font-size: 1.1rem;
+                font-weight: 700;
+                padding: 0 24px 24px;
+                margin-bottom: 8px;
+                border-bottom: 1px solid var(--border);
+                color: var(--accent);
+            }
+
+            /* Header adjustments */
+            .header {
+                padding: 20px 32px;
+            }
+
+            .header h1 {
+                font-size: 1.5rem;
+            }
+
+            /* Container - wider on desktop */
+            .container {
+                padding: 24px 32px;
+                max-width: 1200px;
+            }
+
+            /* Card grid for desktop */
+            .page.active {
+                display: grid;
+                grid-template-columns: repeat(auto-fit, minmax(350px, 1fr));
+                gap: 20px;
+                align-items: start;
+            }
+
+            .page .card {
+                margin-bottom: 0;
+            }
+
+            /* Full-width cards for forms */
+            .page .card:has(form),
+            .page .card:has(input),
+            .page .card:has(select),
+            .page .card:has(textarea),
+            #page-extract .card,
+            #page-summarize .card,
+            #page-audio .card,
+            #page-settings .card {
+                grid-column: 1 / -1;
+                max-width: 800px;
+            }
+
+            /* Two-column form layout */
+            .form-row {
+                display: grid;
+                grid-template-columns: 1fr 1fr;
+                gap: 16px;
+            }
+
+            /* Larger buttons */
+            .btn {
+                padding: 14px 24px;
+                font-size: 0.95rem;
+            }
+
+            /* Larger inputs */
+            input, select, textarea {
+                padding: 14px;
+                font-size: 0.95rem;
+            }
+
+            /* Card hover effect */
+            .card {
+                transition: transform 0.2s, box-shadow 0.2s;
+            }
+
+            .card:hover {
+                transform: translateY(-2px);
+                box-shadow: 0 8px 25px rgba(0, 0, 0, 0.3);
+            }
+
+            /* Results table layout */
+            .result-item {
+                display: grid;
+                grid-template-columns: 1fr auto;
+                align-items: center;
+            }
+        }
+
+        /* ========================================
+           LARGE DESKTOP (1200px+)
+           ======================================== */
+        @media (min-width: 1200px) {
+            body {
+                padding-left: 280px;
+            }
+
+            .nav-bottom {
+                width: 280px;
+            }
+
+            .nav-item {
+                padding: 16px 28px;
+                font-size: 0.95rem;
+            }
+
+            .nav-bottom::before {
+                padding: 0 28px 28px;
+                font-size: 1.2rem;
+            }
+
+            .container {
+                padding: 32px 48px;
+                max-width: 1400px;
+            }
+
+            .card {
+                padding: 24px;
+                border-radius: 16px;
+            }
+
+            .card-title {
+                font-size: 1rem;
+                margin-bottom: 16px;
+            }
+        }
     </style>
 </head>
 <body>
@@ -723,15 +886,15 @@ HTML_TEMPLATE = '''
                     <svg fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 19V6l12-3v13M9 19c0 1.105-1.343 2-3 2s-3-.895-3-2 1.343-2 3-2 3 .895 3 2zm12-3c0 1.105-1.343 2-3 2s-3-.895-3-2 1.343-2 3-2 3 .895 3 2zM9 10l12-3"/></svg>
                     Quick Actions
                 </div>
-                <button class="btn btn-primary" onclick="navigateTo('summarize')">
+                <button class="btn btn-primary" data-nav="summarize">
                     <svg width="18" height="18" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15 10l4.553-2.276A1 1 0 0121 8.618v6.764a1 1 0 01-1.447.894L15 14M5 18h8a2 2 0 002-2V8a2 2 0 00-2-2H5a2 2 0 00-2 2v8a2 2 0 002 2z"/></svg>
                     Get YouTube News
                 </button>
-                <button class="btn btn-secondary" onclick="navigateTo('extract')">
+                <button class="btn btn-secondary" data-nav="extract">
                     <svg width="18" height="18" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z"/></svg>
                     Extract from Newsletter
                 </button>
-                <button class="btn btn-secondary" onclick="navigateTo('audio')">
+                <button class="btn btn-secondary" data-nav="audio">
                     <svg width="18" height="18" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 11a7 7 0 01-7 7m0 0a7 7 0 01-7-7m7 7v4m0 0H8m4 0h4m-4-8a3 3 0 01-3-3V5a3 3 0 116 0v6a3 3 0 01-3 3z"/></svg>
                     Generate Audio
                 </button>
@@ -801,7 +964,7 @@ HTML_TEMPLATE = '''
                 <textarea id="summaryText" style="min-height: 200px;"></textarea>
                 <div class="btn-row">
                     <button class="btn btn-secondary" onclick="saveSummary()">Save</button>
-                    <button class="btn btn-success" onclick="navigateTo('audio')">Generate Audio</button>
+                    <button class="btn btn-success" data-nav="audio">Generate Audio</button>
                 </div>
             </div>
         </div>
@@ -946,26 +1109,26 @@ HTML_TEMPLATE = '''
     </div>
 
     <!-- Bottom Navigation -->
-    <nav class="nav-bottom">
-        <a class="nav-item active" href="javascript:void(0)" data-page="home" onclick="navigateTo('home')">
+    <nav class="nav-bottom" id="mainNav">
+        <a class="nav-item active" href="#" data-page="home">
             <svg fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M3 12l2-2m0 0l7-7 7 7M5 10v10a1 1 0 001 1h3m10-11l2 2m-2-2v10a1 1 0 01-1 1h-3m-6 0a1 1 0 001-1v-4a1 1 0 011-1h2a1 1 0 011 1v4a1 1 0 001 1m-6 0h6"/></svg>
-            Home
+            <span>Home</span>
         </a>
-        <a class="nav-item" href="javascript:void(0)" data-page="summarize" onclick="navigateTo('summarize')">
+        <a class="nav-item" href="#" data-page="summarize">
             <svg fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15 10l4.553-2.276A1 1 0 0121 8.618v6.764a1 1 0 01-1.447.894L15 14M5 18h8a2 2 0 002-2V8a2 2 0 00-2-2H5a2 2 0 00-2 2v8a2 2 0 002 2z"/></svg>
-            News
+            <span>News</span>
         </a>
-        <a class="nav-item" href="javascript:void(0)" data-page="extract" onclick="navigateTo('extract')">
+        <a class="nav-item" href="#" data-page="extract">
             <svg fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M13.828 10.172a4 4 0 00-5.656 0l-4 4a4 4 0 105.656 5.656l1.102-1.101m-.758-4.899a4 4 0 005.656 0l4-4a4 4 0 00-5.656-5.656l-1.1 1.1"/></svg>
-            Extract
+            <span>Extract</span>
         </a>
-        <a class="nav-item" href="javascript:void(0)" data-page="audio" onclick="navigateTo('audio')">
+        <a class="nav-item" href="#" data-page="audio">
             <svg fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 11a7 7 0 01-7 7m0 0a7 7 0 01-7-7m7 7v4m0 0H8m4 0h4m-4-8a3 3 0 01-3-3V5a3 3 0 116 0v6a3 3 0 01-3 3z"/></svg>
-            Audio
+            <span>Audio</span>
         </a>
-        <a class="nav-item" href="javascript:void(0)" data-page="settings" onclick="navigateTo('settings')">
+        <a class="nav-item" href="#" data-page="settings">
             <svg fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M10.325 4.317c.426-1.756 2.924-1.756 3.35 0a1.724 1.724 0 002.573 1.066c1.543-.94 3.31.826 2.37 2.37a1.724 1.724 0 001.065 2.572c1.756.426 1.756 2.924 0 3.35a1.724 1.724 0 00-1.066 2.573c.94 1.543-.826 3.31-2.37 2.37a1.724 1.724 0 00-2.572 1.065c-.426 1.756-2.924 1.756-3.35 0a1.724 1.724 0 00-2.573-1.066c-1.543.94-3.31-.826-2.37-2.37a1.724 1.724 0 00-1.065-2.572c-1.756-.426-1.756-2.924 0-3.35a1.724 1.724 0 001.066-2.573c-.94-1.543.826-3.31 2.37-2.37.996.608 2.296.07 2.572-1.065z"/><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15 12a3 3 0 11-6 0 3 3 0 016 0z"/></svg>
-            Settings
+            <span>Settings</span>
         </a>
     </nav>
 
@@ -1484,9 +1647,48 @@ HTML_TEMPLATE = '''
             }
         }
 
+        // Device detection
+        function updateDeviceInfo() {
+            var subtitle = document.getElementById('headerSubtitle');
+            var width = window.innerWidth;
+            if (width >= 1200) {
+                subtitle.textContent = 'Desktop Web Interface';
+            } else if (width >= 768) {
+                subtitle.textContent = 'Tablet Web Interface';
+            } else {
+                subtitle.textContent = 'Mobile Web Interface';
+            }
+        }
+
         // Initialize
-        document.addEventListener('DOMContentLoaded', () => {
+        document.addEventListener('DOMContentLoaded', function() {
             loadRecentSummaries();
+            updateDeviceInfo();
+            window.addEventListener('resize', updateDeviceInfo);
+
+            // Set up navigation with event delegation (works better on mobile)
+            var nav = document.getElementById('mainNav');
+            if (nav) {
+                nav.addEventListener('click', function(e) {
+                    e.preventDefault();
+                    var target = e.target.closest('.nav-item');
+                    if (target) {
+                        var page = target.getAttribute('data-page');
+                        if (page) {
+                            navigateTo(page);
+                        }
+                    }
+                });
+            }
+
+            // Set up all buttons with data-nav attribute
+            var navButtons = document.querySelectorAll('[data-nav]');
+            for (var i = 0; i < navButtons.length; i++) {
+                navButtons[i].addEventListener('click', function(e) {
+                    var page = e.currentTarget.getAttribute('data-nav');
+                    if (page) navigateTo(page);
+                });
+            }
         });
     </script>
 </body>
