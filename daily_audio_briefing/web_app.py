@@ -1133,46 +1133,35 @@ HTML_TEMPLATE = '''
     </nav>
 
     <script>
-        // State
-        let currentPage = 'home';
-        let fetchMode = 'days';
-        let extractMode = 'url';
-        let extractedItems = [];
-        let sources = [];
-        let currentTaskId = null;
-
-        // Navigation - using direct style manipulation
+        // Navigation function - defined first, as simple as possible
         function navigateTo(page) {
-            // Force hide ALL pages first
-            document.getElementById('page-home').style.cssText = 'display: none !important;';
-            document.getElementById('page-summarize').style.cssText = 'display: none !important;';
-            document.getElementById('page-extract').style.cssText = 'display: none !important;';
-            document.getElementById('page-audio').style.cssText = 'display: none !important;';
-            document.getElementById('page-settings').style.cssText = 'display: none !important;';
+            alert('Navigating to: ' + page);
 
-            // Show the target page
-            var target = document.getElementById('page-' + page);
-            if (target) {
-                target.style.cssText = 'display: block !important;';
+            // Hide all pages
+            document.getElementById('page-home').style.cssText = 'display:none!important';
+            document.getElementById('page-summarize').style.cssText = 'display:none!important';
+            document.getElementById('page-extract').style.cssText = 'display:none!important';
+            document.getElementById('page-audio').style.cssText = 'display:none!important';
+            document.getElementById('page-settings').style.cssText = 'display:none!important';
+
+            // Show target page
+            document.getElementById('page-' + page).style.cssText = 'display:block!important';
+
+            // Update nav
+            var items = document.getElementsByClassName('nav-item');
+            for (var i = 0; i < items.length; i++) {
+                items[i].className = 'nav-item';
             }
-
-            // Update nav highlighting
-            var navItems = document.querySelectorAll('.nav-item');
-            for (var j = 0; j < navItems.length; j++) {
-                navItems[j].classList.remove('active');
-                if (navItems[j].getAttribute('data-page') === page) {
-                    navItems[j].classList.add('active');
-                }
-            }
-
-            currentPage = page;
-
-            // Load page-specific data
-            if (page === 'home') loadRecentSummaries();
-            if (page === 'settings') loadSettings();
-            if (page === 'summarize') loadSourceCount();
-            if (page === 'audio') loadDependencies();
+            document.querySelector('[data-page="' + page + '"]').className = 'nav-item active';
         }
+
+        // State
+        var currentPage = 'home';
+        var fetchMode = 'days';
+        var extractMode = 'url';
+        var extractedItems = [];
+        var sources = [];
+        var currentTaskId = null;
 
         // Status messages
         function showStatus(message, type = 'info', spinner = false) {
