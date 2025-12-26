@@ -1143,15 +1143,25 @@ HTML_TEMPLATE = '''
 
         // Navigation
         function navigateTo(page) {
+            console.log('navigateTo called with:', page);
             try {
                 // Hide all pages, show target page
                 var pages = document.querySelectorAll('.page');
+                console.log('Found pages:', pages.length);
                 for (var i = 0; i < pages.length; i++) {
+                    console.log('Removing active from:', pages[i].id);
                     pages[i].classList.remove('active');
+                    pages[i].style.display = 'none';
                 }
                 var targetPage = document.getElementById('page-' + page);
+                console.log('Target page element:', targetPage);
                 if (targetPage) {
                     targetPage.classList.add('active');
+                    console.log('Added active to:', targetPage.id);
+                    // Force display
+                    targetPage.style.display = 'block';
+                } else {
+                    console.error('Target page not found: page-' + page);
                 }
 
                 // Update nav highlighting
@@ -1172,6 +1182,7 @@ HTML_TEMPLATE = '''
                 if (page === 'audio') loadDependencies();
             } catch (e) {
                 console.error('Navigation error:', e);
+                alert('Nav error: ' + e.message);
             }
         }
 
