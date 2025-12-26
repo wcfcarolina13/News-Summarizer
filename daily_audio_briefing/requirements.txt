@@ -14,3 +14,5 @@ faster-whisper
 beautifulsoup4
 lxml
 requests
+flask
+gunicorn

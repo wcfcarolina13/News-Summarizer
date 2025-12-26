@@ -1,0 +1,6 @@
+# Lightweight requirements for web app deployment only
+flask
+gunicorn
+beautifulsoup4
+lxml
+requests
