@@ -864,6 +864,18 @@ HTML_TEMPLATE = '''
             }
         }
     </style>
+    <script>
+    // Navigation function - in head so it's defined before body loads
+    function navigateTo(page) {
+        alert('NAV: ' + page);
+        document.getElementById('page-home').style.display = 'none';
+        document.getElementById('page-summarize').style.display = 'none';
+        document.getElementById('page-extract').style.display = 'none';
+        document.getElementById('page-audio').style.display = 'none';
+        document.getElementById('page-settings').style.display = 'none';
+        document.getElementById('page-' + page).style.display = 'block';
+    }
+    </script>
 </head>
 <body>
     <!-- Header -->
