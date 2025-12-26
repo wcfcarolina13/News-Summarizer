@@ -291,7 +291,7 @@ class BeehiivExtractor(BaseExtractor):
 
                 # Apply custom instructions filtering if provided
                 if custom_instructions:
-                    if not self._passes_filter(cleaned_url, link_text, context, custom_instructions):
+                    if not self._passes_filter(cleaned_url, link_text, context, current_category, custom_instructions):
                         continue
 
                 item = ExtractedItem(
@@ -400,8 +400,14 @@ class BeehiivExtractor(BaseExtractor):
         # Convert slugs to readable text
         return path.replace('-', ' ').replace('_', ' ').title()[:100]
 
-    def _passes_filter(self, url: str, text: str, context: str, instructions: Dict) -> bool:
+    def _passes_filter(self, url: str, text: str, context: str, category: str, instructions: Dict) -> bool:
         """Check if item passes custom instruction filters."""
+        # Exclude categories
+        exclude_categories = instructions.get('exclude_categories', [])
+        if exclude_categories and category:
+            if any(cat.lower() in category.lower() for cat in exclude_categories):
+                return False
+
         # Include patterns (empty list = include all)
         include_patterns = instructions.get('include_patterns', [])
         if include_patterns:  # Only filter if list is non-empty
