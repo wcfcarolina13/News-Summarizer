@@ -1662,30 +1662,39 @@ HTML_TEMPLATE = '''
 
         // Initialize
         document.addEventListener('DOMContentLoaded', function() {
+            console.log('DOM loaded, setting up navigation...');
             loadRecentSummaries();
             updateDeviceInfo();
             window.addEventListener('resize', updateDeviceInfo);
 
             // Set up navigation with event delegation (works better on mobile)
             var nav = document.getElementById('mainNav');
+            console.log('Nav element found:', nav);
             if (nav) {
                 nav.addEventListener('click', function(e) {
+                    console.log('Nav clicked, target:', e.target);
                     e.preventDefault();
+                    e.stopPropagation();
                     var target = e.target.closest('.nav-item');
+                    console.log('Closest nav-item:', target);
                     if (target) {
                         var page = target.getAttribute('data-page');
+                        console.log('Navigating to:', page);
                         if (page) {
                             navigateTo(page);
                         }
                     }
+                    return false;
                 });
             }
 
             // Set up all buttons with data-nav attribute
             var navButtons = document.querySelectorAll('[data-nav]');
+            console.log('Found nav buttons:', navButtons.length);
             for (var i = 0; i < navButtons.length; i++) {
                 navButtons[i].addEventListener('click', function(e) {
                     var page = e.currentTarget.getAttribute('data-nav');
+                    console.log('Button nav to:', page);
                     if (page) navigateTo(page);
                 });
             }
