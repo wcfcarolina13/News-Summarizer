@@ -700,6 +700,169 @@ HTML_TEMPLATE = '''
             margin-bottom: 16px;
             opacity: 0.5;
         }
+
+        /* ========================================
+           DESKTOP RESPONSIVE STYLES (768px+)
+           ======================================== */
+        @media (min-width: 768px) {
+            body {
+                padding-bottom: 0;
+                padding-left: 240px;
+            }
+
+            /* Sidebar Navigation */
+            .nav-bottom {
+                position: fixed;
+                top: 0;
+                left: 0;
+                bottom: 0;
+                right: auto;
+                width: 240px;
+                flex-direction: column;
+                justify-content: flex-start;
+                padding: 20px 0;
+                border-top: none;
+                border-right: 1px solid var(--border);
+            }
+
+            .nav-item {
+                flex-direction: row;
+                justify-content: flex-start;
+                padding: 14px 24px;
+                font-size: 0.9rem;
+                gap: 12px;
+            }
+
+            .nav-item svg {
+                margin-bottom: 0;
+            }
+
+            /* Sidebar Logo */
+            .nav-bottom::before {
+                content: 'Daily Audio Briefing';
+                display: block;
+                font-size: 1.1rem;
+                font-weight: 700;
+                padding: 0 24px 24px;
+                margin-bottom: 8px;
+                border-bottom: 1px solid var(--border);
+                color: var(--accent);
+            }
+
+            /* Header adjustments */
+            .header {
+                padding: 20px 32px;
+            }
+
+            .header h1 {
+                font-size: 1.5rem;
+            }
+
+            /* Container - wider on desktop */
+            .container {
+                padding: 24px 32px;
+                max-width: 1200px;
+            }
+
+            /* Card grid for desktop */
+            .page.active {
+                display: grid;
+                grid-template-columns: repeat(auto-fit, minmax(350px, 1fr));
+                gap: 20px;
+                align-items: start;
+            }
+
+            .page .card {
+                margin-bottom: 0;
+            }
+
+            /* Full-width cards for forms */
+            .page .card:has(form),
+            .page .card:has(input),
+            .page .card:has(select),
+            .page .card:has(textarea),
+            #page-extract .card,
+            #page-summarize .card,
+            #page-audio .card,
+            #page-settings .card {
+                grid-column: 1 / -1;
+                max-width: 800px;
+            }
+
+            /* Two-column form layout */
+            .form-row {
+                display: grid;
+                grid-template-columns: 1fr 1fr;
+                gap: 16px;
+            }
+
+            /* Larger buttons */
+            .btn {
+                padding: 14px 24px;
+                font-size: 0.95rem;
+            }
+
+            /* Larger inputs */
+            input, select, textarea {
+                padding: 14px;
+                font-size: 0.95rem;
+            }
+
+            /* Card hover effect */
+            .card {
+                transition: transform 0.2s, box-shadow 0.2s;
+            }
+
+            .card:hover {
+                transform: translateY(-2px);
+                box-shadow: 0 8px 25px rgba(0, 0, 0, 0.3);
+            }
+
+            /* Results table layout */
+            .result-item {
+                display: grid;
+                grid-template-columns: 1fr auto;
+                align-items: center;
+            }
+        }
+
+        /* ========================================
+           LARGE DESKTOP (1200px+)
+           ======================================== */
+        @media (min-width: 1200px) {
+            body {
+                padding-left: 280px;
+            }
+
+            .nav-bottom {
+                width: 280px;
+            }
+
+            .nav-item {
+                padding: 16px 28px;
+                font-size: 0.95rem;
+            }
+
+            .nav-bottom::before {
+                padding: 0 28px 28px;
+                font-size: 1.2rem;
+            }
+
+            .container {
+                padding: 32px 48px;
+                max-width: 1400px;
+            }
+
+            .card {
+                padding: 24px;
+                border-radius: 16px;
+            }
+
+            .card-title {
+                font-size: 1rem;
+                margin-bottom: 16px;
+            }
+        }
     </style>
 </head>
 <body>
@@ -1484,9 +1647,24 @@ HTML_TEMPLATE = '''
             }
         }
 
+        // Device detection
+        function updateDeviceInfo() {
+            var subtitle = document.getElementById('headerSubtitle');
+            var width = window.innerWidth;
+            if (width >= 1200) {
+                subtitle.textContent = 'Desktop Web Interface';
+            } else if (width >= 768) {
+                subtitle.textContent = 'Tablet Web Interface';
+            } else {
+                subtitle.textContent = 'Mobile Web Interface';
+            }
+        }
+
         // Initialize
-        document.addEventListener('DOMContentLoaded', () => {
+        document.addEventListener('DOMContentLoaded', function() {
             loadRecentSummaries();
+            updateDeviceInfo();
+            window.addEventListener('resize', updateDeviceInfo);
         });
     </script>
 </body>
