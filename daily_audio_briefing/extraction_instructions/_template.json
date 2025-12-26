@@ -1,0 +1,39 @@
+{
+  "name": "Source Name",
+  "description": "Description of this extraction config",
+
+  "include_patterns": [
+    "Only extract items matching these patterns (leave empty to include all)"
+  ],
+
+  "exclude_patterns": [
+    "Skip items matching these patterns",
+    "sponsor",
+    "advertisement"
+  ],
+
+  "allowed_domains": [
+    "Leave empty to allow all domains",
+    "Or specify domains to whitelist: example.com"
+  ],
+
+  "blocked_domains": [
+    "twitter.com",
+    "facebook.com",
+    "linkedin.com"
+  ],
+
+  "csv_columns": [
+    "title",
+    "url",
+    "category",
+    "description",
+    "source_name",
+    "source_url",
+    "author",
+    "date_published",
+    "date_extracted"
+  ],
+
+  "notes": "Add any notes about this extraction config here"
+}

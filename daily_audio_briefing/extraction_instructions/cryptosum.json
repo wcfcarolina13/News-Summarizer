@@ -1,0 +1,38 @@
+{
+  "name": "CryptoSum Newsletter",
+  "description": "Custom extraction rules for CryptoSum beehiiv newsletter",
+
+  "include_patterns": [],
+  "exclude_patterns": [
+    "subscribe",
+    "unsubscribe",
+    "share this",
+    "refer a friend",
+    "advertisement",
+    "sponsored"
+  ],
+
+  "allowed_domains": [],
+
+  "blocked_domains": [
+    "twitter.com",
+    "x.com",
+    "facebook.com",
+    "linkedin.com",
+    "instagram.com",
+    "beehiiv.com",
+    "tiktok.com"
+  ],
+
+  "csv_columns": [
+    "title",
+    "url",
+    "category",
+    "description",
+    "source_name",
+    "date_published",
+    "date_extracted"
+  ],
+
+  "notes": "This config extracts news article links from CryptoSum, filtering out social media and internal newsletter links."
+}

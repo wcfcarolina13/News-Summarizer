@@ -11,3 +11,6 @@ dateparser
 qrcode
 Pillow
 faster-whisper
+beautifulsoup4
+lxml
+requests
