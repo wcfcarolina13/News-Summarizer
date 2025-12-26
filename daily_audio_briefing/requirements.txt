@@ -1,18 +1,6 @@
-gTTS
-kokoro-onnx
-soundfile
-numpy
-customtkinter
-scrapetube
-youtube-transcript-api
-google-generativeai
-python-dotenv
-dateparser
-qrcode
-Pillow
-faster-whisper
+# Lightweight requirements for web app deployment
+flask
+gunicorn
 beautifulsoup4
 lxml
 requests
-flask
-gunicorn

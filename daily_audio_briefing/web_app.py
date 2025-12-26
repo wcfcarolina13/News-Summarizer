@@ -1141,49 +1141,37 @@ HTML_TEMPLATE = '''
         let sources = [];
         let currentTaskId = null;
 
-        // Navigation
+        // Navigation - using direct style manipulation
         function navigateTo(page) {
-            console.log('navigateTo called with:', page);
-            try {
-                // Hide all pages, show target page
-                var pages = document.querySelectorAll('.page');
-                console.log('Found pages:', pages.length);
-                for (var i = 0; i < pages.length; i++) {
-                    console.log('Removing active from:', pages[i].id);
-                    pages[i].classList.remove('active');
-                    pages[i].style.display = 'none';
-                }
-                var targetPage = document.getElementById('page-' + page);
-                console.log('Target page element:', targetPage);
-                if (targetPage) {
-                    targetPage.classList.add('active');
-                    console.log('Added active to:', targetPage.id);
-                    // Force display
-                    targetPage.style.display = 'block';
-                } else {
-                    console.error('Target page not found: page-' + page);
-                }
+            // Force hide ALL pages first
+            document.getElementById('page-home').style.cssText = 'display: none !important;';
+            document.getElementById('page-summarize').style.cssText = 'display: none !important;';
+            document.getElementById('page-extract').style.cssText = 'display: none !important;';
+            document.getElementById('page-audio').style.cssText = 'display: none !important;';
+            document.getElementById('page-settings').style.cssText = 'display: none !important;';
 
-                // Update nav highlighting
-                var navItems = document.querySelectorAll('.nav-item');
-                for (var j = 0; j < navItems.length; j++) {
-                    navItems[j].classList.remove('active');
-                    if (navItems[j].getAttribute('data-page') === page) {
-                        navItems[j].classList.add('active');
-                    }
-                }
-
-                currentPage = page;
-
-                // Load page-specific data
-                if (page === 'home') loadRecentSummaries();
-                if (page === 'settings') loadSettings();
-                if (page === 'summarize') loadSourceCount();
-                if (page === 'audio') loadDependencies();
-            } catch (e) {
-                console.error('Navigation error:', e);
-                alert('Nav error: ' + e.message);
+            // Show the target page
+            var target = document.getElementById('page-' + page);
+            if (target) {
+                target.style.cssText = 'display: block !important;';
             }
+
+            // Update nav highlighting
+            var navItems = document.querySelectorAll('.nav-item');
+            for (var j = 0; j < navItems.length; j++) {
+                navItems[j].classList.remove('active');
+                if (navItems[j].getAttribute('data-page') === page) {
+                    navItems[j].classList.add('active');
+                }
+            }
+
+            currentPage = page;
+
+            // Load page-specific data
+            if (page === 'home') loadRecentSummaries();
+            if (page === 'settings') loadSettings();
+            if (page === 'summarize') loadSourceCount();
+            if (page === 'audio') loadDependencies();
         }
 
         // Status messages
