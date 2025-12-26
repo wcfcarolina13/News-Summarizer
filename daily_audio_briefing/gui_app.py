@@ -33,8 +33,8 @@ except Exception:
 # Google Drive sign-in and sync removed
 # from drive_manager import DriveManager
 
-# Configuration
-ctk.set_appearance_mode("System")
+# Configuration - Dark theme to match web interface
+ctk.set_appearance_mode("Dark")
 ctk.set_default_color_theme("blue")
 
 class AudioBriefingApp(ctk.CTk):
