@@ -1,0 +1,11 @@
+# Render.com deployment config
+services:
+  - type: web
+    name: data-csv-processor
+    runtime: python
+    buildCommand: pip install -r requirements-web.txt
+    startCommand: gunicorn web_app:app
+    healthCheckPath: /health
+    envVars:
+      - key: PYTHON_VERSION
+        value: 3.11

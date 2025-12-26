@@ -1,0 +1,12 @@
+run = "python web_app.py"
+entrypoint = "web_app.py"
+
+[env]
+PORT = "5000"
+
+[nix]
+channel = "stable-23_11"
+
+[deployment]
+run = ["sh", "-c", "gunicorn web_app:app --bind 0.0.0.0:$PORT"]
+deploymentTarget = "cloudrun"
