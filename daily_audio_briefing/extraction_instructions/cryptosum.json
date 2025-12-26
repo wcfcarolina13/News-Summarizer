@@ -1,15 +1,47 @@
 {
   "name": "CryptoSum Newsletter",
-  "description": "Custom extraction rules for CryptoSum beehiiv newsletter",
+  "description": "Custom extraction rules for CryptoSum beehiiv newsletter - focused on market/trading news",
 
   "include_patterns": [],
+
   "exclude_patterns": [
     "subscribe",
     "unsubscribe",
     "share this",
     "refer a friend",
     "advertisement",
-    "sponsored"
+    "sponsored",
+    "prediction market",
+    "polymarket",
+    "kalshi",
+    "predictit",
+    "regulation",
+    "regulatory",
+    "regulator",
+    "SEC ",
+    "CFTC",
+    "DOJ",
+    "indictment",
+    "sentenced",
+    "hack",
+    "hacked",
+    "exploit",
+    "exploited",
+    "breach",
+    "stolen",
+    "theft",
+    "scam",
+    "fraud",
+    "arrest",
+    "charged",
+    "lawsuit"
+  ],
+
+  "exclude_categories": [
+    "Regulatory",
+    "Legal",
+    "Enforcement",
+    "Legal & Enforcement"
   ],
 
   "allowed_domains": [],
@@ -21,18 +53,18 @@
     "linkedin.com",
     "instagram.com",
     "beehiiv.com",
-    "tiktok.com"
+    "tiktok.com",
+    "polymarket.com",
+    "kalshi.com"
   ],
 
   "csv_columns": [
     "title",
     "url",
     "category",
-    "description",
     "source_name",
-    "date_published",
-    "date_extracted"
+    "date_published"
   ],
 
-  "notes": "This config extracts news article links from CryptoSum, filtering out social media and internal newsletter links."
+  "notes": "Extracts market/trading news from CryptoSum. Filters out: prediction markets (ads), regulatory news, hacks/exploits, legal/enforcement news."
 }
