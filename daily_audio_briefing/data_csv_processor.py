@@ -1222,9 +1222,9 @@ class DataCSVProcessor:
                             # Safely unpack term counts
                             sorted_terms = sorted(term_counts.items(), key=lambda x: x[1] if len(x) > 1 else 0, reverse=True)
                             comment_parts = []
-                            for item in sorted_terms:
-                                if isinstance(item, tuple) and len(item) >= 2:
-                                    t, c = item[0], item[1]
+                            for term_tuple in sorted_terms:
+                                if isinstance(term_tuple, tuple) and len(term_tuple) >= 2:
+                                    t, c = term_tuple[0], term_tuple[1]
                                     comment_parts.append(f"{t} ({c}x)")
                             if comment_parts:
                                 comments.append(f"Mentions: {', '.join(comment_parts)}")
