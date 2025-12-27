@@ -158,11 +158,9 @@ class GridMultiMatch:
         if entities:
             result["grid_entity_id"] = entities[0].grid_id
             result["grid_entity_name"] = entities[0].name
-            result["grid_entity_type"] = entities[0].entity_type_name
         else:
             result["grid_entity_id"] = ""
             result["grid_entity_name"] = ""
-            result["grid_entity_type"] = ""
 
         # Primary match confidence
         result["grid_confidence"] = round(self.primary.confidence, 2) if self.primary else 0
@@ -397,19 +395,55 @@ class GridEntityMatcher:
         text_lower = text.lower()
         first_100_chars = text[:100]  # Used by multiple patterns
 
-        # Only match if the entity appears to be the SUBJECT (at start of title,
-        # or is the primary focus based on context)
+        # Stop words - common terms that shouldn't be matched to entities
+        stop_words = {
+            # Common words
+            'The', 'This', 'That', 'With', 'From', 'Into', 'Over', 'After',
+            'Before', 'About', 'Through', 'During', 'Between', 'Under',
+            'Again', 'Further', 'Then', 'Once', 'Here', 'There', 'When',
+            'Where', 'Why', 'How', 'All', 'Each', 'Few', 'More', 'Most',
+            'Other', 'Some', 'Such', 'Only', 'Own', 'Same', 'Than', 'Too',
+            'Very', 'Just', 'Should', 'Now', 'New', 'CEO', 'CTO', 'CFO',
+            # Business terms (generic - not specific entities)
+            'Million', 'Billion', 'Market', 'Trading', 'Price', 'Token',
+            'Crypto', 'Blockchain', 'Network', 'Protocol', 'Fund', 'Report',
+            'Investment', 'Venture', 'Capital', 'Exchange', 'Platform',
+            'Rally', 'Surge', 'Drop', 'Fall', 'Rise', 'Gain', 'Loss',
+            'Firm', 'Startup', 'Company', 'Group', 'Digital', 'Global',
+            # Common website/CTA words that cause false positives
+            'Sign', 'Spot', 'Read', 'Join', 'Click', 'Share', 'Follow',
+            'Subscribe', 'Contact', 'Learn', 'Watch', 'Start', 'Get',
+            'Free', 'Try', 'Send', 'Submit', 'Enter', 'Create', 'Open',
+            'Save', 'Download', 'Access', 'View', 'Check', 'Find',
+            # Acronyms that cause false positives (matched to wrong entities)
+            'DeFi', 'Defi', 'DEFI', 'NFT', 'Nft', 'DAO', 'Dao',
+            'DEX', 'Dex', 'CEX', 'Cex', 'AMM', 'Amm', 'TVL', 'Tvl',
+            'APY', 'Apy', 'APR', 'Apr', 'ATH', 'Ath', 'FUD', 'Fud',
+            # Days/Months
+            'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday', 'Sunday',
+            'January', 'February', 'March', 'April', 'May', 'June', 'July',
+            'August', 'September', 'October', 'November', 'December',
+            # Political/news figures - prevent matching to meme tokens
+            'Trump', 'Biden', 'Musk', 'Elon', 'Obama', 'Powell', 'Gensler',
+            'Yellen', 'Congress', 'Senate', 'Federal', 'Reserve', 'Government',
+            # Common news prefixes/sources
+            'Daily', 'Breaking', 'Update', 'Alert', 'News', 'Report',
+            # Locations
+            'Salvador', 'America', 'Latin',
+        }
+        stop_words_lower = {w.lower() for w in stop_words}
 
-        # Priority 1: Look for capitalized multi-word names (company/protocol names)
-        # These are usually the actual subject
-        multi_word_pattern = r'\b([A-Z][a-z]+(?:\s+[A-Z][a-z]+)+)\b'
-        multi_words = re.findall(multi_word_pattern, text)
-
+        # Stop phrases for multi-word matches
         stop_phrases = {
             'New York', 'United States', 'Wall Street', 'White House',
             'Hong Kong', 'San Francisco', 'Los Angeles', 'Abu Dhabi',
             'South Korea', 'North America', 'United Kingdom'
         }
+
+        # Priority 1: Look for capitalized multi-word names (company/protocol names)
+        # These are usually the actual subject
+        multi_word_pattern = r'\b([A-Z][a-z]+(?:\s+[A-Z][a-z]+)+)\b'
+        multi_words = re.findall(multi_word_pattern, text)
         for phrase in multi_words:
             if phrase not in stop_phrases:
                 keywords.append(phrase)
@@ -419,7 +453,7 @@ class GridEntityMatcher:
         mixed_case_pattern = r'\b([A-Za-z]*[A-Z][a-z]+[A-Z][a-zA-Z]*|[a-z]+[A-Z][a-zA-Z]+)\b'
         mixed_names = re.findall(mixed_case_pattern, first_100_chars)
         for name in mixed_names:
-            if len(name) >= 3 and name.lower() not in [k.lower() for k in keywords]:
+            if len(name) >= 3 and name.lower() not in stop_words_lower and name.lower() not in [k.lower() for k in keywords]:
                 keywords.append(name)
 
         # Priority 4: Look for ticker symbols in context like "$BTC" or "(ETH)"
@@ -453,35 +487,8 @@ class GridEntityMatcher:
             'USDT': 'Tether', 'USDC': 'USDC',
         }
 
-        stop_words = {
-            # Common words
-            'The', 'This', 'That', 'With', 'From', 'Into', 'Over', 'After',
-            'Before', 'About', 'Through', 'During', 'Between', 'Under',
-            'Again', 'Further', 'Then', 'Once', 'Here', 'There', 'When',
-            'Where', 'Why', 'How', 'All', 'Each', 'Few', 'More', 'Most',
-            'Other', 'Some', 'Such', 'Only', 'Own', 'Same', 'Than', 'Too',
-            'Very', 'Just', 'Should', 'Now', 'New', 'CEO', 'CTO', 'CFO',
-            # Business terms (generic - not specific entities)
-            'Million', 'Billion', 'Market', 'Trading', 'Price', 'Token',
-            'Crypto', 'Blockchain', 'Network', 'Protocol', 'Fund', 'Report',
-            'Investment', 'Venture', 'Capital', 'Exchange', 'Platform',
-            'Rally', 'Surge', 'Drop', 'Fall', 'Rise', 'Gain', 'Loss',
-            'Firm', 'Startup', 'Company', 'Group', 'Digital', 'Global',
-            # Days/Months
-            'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday', 'Sunday',
-            'January', 'February', 'March', 'April', 'May', 'June', 'July',
-            'August', 'September', 'October', 'November', 'December',
-            # Political/news figures - prevent matching to meme tokens
-            'Trump', 'Biden', 'Musk', 'Elon', 'Obama', 'Powell', 'Gensler',
-            'Yellen', 'Congress', 'Senate', 'Federal', 'Reserve', 'Government',
-            # Common news prefixes/sources
-            'Daily', 'Breaking', 'Update', 'Alert', 'News', 'Report',
-            # Locations
-            'Salvador', 'America', 'Latin',
-        }
-
         for word in leading_caps:
-            if word not in stop_words and word.lower() not in [k.lower() for k in keywords]:
+            if word.lower() not in stop_words_lower and word.lower() not in [k.lower() for k in keywords]:
                 keywords.append(word)
 
         # Add mapped ticker names

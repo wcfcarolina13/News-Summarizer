@@ -63,9 +63,13 @@
 
   "exclude_categories": [
     "Regulatory",
+    "Regulation",
     "Legal",
     "Enforcement",
     "Legal & Enforcement",
+    "Cybersecurity",
+    "Security",
+    "Hacks",
     "Extra Reads",
     "Extra Read"
   ],

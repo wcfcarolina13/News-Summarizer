@@ -1131,7 +1131,12 @@ class DataCSVProcessor:
             search_terms = ['Solana', 'Starknet', 'Tether', 'USDT', 'SOL']
 
         # Categories to exclude from research
-        exclude_categories = ['extra reads', 'extra read']
+        exclude_categories = [
+            'extra reads', 'extra read',
+            'regulatory', 'regulation',
+            'cybersecurity', 'security', 'hacks',
+            'legal', 'enforcement'
+        ]
 
         # Normalize categories for comparison
         categories_lower = [c.lower() for c in categories]
