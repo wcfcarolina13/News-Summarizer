@@ -34,7 +34,11 @@
     "fraud",
     "arrest",
     "charged",
-    "lawsuit"
+    "lawsuit",
+    "fundable",
+    "gannon's",
+    "litquidity",
+    "book a call"
   ],
 
   "exclude_categories": [
@@ -59,12 +63,11 @@
   ],
 
   "csv_columns": [
-    "title",
     "url",
-    "category",
+    "description",
     "source_name",
     "date_published"
   ],
 
-  "notes": "Extracts market/trading news from CryptoSum. Filters out: prediction markets (ads), regulatory news, hacks/exploits, legal/enforcement news."
+  "notes": "Extracts market/trading news from CryptoSum. Filters out: prediction markets (ads), regulatory news, hacks/exploits, legal/enforcement news, and ad partners (Fundable, Litquidity, etc.)."
 }
