@@ -73,15 +73,10 @@ class GridMatch:
     confidence: float = 0.0
 
     def to_dict(self) -> Dict[str, Any]:
+        """Return simplified Grid match data - just matched status and entity name."""
         return {
             "grid_matched": self.matched,
-            "grid_entity_id": self.entity_id,
-            "grid_entity_name": self.entity_name,
-            "grid_entity_type": self.entity_type,
-            "grid_category": self.category,
-            "grid_tags": ", ".join(self.tags) if self.tags else "",
-            "grid_website": self.website,
-            "tgs_recommendation": self._generate_tgs_recommendation()
+            "grid_entity_name": self.entity_name if self.matched else "",
         }
 
     def _generate_tgs_recommendation(self) -> str:
@@ -110,37 +105,27 @@ class GridMatch:
 # GRAPHQL QUERIES
 # =============================================================================
 
-# Query to search profiles by name
+# Query to search profiles by name (using profileInfos)
 SEARCH_PROFILES_QUERY = """
 query SearchProfiles($search: String!) {
-  profiles(
+  profileInfos(
     where: {
       _or: [
-        { name: { _ilike: $search } },
-        { shortDescription: { _ilike: $search } }
+        { name: { _contains: $search } },
+        { descriptionShort: { _contains: $search } }
       ]
     }
-    limit: 5
+    limit: 10
   ) {
     id
     name
-    slug
-    shortDescription
+    descriptionShort
     profileType {
       name
     }
-    profileTags {
-      tag {
-        name
-      }
+    profileSector {
+      name
     }
-    urls {
-      url
-      urlType {
-        name
-      }
-    }
-    logo
   }
 }
 """
@@ -151,22 +136,17 @@ query SearchProducts($search: String!) {
   products(
     where: {
       _or: [
-        { name: { _ilike: $search } },
-        { shortDescription: { _ilike: $search } }
+        { name: { _contains: $search } },
+        { description: { _contains: $search } }
       ]
     }
-    limit: 5
+    limit: 10
   ) {
     id
     name
-    shortDescription
+    description
     productType {
       name
-    }
-    productDeployedOnProducts {
-      deployedOnProduct {
-        name
-      }
     }
   }
 }
@@ -178,21 +158,16 @@ query SearchAssets($search: String!) {
   assets(
     where: {
       _or: [
-        { name: { _ilike: $search } },
-        { ticker: { _ilike: $search } }
+        { name: { _contains: $search } },
+        { ticker: { _contains: $search } }
       ]
     }
-    limit: 5
+    limit: 10
   ) {
     id
     name
     ticker
     icon
-    assetDeployedOnProductAsChain {
-      product {
-        name
-      }
-    }
   }
 }
 """
@@ -265,21 +240,17 @@ class GridAPIClient:
 
     def search_profiles(self, search_term: str) -> List[Dict]:
         """Search for profiles matching the term."""
-        # Use wildcard search
-        search = f"%{search_term}%"
-        data = self._execute_query(SEARCH_PROFILES_QUERY, {"search": search})
-        return data.get("profiles", [])
+        data = self._execute_query(SEARCH_PROFILES_QUERY, {"search": search_term})
+        return data.get("profileInfos", [])
 
     def search_products(self, search_term: str) -> List[Dict]:
         """Search for products matching the term."""
-        search = f"%{search_term}%"
-        data = self._execute_query(SEARCH_PRODUCTS_QUERY, {"search": search})
+        data = self._execute_query(SEARCH_PRODUCTS_QUERY, {"search": search_term})
         return data.get("products", [])
 
     def search_assets(self, search_term: str) -> List[Dict]:
         """Search for assets (tokens) matching the term."""
-        search = f"%{search_term}%"
-        data = self._execute_query(SEARCH_ASSETS_QUERY, {"search": search})
+        data = self._execute_query(SEARCH_ASSETS_QUERY, {"search": search_term})
         return data.get("assets", [])
 
     def search_all(self, search_term: str) -> Dict[str, List[Dict]]:
@@ -307,15 +278,53 @@ class GridEntityMatcher:
         self._cache: Dict[str, GridMatch] = {}
 
     def extract_keywords(self, text: str) -> List[str]:
-        """Extract potential entity names from text."""
-        # Common patterns for crypto entities
+        """Extract potential entity names from text, prioritizing known crypto terms."""
         keywords = []
+        text_lower = text.lower()
 
-        # Look for capitalized words (potential project names)
-        caps_pattern = r'\b[A-Z][a-zA-Z]+\b'
+        # Priority 1: Check for well-known crypto names first
+        known_entities = [
+            'Bitcoin', 'Ethereum', 'Solana', 'Cardano', 'Polkadot', 'Avalanche',
+            'Chainlink', 'Uniswap', 'Aave', 'Compound', 'Maker', 'Curve',
+            'Arbitrum', 'Optimism', 'Polygon', 'Cosmos', 'Near', 'Aptos', 'Sui',
+            'Coinbase', 'Binance', 'Kraken', 'FTX', 'OpenSea', 'Blur', 'Magic Eden',
+            'MetaMask', 'Ledger', 'Trezor', 'Phantom', 'Rainbow',
+            'Circle', 'Tether', 'MicroStrategy', 'BlackRock', 'Fidelity',
+            'Robinhood', 'PayPal', 'Stripe', 'Visa', 'Mastercard',
+            'dYdX', 'GMX', 'Synthetix', 'Lido', 'Rocket Pool', 'EigenLayer',
+            'LayerZero', 'Wormhole', 'Axelar', 'Stargate',
+            'Ripple', 'XRP', 'Stellar', 'Dogecoin', 'Shiba', 'Pepe',
+            'World', 'Worldcoin', 'Safe', 'Gnosis'
+        ]
+
+        for entity in known_entities:
+            if entity.lower() in text_lower:
+                keywords.append(entity)
+
+        # Priority 2: Check for ticker symbols and expand aliases
+        ticker_pattern = r'\b[A-Z]{2,5}\b'
+        tickers = re.findall(ticker_pattern, text)
+
+        for ticker in tickers:
+            ticker_lower = ticker.lower()
+            if ticker_lower in NAME_ALIASES:
+                expanded = NAME_ALIASES[ticker_lower]
+                if expanded.lower() not in [k.lower() for k in keywords]:
+                    keywords.append(expanded)
+
+        # Priority 3: Look for capitalized multi-word names
+        multi_word_pattern = r'\b([A-Z][a-z]+(?:\s+[A-Z][a-z]+)+)\b'
+        multi_words = re.findall(multi_word_pattern, text)
+
+        stop_phrases = {'New York', 'United States', 'Wall Street', 'White House'}
+        for phrase in multi_words:
+            if phrase not in stop_phrases and phrase.lower() not in [k.lower() for k in keywords]:
+                keywords.append(phrase)
+
+        # Priority 4: Single capitalized words (potential project names)
+        caps_pattern = r'\b[A-Z][a-z]{2,}\b'
         caps_words = re.findall(caps_pattern, text)
 
-        # Filter out common non-entity words
         stop_words = {
             'The', 'This', 'That', 'With', 'From', 'Into', 'Over', 'After',
             'Before', 'About', 'Through', 'During', 'Between', 'Under',
@@ -323,47 +332,26 @@ class GridEntityMatcher:
             'Where', 'Why', 'How', 'All', 'Each', 'Few', 'More', 'Most',
             'Other', 'Some', 'Such', 'Only', 'Own', 'Same', 'Than', 'Too',
             'Very', 'Just', 'Should', 'Now', 'New', 'CEO', 'CTO', 'CFO',
-            'USD', 'EUR', 'Million', 'Billion', 'Market', 'Trading', 'Price',
-            'Token', 'Crypto', 'Blockchain', 'Network', 'Protocol', 'Fund',
-            'Investment', 'Venture', 'Capital', 'Exchange', 'Platform'
+            'Million', 'Billion', 'Market', 'Trading', 'Price', 'Token',
+            'Crypto', 'Blockchain', 'Network', 'Protocol', 'Fund', 'Report',
+            'Investment', 'Venture', 'Capital', 'Exchange', 'Platform',
+            'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday', 'Sunday',
+            'January', 'February', 'March', 'April', 'May', 'June', 'July',
+            'August', 'September', 'October', 'November', 'December'
         }
 
         for word in caps_words:
-            if word not in stop_words and len(word) > 2:
+            if word not in stop_words and word.lower() not in [k.lower() for k in keywords]:
                 keywords.append(word)
 
-        # Look for ticker symbols (all caps, 2-5 chars)
-        ticker_pattern = r'\b[A-Z]{2,5}\b'
-        tickers = re.findall(ticker_pattern, text)
-
-        for ticker in tickers:
-            # Expand known aliases
-            if ticker.lower() in NAME_ALIASES:
-                keywords.append(NAME_ALIASES[ticker.lower()])
-            elif ticker not in stop_words:
-                keywords.append(ticker)
-
-        # Look for quoted names
-        quoted_pattern = r'"([^"]+)"'
-        quoted = re.findall(quoted_pattern, text)
-        keywords.extend(quoted)
-
-        # Deduplicate while preserving order
-        seen = set()
-        unique = []
-        for kw in keywords:
-            kw_lower = kw.lower()
-            if kw_lower not in seen:
-                seen.add(kw_lower)
-                unique.append(kw)
-
-        return unique[:5]  # Limit to top 5 keywords
+        return keywords[:8]  # Return top 8 keywords
 
     def match_entity(self, title: str, url: str = "", description: str = "") -> GridMatch:
         """
         Try to match a news item to a Grid entity.
 
         Returns GridMatch with matched=True if found, along with TGS data.
+        Uses fuzzy matching to find the best match across profiles, products, and assets.
         """
         # Check cache first
         cache_key = title.lower()[:100]
@@ -379,99 +367,128 @@ class GridEntityMatcher:
             self._cache[cache_key] = result
             return result
 
-        # Try each keyword
+        # Collect all candidate matches with scores
+        all_candidates: List[Tuple[GridMatch, float]] = []
+
         for keyword in keywords:
             # Search across all entity types
             results = self.client.search_all(keyword)
 
-            # Check profiles first (most common)
-            if results.get("profiles"):
-                profile = results["profiles"][0]
+            # Score and collect profile matches
+            for profile in results.get("profiles", []):
                 match = self._create_match_from_profile(profile, keyword)
-                self._cache[cache_key] = match
-                return match
+                score = self._score_match(match.entity_name, keyword, full_text)
+                all_candidates.append((match, score))
 
-            # Check products
-            if results.get("products"):
-                product = results["products"][0]
+            # Score and collect product matches
+            for product in results.get("products", []):
                 match = self._create_match_from_product(product, keyword)
-                self._cache[cache_key] = match
-                return match
+                score = self._score_match(match.entity_name, keyword, full_text)
+                all_candidates.append((match, score))
 
-            # Check assets
-            if results.get("assets"):
-                asset = results["assets"][0]
+            # Score and collect asset matches
+            for asset in results.get("assets", []):
                 match = self._create_match_from_asset(asset, keyword)
-                self._cache[cache_key] = match
-                return match
+                score = self._score_match(match.entity_name, keyword, full_text)
+                all_candidates.append((match, score))
 
-        # No match found
+        if not all_candidates:
+            result = GridMatch(matched=False)
+            self._cache[cache_key] = result
+            return result
+
+        # Sort by score (highest first) and pick the best match
+        all_candidates.sort(key=lambda x: x[1], reverse=True)
+        best_match, best_score = all_candidates[0]
+
+        # Only accept matches with reasonable confidence
+        if best_score >= 0.3:
+            best_match.confidence = best_score
+            self._cache[cache_key] = best_match
+            return best_match
+
+        # No good match found
         result = GridMatch(matched=False)
         self._cache[cache_key] = result
         return result
 
+    def _score_match(self, entity_name: str, keyword: str, full_text: str) -> float:
+        """
+        Score how well an entity matches the keyword and original text.
+        Higher score = better match.
+        """
+        if not entity_name:
+            return 0.0
+
+        entity_lower = entity_name.lower()
+        keyword_lower = keyword.lower()
+        text_lower = full_text.lower()
+
+        score = 0.0
+
+        # Exact name match with keyword (highest priority)
+        if entity_lower == keyword_lower:
+            score += 1.0
+        # Entity name starts with keyword
+        elif entity_lower.startswith(keyword_lower):
+            score += 0.8
+        # Keyword is contained in entity name
+        elif keyword_lower in entity_lower:
+            score += 0.6
+        # Entity name is contained in keyword
+        elif entity_lower in keyword_lower:
+            score += 0.5
+
+        # Bonus: entity name appears in the original text (confirms relevance)
+        if entity_lower in text_lower:
+            score += 0.5
+
+        # Bonus: exact word boundary match in text
+        import re
+        if re.search(r'\b' + re.escape(entity_lower) + r'\b', text_lower):
+            score += 0.3
+
+        return min(score, 2.0)  # Cap at 2.0
+
     def _create_match_from_profile(self, profile: Dict, keyword: str) -> GridMatch:
         """Create GridMatch from a profile result."""
-        # Extract tags
+        # Extract sector as tag
         tags = []
-        for pt in profile.get("profileTags", []):
-            if pt.get("tag", {}).get("name"):
-                tags.append(pt["tag"]["name"])
-
-        # Extract website
-        website = ""
-        for url_obj in profile.get("urls", []):
-            if url_obj.get("urlType", {}).get("name") == "website":
-                website = url_obj.get("url", "")
-                break
+        sector = profile.get("profileSector", {})
+        if sector and sector.get("name"):
+            tags.append(sector["name"])
 
         return GridMatch(
             matched=True,
             entity_id=profile.get("id", ""),
             entity_name=profile.get("name", ""),
             entity_type="profile",
-            description=profile.get("shortDescription", ""),
+            description=profile.get("descriptionShort", ""),
             category=profile.get("profileType", {}).get("name", ""),
             tags=tags,
-            website=website,
-            logo_url=profile.get("logo", ""),
             confidence=self._calculate_confidence(profile.get("name", ""), keyword)
         )
 
     def _create_match_from_product(self, product: Dict, keyword: str) -> GridMatch:
         """Create GridMatch from a product result."""
-        # Extract deployment info
-        deployed_on = []
-        for dep in product.get("productDeployedOnProducts", []):
-            if dep.get("deployedOnProduct", {}).get("name"):
-                deployed_on.append(dep["deployedOnProduct"]["name"])
-
         return GridMatch(
             matched=True,
             entity_id=product.get("id", ""),
             entity_name=product.get("name", ""),
             entity_type="product",
-            description=product.get("shortDescription", ""),
+            description=product.get("description", ""),
             category=product.get("productType", {}).get("name", ""),
-            tags=deployed_on,  # Use deployed-on as tags
             confidence=self._calculate_confidence(product.get("name", ""), keyword)
         )
 
     def _create_match_from_asset(self, asset: Dict, keyword: str) -> GridMatch:
         """Create GridMatch from an asset result."""
-        # Extract chain info
-        chains = []
-        for chain in asset.get("assetDeployedOnProductAsChain", []):
-            if chain.get("product", {}).get("name"):
-                chains.append(chain["product"]["name"])
-
         return GridMatch(
             matched=True,
             entity_id=asset.get("id", ""),
             entity_name=asset.get("name", ""),
             entity_type="asset",
             category=f"Token ({asset.get('ticker', '')})",
-            tags=chains,
             logo_url=asset.get("icon", ""),
             confidence=self._calculate_confidence(asset.get("name", ""), keyword)
         )
