@@ -1274,13 +1274,13 @@ class DataCSVProcessor:
                             from grid_api import analyze_grid_profile_with_llm
                             profile_matches = best_match.profiles
                             if profile_matches and article_text:
-                                profile_id = profile_matches[0].grid_id
-                                if profile_id:
-                                    profile_details = article_matcher.client.get_profile_details(profile_id)
+                                profile_name = profile_matches[0].name
+                                if profile_name:
+                                    profile_details = article_matcher.client.get_profile_details(profile_name)
                                     suggestion = analyze_grid_profile_with_llm(article_text, profile_details)
                                     if suggestion:
                                         comments.append(f"Suggest: {suggestion}")
-                        except Exception:
+                        except Exception as llm_err:
                             pass  # LLM analysis is optional
 
                 # Combine comments

@@ -264,10 +264,10 @@ query SearchEntities($search: String!) {
 }
 """
 
-# Query to get detailed profile info including products
+# Query to get detailed profile info
 GET_PROFILE_DETAILS_QUERY = """
-query GetProfileDetails($id: String!) {
-  profileInfos(where: { id: { _eq: $id } }, limit: 1) {
+query GetProfileDetails($search: String!) {
+  profileInfos(where: { name: { _eq: $search } }, limit: 1) {
     id
     name
     descriptionShort
@@ -281,19 +281,6 @@ query GetProfileDetails($id: String!) {
     profileStatus {
       name
     }
-  }
-  products(where: { root: { _eq: $id } }, limit: 10) {
-    id
-    name
-    description
-    productType {
-      name
-    }
-  }
-  assets(where: { root: { _eq: $id } }, limit: 10) {
-    id
-    name
-    ticker
   }
 }
 """
@@ -393,14 +380,14 @@ class GridAPIClient:
             "entities": self.search_entities(search_term),
         }
 
-    def get_profile_details(self, profile_id: str) -> Dict:
-        """Get detailed profile info including products and assets."""
-        data = self._execute_query(GET_PROFILE_DETAILS_QUERY, {"id": profile_id})
+    def get_profile_details(self, profile_name: str) -> Dict:
+        """Get detailed profile info by exact name match."""
+        data = self._execute_query(GET_PROFILE_DETAILS_QUERY, {"search": profile_name})
         profile = data.get("profileInfos", [{}])[0] if data.get("profileInfos") else {}
         return {
             "profile": profile,
-            "products": data.get("products", []),
-            "assets": data.get("assets", [])
+            "products": [],  # Would need separate query with proper relationship field
+            "assets": []     # Would need separate query with proper relationship field
         }
 
     def get_schema(self) -> Dict:
