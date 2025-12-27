@@ -1101,38 +1101,64 @@ class DataCSVProcessor:
                     item.custom_fields['comments'] = "Could not fetch article"
                     continue
 
-                # Extract text from HTML
-                soup = BeautifulSoup(html, 'lxml')
+                # Extract ONLY the main article body (avoid related articles, sidebars, etc.)
+                article_text = self._extract_article_body(html)
 
-                # Remove script and style elements
-                for script in soup(["script", "style", "nav", "footer", "header"]):
-                    script.decompose()
+                if not article_text or len(article_text) < 100:
+                    item.custom_fields['comments'] = "Could not extract article body"
+                    continue
 
-                # Get text
-                text = soup.get_text(separator=' ', strip=True)
+                comments = []
 
-                # Find all mentions
-                mentions = pattern.findall(text)
-
+                # 1. Search for priority ecosystem mentions
+                mentions = pattern.findall(article_text)
                 if mentions:
-                    # Count occurrences of each term
                     term_counts = {}
                     for term in mentions:
-                        # Handle case where regex might return tuple instead of string
                         if isinstance(term, tuple):
                             term = term[0] if term else ''
                         if term:
-                            term_title = term.title()  # Normalize case
+                            term_title = term.title()
                             term_counts[term_title] = term_counts.get(term_title, 0) + 1
 
-                    # Format as comment - sort by count descending
                     if term_counts:
                         sorted_terms = sorted(term_counts.items(), key=lambda x: x[1], reverse=True)
                         comment_parts = [f"{t} ({c}x)" for t, c in sorted_terms]
-                        item.custom_fields['comments'] = f"Mentions: {', '.join(comment_parts)}"
-                        print(f"       → Found: {', '.join(comment_parts)}")
+                        comments.append(f"Mentions: {', '.join(comment_parts)}")
+
+                # 2. Try Grid matching on article body keywords
+                try:
+                    from grid_api import GridEntityMatcher
+                    article_matcher = GridEntityMatcher()
+
+                    # Extract keywords from article body (first 500 chars for subject focus)
+                    article_keywords = article_matcher.extract_keywords(article_text[:500])
+
+                    # Try to match each keyword
+                    grid_matches = []
+                    for kw in article_keywords[:3]:  # Limit to top 3 keywords
+                        match = article_matcher.match_entity(kw, item.url, article_text[:200])
+                        if match.matched and match.confidence >= 0.8:
+                            grid_matches.append(f"{match.entity_name} ({match.entity_type})")
+
+                    if grid_matches:
+                        # Update Grid fields if we found a match
+                        best_kw = article_keywords[0] if article_keywords else ''
+                        best_match = article_matcher.match_entity(best_kw, item.url, article_text[:200])
+                        if best_match.matched:
+                            for key, value in best_match.to_dict().items():
+                                item.custom_fields[key] = value
+                            comments.append(f"Grid: {', '.join(set(grid_matches))}")
+
+                except ImportError:
+                    pass  # Grid API not available
+
+                # Combine comments
+                if comments:
+                    item.custom_fields['comments'] = ' | '.join(comments)
+                    print(f"       → {item.custom_fields['comments']}")
                 else:
-                    item.custom_fields['comments'] = "No blockchain mentions found"
+                    item.custom_fields['comments'] = "No relevant mentions"
                     print(f"       → No relevant mentions")
 
             except Exception as e:
@@ -1143,6 +1169,82 @@ class DataCSVProcessor:
         print(f"\n[*] Researched {researched_count}/{len(items_to_research)} articles")
 
         return items
+
+    def _extract_article_body(self, html: str) -> str:
+        """
+        Extract only the main article body content, avoiding:
+        - Related articles
+        - Sidebars
+        - Navigation
+        - Comments sections
+        - Infinite scroll content
+        - Footer content
+        """
+        soup = BeautifulSoup(html, 'lxml')
+
+        # Remove elements that are definitely not article content
+        for tag in soup.find_all(['script', 'style', 'nav', 'footer', 'header',
+                                   'aside', 'iframe', 'noscript', 'form']):
+            tag.decompose()
+
+        # Remove common "related articles" patterns
+        related_patterns = [
+            'related', 'recommended', 'more-stories', 'more-articles',
+            'also-read', 'you-may-like', 'trending', 'popular',
+            'sidebar', 'widget', 'advertisement', 'ad-container',
+            'social-share', 'comments', 'newsletter', 'subscribe'
+        ]
+
+        for pattern in related_patterns:
+            # Remove by class
+            for tag in soup.find_all(class_=lambda x: x and pattern in x.lower()):
+                tag.decompose()
+            # Remove by id
+            for tag in soup.find_all(id=lambda x: x and pattern in x.lower()):
+                tag.decompose()
+
+        # Try to find the main article content using semantic tags
+        article_content = None
+
+        # Priority 1: <article> tag
+        article_tag = soup.find('article')
+        if article_tag:
+            article_content = article_tag
+
+        # Priority 2: Common content class names
+        if not article_content:
+            content_classes = ['article-content', 'article-body', 'post-content',
+                              'entry-content', 'story-body', 'article__body',
+                              'content-body', 'main-content', 'article-text']
+            for cls in content_classes:
+                found = soup.find(class_=lambda x: x and cls in str(x).lower())
+                if found:
+                    article_content = found
+                    break
+
+        # Priority 3: <main> tag
+        if not article_content:
+            main_tag = soup.find('main')
+            if main_tag:
+                article_content = main_tag
+
+        # Priority 4: Largest <div> with significant text (heuristic)
+        if not article_content:
+            article_content = soup.body if soup.body else soup
+
+        # Extract text from the identified content
+        if article_content:
+            # Get text with proper spacing
+            text = article_content.get_text(separator=' ', strip=True)
+
+            # Clean up excessive whitespace
+            text = ' '.join(text.split())
+
+            # Limit to reasonable article length (avoid infinite scroll content)
+            # Most articles are under 10000 characters
+            return text[:10000]
+
+        return ""
 
     def deduplicate_csv(self, csv_path: str, key_column: str = 'url') -> int:
         """Remove duplicates from CSV file."""
