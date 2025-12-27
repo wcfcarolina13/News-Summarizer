@@ -785,7 +785,7 @@ class DataCSVProcessor:
         except Exception as e:
             print(f"    [!] urllib failed: {e}")
 
-        # Method 3: Try with no SSL verification (last resort)
+        # Method 3: Try with no SSL verification
         try:
             import ssl
             no_verify_ctx = ssl.create_default_context()
@@ -795,8 +795,29 @@ class DataCSVProcessor:
             with urllib.request.urlopen(req, timeout=self.config.timeout, context=no_verify_ctx) as response:
                 return response.read().decode('utf-8', errors='ignore')
         except Exception as e:
-            print(f"    [!] All fetch methods failed for {url}: {e}")
-            return ""
+            print(f"    [!] SSL bypass failed: {e}")
+
+        # Method 4: Try Playwright headless browser (for sites with heavy bot detection)
+        try:
+            from playwright.sync_api import sync_playwright
+            print(f"    [*] Trying Playwright browser...")
+            with sync_playwright() as p:
+                browser = p.chromium.launch(headless=True)
+                context = browser.new_context(
+                    user_agent='Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
+                )
+                page = context.new_page()
+                page.goto(url, timeout=30000, wait_until='domcontentloaded')
+                content = page.content()
+                browser.close()
+                return content
+        except ImportError:
+            print(f"    [!] Playwright not installed (pip install playwright && playwright install chromium)")
+        except Exception as e:
+            print(f"    [!] Playwright failed: {e}")
+
+        print(f"    [!] All fetch methods failed for {url}")
+        return ""
 
     def _get_extractor(self, url: str) -> BaseExtractor:
         """Get the appropriate extractor for a URL."""
@@ -1097,13 +1118,19 @@ class DataCSVProcessor:
                     # Count occurrences of each term
                     term_counts = {}
                     for term in mentions:
-                        term_title = term.title()  # Normalize case
-                        term_counts[term_title] = term_counts.get(term_title, 0) + 1
+                        # Handle case where regex might return tuple instead of string
+                        if isinstance(term, tuple):
+                            term = term[0] if term else ''
+                        if term:
+                            term_title = term.title()  # Normalize case
+                            term_counts[term_title] = term_counts.get(term_title, 0) + 1
 
-                    # Format as comment
-                    comment_parts = [f"{term} ({count}x)" for term, count in sorted(term_counts.items(), key=lambda x: -x[1])]
-                    item.custom_fields['comments'] = f"Mentions: {', '.join(comment_parts)}"
-                    print(f"       → Found: {', '.join(comment_parts)}")
+                    # Format as comment - sort by count descending
+                    if term_counts:
+                        sorted_terms = sorted(term_counts.items(), key=lambda x: x[1], reverse=True)
+                        comment_parts = [f"{t} ({c}x)" for t, c in sorted_terms]
+                        item.custom_fields['comments'] = f"Mentions: {', '.join(comment_parts)}"
+                        print(f"       → Found: {', '.join(comment_parts)}")
                 else:
                     item.custom_fields['comments'] = "No blockchain mentions found"
                     print(f"       → No relevant mentions")

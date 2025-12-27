@@ -92,7 +92,6 @@ class GridMatch:
             "grid_asset_id": self.asset_id,
             "grid_asset_name": self.asset_name,
             "grid_asset_ticker": self.asset_ticker,
-            "grid_category": self.category if self.matched else "",
             "grid_confidence": round(self.confidence, 2) if self.matched else 0,
         }
 
