@@ -380,13 +380,13 @@ class GridEntityMatcher:
         Returns GridMatch with matched=True if found, along with TGS data.
         Uses fuzzy matching to find the best match across profiles, products, and assets.
         """
-        # Check cache first
-        cache_key = title.lower()[:100]
+        # Check cache first - use title + description for cache key
+        full_text = f"{title} {description}"
+        cache_key = full_text.lower()[:200]
         if cache_key in self._cache:
             return self._cache[cache_key]
 
         # Extract keywords to search
-        full_text = f"{title} {description}"
         keywords = self.extract_keywords(full_text)
 
         if not keywords:

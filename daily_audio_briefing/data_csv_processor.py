@@ -834,8 +834,23 @@ class DataCSVProcessor:
             blocked_domains = ['theblock.co', 'thedefiant.io', 'finsmes.com']  # Known to block
 
             for result in results[:5]:
-                result_url = result.get('href', '')
-                if not result_url.startswith('http'):
+                raw_url = result.get('href', '')
+
+                # DuckDuckGo returns redirect URLs like //duckduckgo.com/l/?uddg=https%3A...
+                # Extract the actual URL from the uddg parameter
+                if 'uddg=' in raw_url:
+                    try:
+                        parsed = urllib.parse.urlparse(raw_url)
+                        params = urllib.parse.parse_qs(parsed.query)
+                        if 'uddg' in params:
+                            result_url = urllib.parse.unquote(params['uddg'][0])
+                        else:
+                            continue
+                    except Exception:
+                        continue
+                elif raw_url.startswith('http'):
+                    result_url = raw_url
+                else:
                     continue
 
                 result_domain = urllib.parse.urlparse(result_url).netloc
@@ -857,6 +872,7 @@ class DataCSVProcessor:
                 except Exception:
                     continue
 
+            print(f"    [!] No accessible alternative sources found")
             return ""
 
         except Exception as e:
@@ -1018,7 +1034,7 @@ class DataCSVProcessor:
         """
         return self.csv_manager.write_items(items, output_path, custom_columns)
 
-    def enrich_with_grid(self, items: List[ExtractedItem], api_key: str = None) -> List[ExtractedItem]:
+    def enrich_with_grid(self, items: List[ExtractedItem], api_key: str = None, debug: bool = False) -> List[ExtractedItem]:
         """
         Enrich extracted items with The Grid API data.
 
@@ -1034,6 +1050,7 @@ class DataCSVProcessor:
         Args:
             items: List of ExtractedItem objects
             api_key: Optional Grid API key
+            debug: If True, print detailed matching info
 
         Returns:
             Items with Grid data added to custom_fields
@@ -1049,6 +1066,17 @@ class DataCSVProcessor:
         matcher = GridEntityMatcher(api_key=api_key)
 
         for i, item in enumerate(items):
+            # Combine title + description for matching
+            full_text = f"{item.title} {item.description}"
+
+            if debug:
+                print(f"\n  [{i+1}] DEBUG:")
+                print(f"       Title: {item.title[:60]}...")
+                print(f"       Description: {item.description[:60]}..." if item.description else "       Description: (empty)")
+                # Show extracted keywords
+                keywords = matcher.extract_keywords(full_text)
+                print(f"       Keywords: {keywords}")
+
             match = matcher.match_entity(item.title, item.url, item.description)
 
             # Add Grid data to custom_fields
@@ -1057,9 +1085,13 @@ class DataCSVProcessor:
                 item.custom_fields[key] = value
 
             if match.matched:
-                print(f"  [{i+1}] ✓ {item.title[:40]}... → {match.entity_name}")
+                print(f"  [{i+1}] ✓ {item.title[:40]}... → {match.entity_name} (conf: {match.confidence:.2f})")
             else:
-                print(f"  [{i+1}] ✗ {item.title[:40]}...")
+                # Show why it didn't match
+                if debug:
+                    print(f"       No match found (no keywords or low confidence)")
+                else:
+                    print(f"  [{i+1}] ✗ {item.title[:40]}...")
 
         matched_count = sum(1 for item in items if item.custom_fields.get("grid_matched"))
         print(f"\n[*] Matched {matched_count}/{len(items)} items to Grid entities")
@@ -1168,21 +1200,32 @@ class DataCSVProcessor:
                 found_ecosystem_terms = []
 
                 # 1. Search for priority ecosystem mentions
-                mentions = pattern.findall(article_text)
-                if mentions:
-                    term_counts = {}
-                    for term in mentions:
-                        if isinstance(term, tuple):
-                            term = term[0] if term else ''
-                        if term:
-                            term_title = term.title()
-                            term_counts[term_title] = term_counts.get(term_title, 0) + 1
-                            found_ecosystem_terms.append(term_title)
+                try:
+                    mentions = pattern.findall(article_text)
+                    if mentions:
+                        term_counts = {}
+                        for term in mentions:
+                            # Handle both string and tuple results from regex
+                            if isinstance(term, tuple):
+                                term = term[0] if len(term) > 0 else ''
+                            if term and isinstance(term, str):
+                                term_title = term.strip().title()
+                                if term_title:
+                                    term_counts[term_title] = term_counts.get(term_title, 0) + 1
+                                    found_ecosystem_terms.append(term_title)
 
-                    if term_counts:
-                        sorted_terms = sorted(term_counts.items(), key=lambda x: x[1], reverse=True)
-                        comment_parts = [f"{t} ({c}x)" for t, c in sorted_terms]
-                        comments.append(f"Mentions: {', '.join(comment_parts)}")
+                        if term_counts:
+                            # Safely unpack term counts
+                            sorted_terms = sorted(term_counts.items(), key=lambda x: x[1] if len(x) > 1 else 0, reverse=True)
+                            comment_parts = []
+                            for item in sorted_terms:
+                                if isinstance(item, tuple) and len(item) >= 2:
+                                    t, c = item[0], item[1]
+                                    comment_parts.append(f"{t} ({c}x)")
+                            if comment_parts:
+                                comments.append(f"Mentions: {', '.join(comment_parts)}")
+                except Exception as regex_err:
+                    print(f"    [!] Regex error: {regex_err}")
 
                 # 2. Try Grid matching - first on ecosystem terms found, then on keywords
                 if grid_available:
