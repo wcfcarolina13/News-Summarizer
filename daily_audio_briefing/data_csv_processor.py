@@ -797,27 +797,71 @@ class DataCSVProcessor:
         except Exception as e:
             print(f"    [!] SSL bypass failed: {e}")
 
-        # Method 4: Try Playwright headless browser (for sites with heavy bot detection)
-        try:
-            from playwright.sync_api import sync_playwright
-            print(f"    [*] Trying Playwright browser...")
-            with sync_playwright() as p:
-                browser = p.chromium.launch(headless=True)
-                context = browser.new_context(
-                    user_agent='Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
-                )
-                page = context.new_page()
-                page.goto(url, timeout=30000, wait_until='domcontentloaded')
-                content = page.content()
-                browser.close()
-                return content
-        except ImportError:
-            print(f"    [!] Playwright not installed (pip install playwright && playwright install chromium)")
-        except Exception as e:
-            print(f"    [!] Playwright failed: {e}")
-
-        print(f"    [!] All fetch methods failed for {url}")
+        # All direct fetch methods failed
         return ""
+
+    def _web_search_fallback(self, query: str, original_url: str) -> str:
+        """
+        Search for article content via web search when direct fetch fails.
+        Uses DuckDuckGo HTML search (no API key needed).
+        Returns article text if found, empty string otherwise.
+        """
+        try:
+            # Clean up query - use headline without source prefix
+            search_query = query.strip()
+            if len(search_query) < 10:
+                return ""
+
+            print(f"    [*] Searching for article: {search_query[:50]}...")
+
+            # Search DuckDuckGo HTML
+            search_url = f"https://html.duckduckgo.com/html/?q={urllib.parse.quote(search_query + ' crypto news')}"
+            headers = {
+                'User-Agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36',
+                'Accept': 'text/html,application/xhtml+xml',
+            }
+
+            req = urllib.request.Request(search_url, headers=headers)
+            with urllib.request.urlopen(req, timeout=10) as response:
+                search_html = response.read().decode('utf-8', errors='ignore')
+
+            # Parse search results
+            soup = BeautifulSoup(search_html, 'lxml')
+            results = soup.find_all('a', class_='result__a')
+
+            # Try to fetch from alternative sources (skip the original blocked domain)
+            original_domain = urllib.parse.urlparse(original_url).netloc
+            blocked_domains = ['theblock.co', 'thedefiant.io', 'finsmes.com']  # Known to block
+
+            for result in results[:5]:
+                result_url = result.get('href', '')
+                if not result_url.startswith('http'):
+                    continue
+
+                result_domain = urllib.parse.urlparse(result_url).netloc
+                if result_domain == original_domain or any(bd in result_domain for bd in blocked_domains):
+                    continue
+
+                # Try to fetch this alternative source
+                try:
+                    alt_req = urllib.request.Request(result_url, headers=headers)
+                    with urllib.request.urlopen(alt_req, timeout=10) as alt_response:
+                        alt_html = alt_response.read().decode('utf-8', errors='ignore')
+
+                    # Extract article body
+                    alt_text = self._extract_article_body(alt_html)
+                    if alt_text and len(alt_text) > 200:
+                        print(f"    [*] Found alternative: {result_domain}")
+                        return alt_text
+
+                except Exception:
+                    continue
+
+            return ""
+
+        except Exception as e:
+            print(f"    [!] Web search failed: {e}")
+            return ""
 
     def _get_extractor(self, url: str) -> BaseExtractor:
         """Get the appropriate extractor for a URL."""
@@ -1091,24 +1135,37 @@ class DataCSVProcessor:
 
         print(f"\n[*] Researching {len(items_to_research)} articles for mentions of: {', '.join(search_terms)}")
 
+        # Import Grid matcher once
+        try:
+            from grid_api import GridEntityMatcher
+            grid_available = True
+        except ImportError:
+            grid_available = False
+
         for i, item in enumerate(items_to_research):
             try:
                 print(f"  [{i+1}/{len(items_to_research)}] Fetching: {item.url[:60]}...")
 
                 # Fetch article content
                 html = self._fetch_content(item.url)
-                if not html:
+                article_text = ""
+
+                if html:
+                    # Extract ONLY the main article body (avoid related articles, sidebars, etc.)
+                    article_text = self._extract_article_body(html)
+
+                # If direct fetch failed or extracted nothing, try web search fallback
+                if not article_text or len(article_text) < 100:
+                    # Use the item description as search query
+                    search_query = item.description if item.description else item.title
+                    article_text = self._web_search_fallback(search_query, item.url)
+
+                if not article_text or len(article_text) < 100:
                     item.custom_fields['comments'] = "Could not fetch article"
                     continue
 
-                # Extract ONLY the main article body (avoid related articles, sidebars, etc.)
-                article_text = self._extract_article_body(html)
-
-                if not article_text or len(article_text) < 100:
-                    item.custom_fields['comments'] = "Could not extract article body"
-                    continue
-
                 comments = []
+                found_ecosystem_terms = []
 
                 # 1. Search for priority ecosystem mentions
                 mentions = pattern.findall(article_text)
@@ -1120,38 +1177,39 @@ class DataCSVProcessor:
                         if term:
                             term_title = term.title()
                             term_counts[term_title] = term_counts.get(term_title, 0) + 1
+                            found_ecosystem_terms.append(term_title)
 
                     if term_counts:
                         sorted_terms = sorted(term_counts.items(), key=lambda x: x[1], reverse=True)
                         comment_parts = [f"{t} ({c}x)" for t, c in sorted_terms]
                         comments.append(f"Mentions: {', '.join(comment_parts)}")
 
-                # 2. Try Grid matching on article body keywords
-                try:
-                    from grid_api import GridEntityMatcher
+                # 2. Try Grid matching - first on ecosystem terms found, then on keywords
+                if grid_available:
                     article_matcher = GridEntityMatcher()
+                    best_match = None
 
-                    # Extract keywords from article body (first 500 chars for subject focus)
-                    article_keywords = article_matcher.extract_keywords(article_text[:500])
+                    # Priority: Match ecosystem terms directly (Solana, Tether, Starknet)
+                    for eco_term in set(found_ecosystem_terms):
+                        match = article_matcher.match_entity(eco_term, item.url, article_text[:200])
+                        if match.matched and match.confidence >= 0.7:
+                            best_match = match
+                            break
 
-                    # Try to match each keyword
-                    grid_matches = []
-                    for kw in article_keywords[:3]:  # Limit to top 3 keywords
-                        match = article_matcher.match_entity(kw, item.url, article_text[:200])
-                        if match.matched and match.confidence >= 0.8:
-                            grid_matches.append(f"{match.entity_name} ({match.entity_type})")
+                    # Fallback: Try article body keywords
+                    if not best_match:
+                        article_keywords = article_matcher.extract_keywords(article_text[:500])
+                        for kw in article_keywords[:3]:
+                            match = article_matcher.match_entity(kw, item.url, article_text[:200])
+                            if match.matched and match.confidence >= 0.8:
+                                best_match = match
+                                break
 
-                    if grid_matches:
-                        # Update Grid fields if we found a match
-                        best_kw = article_keywords[0] if article_keywords else ''
-                        best_match = article_matcher.match_entity(best_kw, item.url, article_text[:200])
-                        if best_match.matched:
-                            for key, value in best_match.to_dict().items():
-                                item.custom_fields[key] = value
-                            comments.append(f"Grid: {', '.join(set(grid_matches))}")
-
-                except ImportError:
-                    pass  # Grid API not available
+                    # Update Grid fields if we found a match
+                    if best_match and best_match.matched:
+                        for key, value in best_match.to_dict().items():
+                            item.custom_fields[key] = value
+                        comments.append(f"Grid: {best_match.entity_name} ({best_match.entity_type})")
 
                 # Combine comments
                 if comments:
