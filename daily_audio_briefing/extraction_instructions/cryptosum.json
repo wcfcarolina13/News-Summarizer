@@ -11,6 +11,9 @@
     "refer a friend",
     "advertisement",
     "sponsored",
+    "here's why",
+    "heres why",
+    "here is why",
     "prediction market",
     "polymarket",
     "kalshi",
@@ -38,7 +41,20 @@
     "fundable",
     "gannon's",
     "litquidity",
-    "book a call"
+    "book a call",
+    "sign up",
+    "join now",
+    "join us",
+    "get started",
+    "free trial",
+    "try free",
+    "start free",
+    "limited time",
+    "exclusive offer",
+    "early access",
+    "waitlist",
+    "crypto sum",
+    "cryptosum"
   ],
 
   "exclude_categories": [
@@ -59,8 +75,13 @@
     "beehiiv.com",
     "tiktok.com",
     "polymarket.com",
-    "kalshi.com"
+    "kalshi.com",
+    "fundable.com",
+    "litquidity.com",
+    "substack.com"
   ],
+
+  "require_url": true,
 
   "csv_columns": [
     "url",
@@ -69,5 +90,5 @@
     "date_published"
   ],
 
-  "notes": "Extracts market/trading news from CryptoSum. Filters out: prediction markets (ads), regulatory news, hacks/exploits, legal/enforcement news, and ad partners (Fundable, Litquidity, etc.)."
+  "notes": "Extracts market/trading news from CryptoSum. Filters out: prediction markets (ads), regulatory news, hacks/exploits, legal/enforcement, sponsored 'here's why' articles, landing pages, and ad partners."
 }
