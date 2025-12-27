@@ -864,34 +864,6 @@ HTML_TEMPLATE = '''
             }
         }
     </style>
-    <script>
-    // Navigation function - in head so it's defined before body loads
-    function navigateTo(page) {
-        // Hide all pages
-        document.getElementById('page-home').style.display = 'none';
-        document.getElementById('page-summarize').style.display = 'none';
-        document.getElementById('page-extract').style.display = 'none';
-        document.getElementById('page-audio').style.display = 'none';
-        document.getElementById('page-settings').style.display = 'none';
-
-        // Show target page
-        document.getElementById('page-' + page).style.display = 'block';
-
-        // Update nav highlighting
-        var navItems = document.querySelectorAll('.nav-item');
-        for (var i = 0; i < navItems.length; i++) {
-            navItems[i].classList.remove('active');
-        }
-        var activeNav = document.querySelector('.nav-item[onclick*="' + page + '"]');
-        if (activeNav) activeNav.classList.add('active');
-
-        // Load page-specific data
-        if (typeof loadRecentSummaries === 'function' && page === 'home') loadRecentSummaries();
-        if (typeof loadSettings === 'function' && page === 'settings') loadSettings();
-        if (typeof loadSourceCount === 'function' && page === 'summarize') loadSourceCount();
-        if (typeof loadDependencies === 'function' && page === 'audio') loadDependencies();
-    }
-    </script>
 </head>
 <body>
     <!-- Header -->
@@ -1161,10 +1133,8 @@ HTML_TEMPLATE = '''
     </nav>
 
     <script>
-        // Navigation function - defined first, as simple as possible
+        // Navigation function
         function navigateTo(page) {
-            alert('Navigating to: ' + page);
-
             // Hide all pages
             document.getElementById('page-home').style.cssText = 'display:none!important';
             document.getElementById('page-summarize').style.cssText = 'display:none!important';
@@ -1175,12 +1145,18 @@ HTML_TEMPLATE = '''
             // Show target page
             document.getElementById('page-' + page).style.cssText = 'display:block!important';
 
-            // Update nav
+            // Update nav highlighting
             var items = document.getElementsByClassName('nav-item');
             for (var i = 0; i < items.length; i++) {
                 items[i].className = 'nav-item';
             }
             document.querySelector('[data-page="' + page + '"]').className = 'nav-item active';
+
+            // Load page-specific data
+            if (page === 'home' && typeof loadRecentSummaries === 'function') loadRecentSummaries();
+            if (page === 'summarize' && typeof loadSourceCount === 'function') loadSourceCount();
+            if (page === 'audio' && typeof loadDependencies === 'function') loadDependencies();
+            if (page === 'settings' && typeof loadSettings === 'function') loadSettings();
         }
 
         // State
@@ -1678,24 +1654,19 @@ HTML_TEMPLATE = '''
 
         // Initialize
         document.addEventListener('DOMContentLoaded', function() {
-            console.log('DOM loaded, setting up navigation...');
             loadRecentSummaries();
             updateDeviceInfo();
             window.addEventListener('resize', updateDeviceInfo);
 
-            // Set up navigation with event delegation (works better on mobile)
+            // Set up navigation with event delegation
             var nav = document.getElementById('mainNav');
-            console.log('Nav element found:', nav);
             if (nav) {
                 nav.addEventListener('click', function(e) {
-                    console.log('Nav clicked, target:', e.target);
                     e.preventDefault();
                     e.stopPropagation();
                     var target = e.target.closest('.nav-item');
-                    console.log('Closest nav-item:', target);
                     if (target) {
                         var page = target.getAttribute('data-page');
-                        console.log('Navigating to:', page);
                         if (page) {
                             navigateTo(page);
                         }
@@ -1706,11 +1677,9 @@ HTML_TEMPLATE = '''
 
             // Set up all buttons with data-nav attribute
             var navButtons = document.querySelectorAll('[data-nav]');
-            console.log('Found nav buttons:', navButtons.length);
             for (var i = 0; i < navButtons.length; i++) {
                 navButtons[i].addEventListener('click', function(e) {
                     var page = e.currentTarget.getAttribute('data-nav');
-                    console.log('Button nav to:', page);
                     if (page) navigateTo(page);
                 });
             }
