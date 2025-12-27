@@ -71,12 +71,29 @@ class GridMatch:
     logo_url: str = ""
     tgs_fields: Dict[str, Any] = field(default_factory=dict)
     confidence: float = 0.0
+    # Separate fields for each entity type
+    profile_id: str = ""
+    profile_name: str = ""
+    product_id: str = ""
+    product_name: str = ""
+    asset_id: str = ""
+    asset_name: str = ""
+    asset_ticker: str = ""
 
     def to_dict(self) -> Dict[str, Any]:
-        """Return simplified Grid match data - just matched status and entity name."""
+        """Return Grid match data with separate columns per entity type."""
         return {
             "grid_matched": self.matched,
-            "grid_entity_name": self.entity_name if self.matched else "",
+            "grid_entity_type": self.entity_type if self.matched else "",
+            "grid_profile_id": self.profile_id,
+            "grid_profile_name": self.profile_name,
+            "grid_product_id": self.product_id,
+            "grid_product_name": self.product_name,
+            "grid_asset_id": self.asset_id,
+            "grid_asset_name": self.asset_name,
+            "grid_asset_ticker": self.asset_ticker,
+            "grid_category": self.category if self.matched else "",
+            "grid_confidence": round(self.confidence, 2) if self.matched else 0,
         }
 
     def _generate_tgs_recommendation(self) -> str:
@@ -278,52 +295,49 @@ class GridEntityMatcher:
         self._cache: Dict[str, GridMatch] = {}
 
     def extract_keywords(self, text: str) -> List[str]:
-        """Extract potential entity names from text, prioritizing known crypto terms."""
+        """
+        Extract potential entity names from text.
+
+        IMPORTANT: Only extract names that are likely the PRIMARY SUBJECT of the text,
+        not every crypto term mentioned. This prevents matching "Bitcoin" to every
+        article that happens to mention Bitcoin.
+        """
         keywords = []
         text_lower = text.lower()
 
-        # Priority 1: Check for well-known crypto names first
-        known_entities = [
-            'Bitcoin', 'Ethereum', 'Solana', 'Cardano', 'Polkadot', 'Avalanche',
-            'Chainlink', 'Uniswap', 'Aave', 'Compound', 'Maker', 'Curve',
-            'Arbitrum', 'Optimism', 'Polygon', 'Cosmos', 'Near', 'Aptos', 'Sui',
-            'Coinbase', 'Binance', 'Kraken', 'FTX', 'OpenSea', 'Blur', 'Magic Eden',
-            'MetaMask', 'Ledger', 'Trezor', 'Phantom', 'Rainbow',
-            'Circle', 'Tether', 'MicroStrategy', 'BlackRock', 'Fidelity',
-            'Robinhood', 'PayPal', 'Stripe', 'Visa', 'Mastercard',
-            'dYdX', 'GMX', 'Synthetix', 'Lido', 'Rocket Pool', 'EigenLayer',
-            'LayerZero', 'Wormhole', 'Axelar', 'Stargate',
-            'Ripple', 'XRP', 'Stellar', 'Dogecoin', 'Shiba', 'Pepe',
-            'World', 'Worldcoin', 'Safe', 'Gnosis'
-        ]
+        # Only match if the entity appears to be the SUBJECT (at start of title,
+        # or is the primary focus based on context)
 
-        for entity in known_entities:
-            if entity.lower() in text_lower:
-                keywords.append(entity)
+        # Priority 1: Look for capitalized multi-word names (company/protocol names)
+        # These are usually the actual subject
+        multi_word_pattern = r'\b([A-Z][a-z]+(?:\s+[A-Z][a-z]+)+)\b'
+        multi_words = re.findall(multi_word_pattern, text)
 
-        # Priority 2: Check for ticker symbols and expand aliases
-        ticker_pattern = r'\b[A-Z]{2,5}\b'
-        tickers = re.findall(ticker_pattern, text)
+        stop_phrases = {
+            'New York', 'United States', 'Wall Street', 'White House',
+            'Hong Kong', 'San Francisco', 'Los Angeles', 'Abu Dhabi',
+            'South Korea', 'North America', 'United Kingdom'
+        }
+        for phrase in multi_words:
+            if phrase not in stop_phrases:
+                keywords.append(phrase)
 
-        for ticker in tickers:
+        # Priority 2: Look for ticker symbols in context like "$BTC" or "(ETH)"
+        ticker_context_pattern = r'[\$\(]([A-Z]{2,5})[\)\s]'
+        context_tickers = re.findall(ticker_context_pattern, text)
+
+        for ticker in context_tickers:
             ticker_lower = ticker.lower()
             if ticker_lower in NAME_ALIASES:
                 expanded = NAME_ALIASES[ticker_lower]
                 if expanded.lower() not in [k.lower() for k in keywords]:
                     keywords.append(expanded)
 
-        # Priority 3: Look for capitalized multi-word names
-        multi_word_pattern = r'\b([A-Z][a-z]+(?:\s+[A-Z][a-z]+)+)\b'
-        multi_words = re.findall(multi_word_pattern, text)
-
-        stop_phrases = {'New York', 'United States', 'Wall Street', 'White House'}
-        for phrase in multi_words:
-            if phrase not in stop_phrases and phrase.lower() not in [k.lower() for k in keywords]:
-                keywords.append(phrase)
-
-        # Priority 4: Single capitalized words (potential project names)
+        # Priority 3: Single capitalized words that appear at the START of the text
+        # (likely the subject) - not just anywhere in the text
+        first_50_chars = text[:50]
         caps_pattern = r'\b[A-Z][a-z]{2,}\b'
-        caps_words = re.findall(caps_pattern, text)
+        leading_caps = re.findall(caps_pattern, first_50_chars)
 
         stop_words = {
             'The', 'This', 'That', 'With', 'From', 'Into', 'Over', 'After',
@@ -337,14 +351,15 @@ class GridEntityMatcher:
             'Investment', 'Venture', 'Capital', 'Exchange', 'Platform',
             'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday', 'Sunday',
             'January', 'February', 'March', 'April', 'May', 'June', 'July',
-            'August', 'September', 'October', 'November', 'December'
+            'August', 'September', 'October', 'November', 'December',
+            'Bitcoin', 'Ethereum', 'Crypto', 'Solana'  # Don't auto-match generic crypto terms
         }
 
-        for word in caps_words:
+        for word in leading_caps:
             if word not in stop_words and word.lower() not in [k.lower() for k in keywords]:
                 keywords.append(word)
 
-        return keywords[:8]  # Return top 8 keywords
+        return keywords[:5]  # Return max 5 keywords - be selective
 
     def match_entity(self, title: str, url: str = "", description: str = "") -> GridMatch:
         """
@@ -401,8 +416,9 @@ class GridEntityMatcher:
         all_candidates.sort(key=lambda x: x[1], reverse=True)
         best_match, best_score = all_candidates[0]
 
-        # Only accept matches with reasonable confidence
-        if best_score >= 0.3:
+        # Only accept matches with HIGH confidence (0.7+)
+        # This prevents loose matches like "any article mentioning X" -> X entity
+        if best_score >= 0.7:
             best_match.confidence = best_score
             self._cache[cache_key] = best_match
             return best_match
@@ -458,39 +474,56 @@ class GridEntityMatcher:
         if sector and sector.get("name"):
             tags.append(sector["name"])
 
+        profile_id = profile.get("id", "")
+        profile_name = profile.get("name", "")
+
         return GridMatch(
             matched=True,
-            entity_id=profile.get("id", ""),
-            entity_name=profile.get("name", ""),
+            entity_id=profile_id,
+            entity_name=profile_name,
             entity_type="profile",
             description=profile.get("descriptionShort", ""),
             category=profile.get("profileType", {}).get("name", ""),
             tags=tags,
-            confidence=self._calculate_confidence(profile.get("name", ""), keyword)
+            confidence=self._calculate_confidence(profile_name, keyword),
+            profile_id=profile_id,
+            profile_name=profile_name,
         )
 
     def _create_match_from_product(self, product: Dict, keyword: str) -> GridMatch:
         """Create GridMatch from a product result."""
+        product_id = product.get("id", "")
+        product_name = product.get("name", "")
+
         return GridMatch(
             matched=True,
-            entity_id=product.get("id", ""),
-            entity_name=product.get("name", ""),
+            entity_id=product_id,
+            entity_name=product_name,
             entity_type="product",
             description=product.get("description", ""),
             category=product.get("productType", {}).get("name", ""),
-            confidence=self._calculate_confidence(product.get("name", ""), keyword)
+            confidence=self._calculate_confidence(product_name, keyword),
+            product_id=product_id,
+            product_name=product_name,
         )
 
     def _create_match_from_asset(self, asset: Dict, keyword: str) -> GridMatch:
         """Create GridMatch from an asset result."""
+        asset_id = asset.get("id", "")
+        asset_name = asset.get("name", "")
+        asset_ticker = asset.get("ticker", "")
+
         return GridMatch(
             matched=True,
-            entity_id=asset.get("id", ""),
-            entity_name=asset.get("name", ""),
+            entity_id=asset_id,
+            entity_name=asset_name,
             entity_type="asset",
-            category=f"Token ({asset.get('ticker', '')})",
+            category=f"Token ({asset_ticker})" if asset_ticker else "Token",
             logo_url=asset.get("icon", ""),
-            confidence=self._calculate_confidence(asset.get("name", ""), keyword)
+            confidence=self._calculate_confidence(asset_name, keyword),
+            asset_id=asset_id,
+            asset_name=asset_name,
+            asset_ticker=asset_ticker,
         )
 
     def _calculate_confidence(self, entity_name: str, keyword: str) -> float:

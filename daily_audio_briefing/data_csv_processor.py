@@ -402,6 +402,11 @@ class BeehiivExtractor(BaseExtractor):
 
     def _passes_filter(self, url: str, text: str, context: str, category: str, instructions: Dict) -> bool:
         """Check if item passes custom instruction filters."""
+        # Require URL if specified
+        if instructions.get('require_url', False):
+            if not url or not url.strip() or url.strip() == '#':
+                return False
+
         # Exclude categories
         exclude_categories = instructions.get('exclude_categories', [])
         if exclude_categories and category:
