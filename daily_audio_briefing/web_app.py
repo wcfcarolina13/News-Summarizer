@@ -1437,7 +1437,7 @@ HTML_TEMPLATE = '''
                     line += `\n→ TGS: ${item.tgs_recommendation}`;
                 }
                 return line;
-            }).join('\n\n');
+            }).join('\\n\\n');
 
             navigator.clipboard.writeText(text).then(() => {
                 showStatus('Copied to clipboard!', 'success');
