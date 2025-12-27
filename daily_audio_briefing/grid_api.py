@@ -340,19 +340,31 @@ class GridEntityMatcher:
         leading_caps = re.findall(caps_pattern, first_50_chars)
 
         stop_words = {
+            # Common words
             'The', 'This', 'That', 'With', 'From', 'Into', 'Over', 'After',
             'Before', 'About', 'Through', 'During', 'Between', 'Under',
             'Again', 'Further', 'Then', 'Once', 'Here', 'There', 'When',
             'Where', 'Why', 'How', 'All', 'Each', 'Few', 'More', 'Most',
             'Other', 'Some', 'Such', 'Only', 'Own', 'Same', 'Than', 'Too',
             'Very', 'Just', 'Should', 'Now', 'New', 'CEO', 'CTO', 'CFO',
+            # Business terms
             'Million', 'Billion', 'Market', 'Trading', 'Price', 'Token',
             'Crypto', 'Blockchain', 'Network', 'Protocol', 'Fund', 'Report',
             'Investment', 'Venture', 'Capital', 'Exchange', 'Platform',
+            'Rally', 'Surge', 'Drop', 'Fall', 'Rise', 'Gain', 'Loss',
+            # Days/Months
             'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday', 'Sunday',
             'January', 'February', 'March', 'April', 'May', 'June', 'July',
             'August', 'September', 'October', 'November', 'December',
-            'Bitcoin', 'Ethereum', 'Crypto', 'Solana'  # Don't auto-match generic crypto terms
+            # Generic crypto terms - DON'T auto-match these
+            'Bitcoin', 'Ethereum', 'Crypto', 'Solana', 'Binance', 'Coinbase',
+            'Tether', 'Ripple', 'Cardano', 'Dogecoin', 'Polygon', 'Avalanche',
+            'Polkadot', 'Chainlink', 'Uniswap', 'Arbitrum', 'Optimism',
+            # Political/news figures - prevent matching to meme tokens
+            'Trump', 'Biden', 'Musk', 'Elon', 'Obama', 'Powell', 'Gensler',
+            'Yellen', 'Congress', 'Senate', 'Federal', 'Reserve', 'Government',
+            # Common news prefixes/sources
+            'Daily', 'Breaking', 'Update', 'Alert', 'News', 'Report',
         }
 
         for word in leading_caps:
