@@ -15,6 +15,9 @@ from audio_generator import AudioGenerator
 from voice_manager import VoiceManager
 from convert_to_mp3 import check_ffmpeg
 
+# Data extraction imports
+from data_csv_processor import DataCSVProcessor, ExtractionConfig, load_custom_instructions
+
 # Helper functions for transcription dependency checks
 def check_faster_whisper_installed():
     try:
@@ -52,6 +55,10 @@ class AudioBriefingApp(ctk.CTk):
         self.selected_file_paths = []
         self.audio_generator = AudioGenerator(status_callback=self._update_status)
         self.voice_manager = VoiceManager()
+
+        # Data extraction
+        self.extracted_items = []
+        self.data_processor = None  # Lazy init to avoid slow startup
         
         # self.podcast_server = PodcastServer()  # Disabled
         # self.drive_manager = None  # Google Drive features removed
@@ -217,7 +224,104 @@ class AudioBriefingApp(ctk.CTk):
 
         self.btn_quality = ctk.CTkButton(self.frame_audio_controls, text="Generate Quality (Kokoro)", command=self.start_quality_generation)
         self.btn_quality.grid(row=5, column=0, columnspan=2, padx=10, pady=(5, 10), sticky="ew")
-        
+
+        # Data Extraction Section
+        self.frame_extract = ctk.CTkFrame(self)
+        self.frame_extract.grid(row=4, column=0, padx=20, pady=(5, 10), sticky="ew")
+        self.frame_extract.grid_columnconfigure(0, weight=1)
+
+        # Header with expand/collapse toggle
+        extract_header = ctk.CTkFrame(self.frame_extract, fg_color="transparent")
+        extract_header.grid(row=0, column=0, sticky="ew", padx=10, pady=(10, 5))
+        extract_header.grid_columnconfigure(1, weight=1)
+
+        ctk.CTkLabel(extract_header, text="Data Extractor", font=ctk.CTkFont(size=14, weight="bold")).grid(row=0, column=0, sticky="w")
+        self.extract_toggle_btn = ctk.CTkButton(extract_header, text="Expand", width=70, fg_color="gray", command=self.toggle_extract_section)
+        self.extract_toggle_btn.grid(row=0, column=2, padx=(10, 0))
+
+        # Collapsible content
+        self.extract_content = ctk.CTkFrame(self.frame_extract, fg_color="transparent")
+        self.extract_content.grid(row=1, column=0, sticky="ew", padx=10, pady=5)
+        self.extract_content.grid_columnconfigure(0, weight=1)
+        self.extract_content.grid_remove()  # Start collapsed
+
+        # Mode tabs (URL vs HTML)
+        tab_frame = ctk.CTkFrame(self.extract_content, fg_color="transparent")
+        tab_frame.grid(row=0, column=0, sticky="w", pady=(0, 5))
+
+        self.extract_mode_var = ctk.StringVar(value="url")
+        self.btn_tab_url = ctk.CTkButton(tab_frame, text="Extract from URL", width=140, command=lambda: self.set_extract_mode("url"))
+        self.btn_tab_url.pack(side="left", padx=(0, 5))
+        self.btn_tab_html = ctk.CTkButton(tab_frame, text="Paste HTML", width=120, fg_color="gray", command=lambda: self.set_extract_mode("html"))
+        self.btn_tab_html.pack(side="left")
+
+        # URL input section
+        self.url_input_frame = ctk.CTkFrame(self.extract_content, fg_color="transparent")
+        self.url_input_frame.grid(row=1, column=0, sticky="ew", pady=5)
+        self.url_input_frame.grid_columnconfigure(0, weight=1)
+
+        self.extract_url_entry = ctk.CTkEntry(self.url_input_frame, placeholder_text="https://cryptosum.beehiiv.com/p/...")
+        self.extract_url_entry.grid(row=0, column=0, sticky="ew")
+
+        # HTML input section (hidden initially)
+        self.html_input_frame = ctk.CTkFrame(self.extract_content, fg_color="transparent")
+        self.html_input_frame.grid(row=1, column=0, sticky="ew", pady=5)
+        self.html_input_frame.grid_columnconfigure(0, weight=1)
+        self.html_input_frame.grid_remove()
+
+        self.extract_html_text = ctk.CTkTextbox(self.html_input_frame, height=100)
+        self.extract_html_text.grid(row=0, column=0, sticky="ew", pady=(0, 5))
+
+        self.extract_source_url = ctk.CTkEntry(self.html_input_frame, placeholder_text="Source URL (optional)")
+        self.extract_source_url.grid(row=1, column=0, sticky="ew")
+
+        # Options row
+        options_frame = ctk.CTkFrame(self.extract_content, fg_color="transparent")
+        options_frame.grid(row=2, column=0, sticky="ew", pady=5)
+
+        ctk.CTkLabel(options_frame, text="Config:").pack(side="left", padx=(0, 5))
+
+        # Load available extraction configs
+        self.extract_config_var = ctk.StringVar(value="Default")
+        config_values = self._get_extraction_configs()
+        self.extract_config_combo = ctk.CTkComboBox(options_frame, variable=self.extract_config_var, values=config_values, width=150, state="readonly")
+        self.extract_config_combo.pack(side="left", padx=(0, 15))
+
+        self.grid_enrich_var = ctk.BooleanVar(value=False)
+        self.chk_grid_enrich = ctk.CTkCheckBox(options_frame, text="Enrich with Grid", variable=self.grid_enrich_var)
+        self.chk_grid_enrich.pack(side="left")
+
+        # Extract button
+        self.btn_extract = ctk.CTkButton(self.extract_content, text="Extract Links", command=self.start_extraction, fg_color="green")
+        self.btn_extract.grid(row=3, column=0, sticky="ew", pady=(10, 5))
+
+        # Results section (hidden until extraction)
+        self.extract_results_frame = ctk.CTkFrame(self.extract_content)
+        self.extract_results_frame.grid(row=4, column=0, sticky="ew", pady=5)
+        self.extract_results_frame.grid_columnconfigure(0, weight=1)
+        self.extract_results_frame.grid_remove()
+
+        results_header = ctk.CTkFrame(self.extract_results_frame, fg_color="transparent")
+        results_header.grid(row=0, column=0, sticky="ew", padx=10, pady=5)
+        results_header.grid_columnconfigure(0, weight=1)
+
+        self.extract_count_label = ctk.CTkLabel(results_header, text="Extracted Links (0)", font=ctk.CTkFont(weight="bold"))
+        self.extract_count_label.grid(row=0, column=0, sticky="w")
+
+        export_btns = ctk.CTkFrame(results_header, fg_color="transparent")
+        export_btns.grid(row=0, column=1, sticky="e")
+
+        self.btn_export_csv = ctk.CTkButton(export_btns, text="Save CSV", width=80, command=self.export_extracted_csv)
+        self.btn_export_csv.pack(side="left", padx=(0, 5))
+
+        self.btn_copy_text = ctk.CTkButton(export_btns, text="Copy", width=60, fg_color="gray", command=self.copy_extracted_text)
+        self.btn_copy_text.pack(side="left")
+
+        # Results list
+        self.extract_results_list = ctk.CTkScrollableFrame(self.extract_results_frame, height=150)
+        self.extract_results_list.grid(row=1, column=0, sticky="ew", padx=5, pady=5)
+        self.extract_results_list.grid_columnconfigure(0, weight=1)
+
         # Row 3: Broadcast Button (disabled)
         # self.btn_broadcast = ctk.CTkButton(self.frame_audio_controls, text="Broadcast to Phone", fg_color="green", command=self.toggle_podcast_server)
         # Row 3: Local HTTP Server (removed)
@@ -1477,6 +1581,216 @@ This will incur charges to your Google Cloud account!
         if sys.platform == "darwin": subprocess.run(["open", script_dir])
         elif sys.platform == "win32": os.startfile(script_dir)
         else: subprocess.run(["xdg-open", script_dir])
+
+    # =========================================================================
+    # DATA EXTRACTION METHODS
+    # =========================================================================
+
+    def _get_extraction_configs(self):
+        """Get list of available extraction config files."""
+        configs = ["Default"]
+        config_dir = os.path.join(os.path.dirname(__file__), "extraction_instructions")
+        if os.path.exists(config_dir):
+            for f in os.listdir(config_dir):
+                if f.endswith(".json") and not f.startswith("_"):
+                    name = f.replace(".json", "").replace("_", " ").title()
+                    configs.append(name)
+        return configs
+
+    def toggle_extract_section(self):
+        """Toggle the data extraction section visibility."""
+        if self.extract_content.winfo_ismapped():
+            self.extract_content.grid_remove()
+            self.extract_toggle_btn.configure(text="Expand")
+        else:
+            self.extract_content.grid()
+            self.extract_toggle_btn.configure(text="Collapse")
+
+    def set_extract_mode(self, mode):
+        """Switch between URL and HTML extraction modes."""
+        self.extract_mode_var.set(mode)
+        if mode == "url":
+            self.btn_tab_url.configure(fg_color=None)  # Use default color
+            self.btn_tab_html.configure(fg_color="gray")
+            self.url_input_frame.grid()
+            self.html_input_frame.grid_remove()
+        else:
+            self.btn_tab_url.configure(fg_color="gray")
+            self.btn_tab_html.configure(fg_color=None)
+            self.url_input_frame.grid_remove()
+            self.html_input_frame.grid()
+
+    def _get_data_processor(self):
+        """Get or create the data processor (lazy initialization)."""
+        if self.data_processor is None:
+            config = ExtractionConfig(
+                resolve_redirects=False,  # Speed up by disabling redirect resolution
+                strip_tracking_params=True
+            )
+            self.data_processor = DataCSVProcessor(config)
+        return self.data_processor
+
+    def start_extraction(self):
+        """Start the data extraction process in a background thread."""
+        mode = self.extract_mode_var.get()
+
+        if mode == "url":
+            url = self.extract_url_entry.get().strip()
+            if not url:
+                self.label_status.configure(text="Please enter a URL to extract.", text_color="orange")
+                return
+            if not url.startswith("http"):
+                url = "https://" + url
+        else:
+            html = self.extract_html_text.get("1.0", "end-1c").strip()
+            if not html:
+                self.label_status.configure(text="Please paste HTML content to extract.", text_color="orange")
+                return
+
+        # Get config
+        config_name = self.extract_config_var.get()
+        enrich_grid = self.grid_enrich_var.get()
+
+        # Disable button during extraction
+        self.btn_extract.configure(state="disabled", text="Extracting...")
+        self.label_status.configure(text="Extracting links...", text_color="orange")
+
+        def extract_thread():
+            try:
+                processor = self._get_data_processor()
+
+                # Load custom instructions if not default
+                custom_instructions = None
+                if config_name != "Default":
+                    config_file = config_name.lower().replace(" ", "_") + ".json"
+                    config_path = os.path.join(os.path.dirname(__file__), "extraction_instructions", config_file)
+                    if os.path.exists(config_path):
+                        custom_instructions = load_custom_instructions(config_path)
+
+                # Extract items
+                if mode == "url":
+                    items = processor.process_url(url, custom_instructions)
+                else:
+                    source_url = self.extract_source_url.get().strip()
+                    items = processor.process_html(html, source_url, custom_instructions)
+
+                # Enrich with Grid if requested
+                if enrich_grid and items:
+                    self.after(0, lambda: self.label_status.configure(text="Enriching with Grid data...", text_color="orange"))
+                    items = processor.enrich_with_grid(items)
+
+                # Store and display results
+                self.extracted_items = items
+                self.after(0, lambda: self._display_extraction_results(items))
+
+            except Exception as e:
+                self.after(0, lambda: self.label_status.configure(text=f"Extraction error: {str(e)[:50]}", text_color="red"))
+            finally:
+                self.after(0, lambda: self.btn_extract.configure(state="normal", text="Extract Links"))
+
+        threading.Thread(target=extract_thread, daemon=True).start()
+
+    def _display_extraction_results(self, items):
+        """Display extracted items in the results list."""
+        # Clear previous results
+        for widget in self.extract_results_list.winfo_children():
+            widget.destroy()
+
+        if not items:
+            self.label_status.configure(text="No links found.", text_color="orange")
+            self.extract_results_frame.grid_remove()
+            return
+
+        # Update count
+        matched_count = sum(1 for item in items if item.custom_fields.get("grid_matched"))
+        if matched_count > 0:
+            self.extract_count_label.configure(text=f"Extracted Links ({len(items)}) - {matched_count} Grid matches")
+        else:
+            self.extract_count_label.configure(text=f"Extracted Links ({len(items)})")
+
+        # Show results frame
+        self.extract_results_frame.grid()
+
+        # Add items to list (limit to 50 for performance)
+        for i, item in enumerate(items[:50]):
+            item_frame = ctk.CTkFrame(self.extract_results_list, fg_color=("gray90", "gray25"))
+            item_frame.grid(row=i, column=0, sticky="ew", pady=2, padx=2)
+            item_frame.grid_columnconfigure(0, weight=1)
+
+            # Title with optional Grid badge
+            title_text = item.title[:60] + "..." if len(item.title) > 60 else item.title
+            if item.custom_fields.get("grid_matched"):
+                title_text = f"[Grid] {title_text}"
+
+            title_label = ctk.CTkLabel(item_frame, text=title_text, anchor="w", font=ctk.CTkFont(size=12))
+            title_label.grid(row=0, column=0, sticky="w", padx=8, pady=(4, 0))
+
+            # URL (truncated)
+            url_text = item.url[:70] + "..." if len(item.url) > 70 else item.url
+            url_label = ctk.CTkLabel(item_frame, text=url_text, anchor="w", text_color="gray", font=ctk.CTkFont(size=10))
+            url_label.grid(row=1, column=0, sticky="w", padx=8, pady=(0, 4))
+
+            # Category if available
+            if item.category:
+                cat_label = ctk.CTkLabel(item_frame, text=item.category, text_color=("gray40", "gray70"), font=ctk.CTkFont(size=9))
+                cat_label.grid(row=0, column=1, sticky="e", padx=8)
+
+        # Show remaining count if truncated
+        if len(items) > 50:
+            more_label = ctk.CTkLabel(self.extract_results_list, text=f"... and {len(items) - 50} more items", text_color="gray")
+            more_label.grid(row=50, column=0, pady=5)
+
+        self.label_status.configure(text=f"Extracted {len(items)} links.", text_color="green")
+
+    def export_extracted_csv(self):
+        """Export extracted items to a CSV file."""
+        if not self.extracted_items:
+            self.label_status.configure(text="No items to export.", text_color="orange")
+            return
+
+        # Ask for save location
+        default_name = f"extracted_{datetime.datetime.now().strftime('%Y-%m-%d')}.csv"
+        file_path = filedialog.asksaveasfilename(
+            defaultextension=".csv",
+            filetypes=[("CSV files", "*.csv"), ("All files", "*.*")],
+            initialfile=default_name
+        )
+
+        if not file_path:
+            return
+
+        try:
+            processor = self._get_data_processor()
+            processor.save_to_csv(self.extracted_items, file_path)
+            self.label_status.configure(text=f"Saved {len(self.extracted_items)} items to CSV.", text_color="green")
+        except Exception as e:
+            self.label_status.configure(text=f"Error saving CSV: {e}", text_color="red")
+
+    def copy_extracted_text(self):
+        """Copy extracted links to clipboard as formatted text."""
+        if not self.extracted_items:
+            self.label_status.configure(text="No items to copy.", text_color="orange")
+            return
+
+        # Format as text
+        lines = []
+        for item in self.extracted_items:
+            line = f"{item.title}"
+            if item.category:
+                line += f" [{item.category}]"
+            line += f"\n  {item.url}"
+            if item.custom_fields.get("grid_matched"):
+                grid_name = item.custom_fields.get("grid_entity_name", "")
+                line += f"\n  Grid: {grid_name}"
+            lines.append(line)
+
+        text = "\n\n".join(lines)
+
+        # Copy to clipboard
+        self.clipboard_clear()
+        self.clipboard_append(text)
+
+        self.label_status.configure(text=f"Copied {len(self.extracted_items)} items to clipboard.", text_color="green")
 
 if __name__ == "__main__":
     app = AudioBriefingApp()
