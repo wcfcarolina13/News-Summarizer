@@ -984,6 +984,113 @@ class DataCSVProcessor:
 
         return items
 
+    def research_articles(self, items: List[ExtractedItem],
+                          categories: List[str] = None,
+                          search_terms: List[str] = None,
+                          only_unmatched: bool = True) -> List[ExtractedItem]:
+        """
+        Research article content for blockchain/ecosystem mentions.
+
+        For items in specified categories (e.g., 'Venture Capital', 'Launches'),
+        fetches the article content and searches for mentions of specified terms.
+        Results are added to item.custom_fields['comments'].
+
+        Args:
+            items: List of ExtractedItem objects
+            categories: Categories to research (default: ['Venture Capital', 'Launches'])
+            search_terms: Terms to search for (default: ['Solana', 'Starknet', 'Tether'])
+            only_unmatched: Only research items that didn't get a Grid match
+
+        Returns:
+            Items with 'comments' field populated for researched articles
+        """
+        if categories is None:
+            categories = ['Venture Capital', 'Launches']
+        if search_terms is None:
+            search_terms = ['Solana', 'Starknet', 'Tether', 'Ethereum', 'Base', 'Arbitrum', 'Optimism']
+
+        # Normalize categories for comparison
+        categories_lower = [c.lower() for c in categories]
+
+        # Build regex pattern for efficient searching
+        pattern = re.compile(
+            r'\b(' + '|'.join(re.escape(term) for term in search_terms) + r')\b',
+            re.IGNORECASE
+        )
+
+        # Filter items to research
+        items_to_research = []
+        for item in items:
+            # Check if category matches
+            item_cat = item.category.lower() if item.category else ''
+            cat_match = any(cat in item_cat for cat in categories_lower)
+
+            if not cat_match:
+                continue
+
+            # Check if we should skip matched items
+            if only_unmatched and item.custom_fields.get('grid_matched'):
+                continue
+
+            # Check if we have a valid URL
+            if not item.url or not item.url.startswith('http'):
+                continue
+
+            items_to_research.append(item)
+
+        if not items_to_research:
+            print(f"\n[*] No items to research (categories: {categories})")
+            return items
+
+        print(f"\n[*] Researching {len(items_to_research)} articles for mentions of: {', '.join(search_terms)}")
+
+        for i, item in enumerate(items_to_research):
+            try:
+                print(f"  [{i+1}/{len(items_to_research)}] Fetching: {item.url[:60]}...")
+
+                # Fetch article content
+                html = self._fetch_content(item.url)
+                if not html:
+                    item.custom_fields['comments'] = "Could not fetch article"
+                    continue
+
+                # Extract text from HTML
+                soup = BeautifulSoup(html, 'lxml')
+
+                # Remove script and style elements
+                for script in soup(["script", "style", "nav", "footer", "header"]):
+                    script.decompose()
+
+                # Get text
+                text = soup.get_text(separator=' ', strip=True)
+
+                # Find all mentions
+                mentions = pattern.findall(text)
+
+                if mentions:
+                    # Count occurrences of each term
+                    term_counts = {}
+                    for term in mentions:
+                        term_title = term.title()  # Normalize case
+                        term_counts[term_title] = term_counts.get(term_title, 0) + 1
+
+                    # Format as comment
+                    comment_parts = [f"{term} ({count}x)" for term, count in sorted(term_counts.items(), key=lambda x: -x[1])]
+                    item.custom_fields['comments'] = f"Mentions: {', '.join(comment_parts)}"
+                    print(f"       → Found: {', '.join(comment_parts)}")
+                else:
+                    item.custom_fields['comments'] = "No blockchain mentions found"
+                    print(f"       → No relevant mentions")
+
+            except Exception as e:
+                item.custom_fields['comments'] = f"Research error: {str(e)[:50]}"
+                print(f"       → Error: {str(e)[:50]}")
+
+        researched_count = sum(1 for item in items_to_research if 'comments' in item.custom_fields)
+        print(f"\n[*] Researched {researched_count}/{len(items_to_research)} articles")
+
+        return items
+
     def deduplicate_csv(self, csv_path: str, key_column: str = 'url') -> int:
         """Remove duplicates from CSV file."""
         return self.csv_manager.deduplicate(csv_path, key_column)

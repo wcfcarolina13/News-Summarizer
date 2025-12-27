@@ -291,6 +291,10 @@ class AudioBriefingApp(ctk.CTk):
         self.chk_grid_enrich = ctk.CTkCheckBox(options_frame, text="Enrich with Grid", variable=self.grid_enrich_var)
         self.chk_grid_enrich.pack(side="left")
 
+        self.research_articles_var = ctk.BooleanVar(value=False)
+        self.chk_research_articles = ctk.CTkCheckBox(options_frame, text="Research Articles", variable=self.research_articles_var)
+        self.chk_research_articles.pack(side="left", padx=(15, 0))
+
         # Extract button
         self.btn_extract = ctk.CTkButton(self.extract_content, text="Extract Links", command=self.start_extraction, fg_color="green")
         self.btn_extract.grid(row=3, column=0, sticky="ew", pady=(10, 5))
@@ -1650,6 +1654,7 @@ This will incur charges to your Google Cloud account!
         # Get config
         config_name = self.extract_config_var.get()
         enrich_grid = self.grid_enrich_var.get()
+        research_articles = self.research_articles_var.get()
 
         # Disable button during extraction
         self.btn_extract.configure(state="disabled", text="Extracting...")
@@ -1678,6 +1683,11 @@ This will incur charges to your Google Cloud account!
                 if enrich_grid and items:
                     self.after(0, lambda: self.label_status.configure(text="Enriching with Grid data...", text_color="orange"))
                     items = processor.enrich_with_grid(items)
+
+                # Research articles if requested (for VC and Launches categories)
+                if research_articles and items:
+                    self.after(0, lambda: self.label_status.configure(text="Researching articles...", text_color="orange"))
+                    items = processor.research_articles(items)
 
                 # Store and display results
                 self.extracted_items = items
