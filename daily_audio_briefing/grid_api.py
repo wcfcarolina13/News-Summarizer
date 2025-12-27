@@ -334,9 +334,24 @@ class GridEntityMatcher:
 
         # Priority 3: Single capitalized words that appear at the START of the text
         # (likely the subject) - not just anywhere in the text
-        first_50_chars = text[:50]
+        first_100_chars = text[:100]  # Expand to 100 chars to catch more subjects
         caps_pattern = r'\b[A-Z][a-z]{2,}\b'
-        leading_caps = re.findall(caps_pattern, first_50_chars)
+        leading_caps = re.findall(caps_pattern, first_100_chars)
+
+        # Priority 4: All-caps tickers (BTC, ETH, XRP, etc.) anywhere in text
+        ticker_pattern = r'\b([A-Z]{2,5})\b'
+        tickers_found = re.findall(ticker_pattern, text[:150])
+
+        # Map common tickers to full names for searching
+        ticker_map = {
+            'BTC': 'Bitcoin', 'ETH': 'Ethereum', 'SOL': 'Solana',
+            'XRP': 'XRP', 'ADA': 'Cardano', 'DOGE': 'Dogecoin',
+            'DOT': 'Polkadot', 'LINK': 'Chainlink', 'UNI': 'Uniswap',
+            'ARB': 'Arbitrum', 'OP': 'Optimism', 'MATIC': 'Polygon',
+            'AVAX': 'Avalanche', 'ATOM': 'Cosmos', 'NEAR': 'NEAR',
+            'APT': 'Aptos', 'SUI': 'Sui', 'TAO': 'Bittensor',
+            'USDT': 'Tether', 'USDC': 'USDC',
+        }
 
         stop_words = {
             # Common words
@@ -346,32 +361,37 @@ class GridEntityMatcher:
             'Where', 'Why', 'How', 'All', 'Each', 'Few', 'More', 'Most',
             'Other', 'Some', 'Such', 'Only', 'Own', 'Same', 'Than', 'Too',
             'Very', 'Just', 'Should', 'Now', 'New', 'CEO', 'CTO', 'CFO',
-            # Business terms
+            # Business terms (generic - not specific entities)
             'Million', 'Billion', 'Market', 'Trading', 'Price', 'Token',
             'Crypto', 'Blockchain', 'Network', 'Protocol', 'Fund', 'Report',
             'Investment', 'Venture', 'Capital', 'Exchange', 'Platform',
             'Rally', 'Surge', 'Drop', 'Fall', 'Rise', 'Gain', 'Loss',
+            'Firm', 'Startup', 'Company', 'Group', 'Digital', 'Global',
             # Days/Months
             'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday', 'Sunday',
             'January', 'February', 'March', 'April', 'May', 'June', 'July',
             'August', 'September', 'October', 'November', 'December',
-            # Generic crypto terms - DON'T auto-match these (except priority ecosystems)
-            # Priority ecosystems (Solana, Starknet, Tether) are NOT in stop_words - they SHOULD match
-            'Bitcoin', 'Ethereum', 'Crypto', 'Binance', 'Coinbase',
-            'Ripple', 'Cardano', 'Dogecoin', 'Polygon', 'Avalanche',
-            'Polkadot', 'Chainlink', 'Uniswap', 'Arbitrum', 'Optimism',
             # Political/news figures - prevent matching to meme tokens
             'Trump', 'Biden', 'Musk', 'Elon', 'Obama', 'Powell', 'Gensler',
             'Yellen', 'Congress', 'Senate', 'Federal', 'Reserve', 'Government',
             # Common news prefixes/sources
             'Daily', 'Breaking', 'Update', 'Alert', 'News', 'Report',
+            # Locations
+            'Salvador', 'America', 'Latin',
         }
 
         for word in leading_caps:
             if word not in stop_words and word.lower() not in [k.lower() for k in keywords]:
                 keywords.append(word)
 
-        return keywords[:5]  # Return max 5 keywords - be selective
+        # Add mapped ticker names
+        for ticker in tickers_found:
+            if ticker in ticker_map:
+                name = ticker_map[ticker]
+                if name.lower() not in [k.lower() for k in keywords]:
+                    keywords.append(name)
+
+        return keywords[:7]  # Return max 7 keywords - allow more matches
 
     def match_entity(self, title: str, url: str = "", description: str = "") -> GridMatch:
         """
