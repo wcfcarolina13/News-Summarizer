@@ -264,6 +264,40 @@ query SearchEntities($search: String!) {
 }
 """
 
+# Query to get detailed profile info including products
+GET_PROFILE_DETAILS_QUERY = """
+query GetProfileDetails($id: String!) {
+  profileInfos(where: { id: { _eq: $id } }, limit: 1) {
+    id
+    name
+    descriptionShort
+    descriptionLong
+    profileType {
+      name
+    }
+    profileSector {
+      name
+    }
+    profileStatus {
+      name
+    }
+  }
+  products(where: { root: { _eq: $id } }, limit: 10) {
+    id
+    name
+    description
+    productType {
+      name
+    }
+  }
+  assets(where: { root: { _eq: $id } }, limit: 10) {
+    id
+    name
+    ticker
+  }
+}
+"""
+
 # Introspection query to explore schema
 INTROSPECTION_QUERY = """
 query IntrospectionQuery {
@@ -357,6 +391,16 @@ class GridAPIClient:
             "products": self.search_products(search_term),
             "assets": self.search_assets(search_term),
             "entities": self.search_entities(search_term),
+        }
+
+    def get_profile_details(self, profile_id: str) -> Dict:
+        """Get detailed profile info including products and assets."""
+        data = self._execute_query(GET_PROFILE_DETAILS_QUERY, {"id": profile_id})
+        profile = data.get("profileInfos", [{}])[0] if data.get("profileInfos") else {}
+        return {
+            "profile": profile,
+            "products": data.get("products", []),
+            "assets": data.get("assets", [])
         }
 
     def get_schema(self) -> Dict:
@@ -755,6 +799,98 @@ def enrich_with_grid_data(items: List[Dict], api_key: str = None) -> List[Dict]:
     print(f"\n[*] Matched {matched_count}/{len(items)} items to Grid entities")
 
     return enriched
+
+
+# =============================================================================
+# LLM ANALYSIS FOR GRID PROFILES
+# =============================================================================
+
+def analyze_grid_profile_with_llm(
+    article_text: str,
+    profile_details: Dict,
+    model_name: str = "gemini-2.0-flash-exp"
+) -> Optional[str]:
+    """
+    Use LLM to analyze article against Grid profile and suggest updates.
+
+    Args:
+        article_text: The article content
+        profile_details: Dict with 'profile', 'products', 'assets' from Grid
+        model_name: Gemini model to use (default: gemini-2.0-flash-exp for free)
+
+    Returns:
+        Suggested updates or None if analysis not possible
+    """
+    try:
+        import google.generativeai as genai
+        import os
+
+        # Get API key from environment
+        api_key = os.environ.get("GEMINI_API_KEY")
+        if not api_key:
+            return None
+
+        genai.configure(api_key=api_key)
+        model = genai.GenerativeModel(model_name)
+
+        # Extract profile info
+        profile = profile_details.get("profile", {})
+        products = profile_details.get("products", [])
+        assets = profile_details.get("assets", [])
+
+        if not profile:
+            return None
+
+        # Build context about the Grid profile
+        profile_context = f"""
+Profile: {profile.get('name', 'Unknown')}
+Type: {profile.get('profileType', {}).get('name', 'Unknown') if profile.get('profileType') else 'Unknown'}
+Sector: {profile.get('profileSector', {}).get('name', 'Unknown') if profile.get('profileSector') else 'Unknown'}
+Description: {profile.get('descriptionShort', 'No description')}
+
+Existing Products ({len(products)}):
+{chr(10).join([f"- {p.get('name', '?')}: {p.get('description', 'No description')[:100]}" for p in products[:5]]) or '- None listed'}
+
+Existing Assets ({len(assets)}):
+{chr(10).join([f"- {a.get('name', '?')} ({a.get('ticker', '?')})" for a in assets[:5]]) or '- None listed'}
+"""
+
+        prompt = f"""Analyze this news article about a blockchain project and compare it to the project's existing Grid profile data.
+
+ARTICLE:
+{article_text[:2000]}
+
+CURRENT GRID PROFILE:
+{profile_context}
+
+Based on the article, suggest ONE of the following in 15 words or less:
+1. A description update if the article reveals new info about the project
+2. A new product to add if a new product/feature is announced
+3. A new asset to add if a new token is announced
+4. "No updates needed" if the Grid data is already accurate
+
+Respond with just the suggestion, no explanation. Format: [UPDATE TYPE]: suggestion
+Examples:
+- DESCRIPTION: Now supports cross-chain bridging and DeFi integrations
+- PRODUCT: Mobile App for iOS and Android
+- ASSET: Governance token XYZ
+- No updates needed"""
+
+        response = model.generate_content(prompt)
+        suggestion = response.text.strip()
+
+        # Only return meaningful suggestions
+        if suggestion and "no update" not in suggestion.lower():
+            return suggestion
+
+        return None
+
+    except ImportError:
+        # google-generativeai not installed
+        return None
+    except Exception as e:
+        # Don't fail the whole process for LLM errors
+        return None
 
 
 # =============================================================================
