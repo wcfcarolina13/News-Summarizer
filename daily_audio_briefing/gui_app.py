@@ -1694,7 +1694,8 @@ This will incur charges to your Google Cloud account!
                 self.after(0, lambda: self._display_extraction_results(items))
 
             except Exception as e:
-                self.after(0, lambda: self.label_status.configure(text=f"Extraction error: {str(e)[:50]}", text_color="red"))
+                error_msg = str(e)[:50]
+                self.after(0, lambda msg=error_msg: self.label_status.configure(text=f"Extraction error: {msg}", text_color="red"))
             finally:
                 self.after(0, lambda: self.btn_extract.configure(state="normal", text="Extract Links"))
 
