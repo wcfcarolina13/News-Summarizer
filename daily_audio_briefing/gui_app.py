@@ -1684,10 +1684,10 @@ This will incur charges to your Google Cloud account!
                     self.after(0, lambda: self.label_status.configure(text="Enriching with Grid data...", text_color="orange"))
                     items = processor.enrich_with_grid(items)
 
-                # Research articles if requested (for VC and Launches categories)
+                # Research articles if requested - research ALL items for Grid matching
                 if research_articles and items:
                     self.after(0, lambda: self.label_status.configure(text="Researching articles...", text_color="orange"))
-                    items = processor.research_articles(items)
+                    items = processor.research_articles(items, all_items=True)
 
                 # Store and display results
                 self.extracted_items = items

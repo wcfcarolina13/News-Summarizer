@@ -1105,7 +1105,8 @@ class DataCSVProcessor:
     def research_articles(self, items: List[ExtractedItem],
                           categories: List[str] = None,
                           search_terms: List[str] = None,
-                          only_unmatched: bool = True) -> List[ExtractedItem]:
+                          only_unmatched: bool = True,
+                          all_items: bool = False) -> List[ExtractedItem]:
         """
         Research article content for blockchain/ecosystem mentions.
 
@@ -1118,6 +1119,7 @@ class DataCSVProcessor:
             categories: Categories to research (default: ['Venture Capital', 'Launches'])
             search_terms: Terms to search for (default: ['Solana', 'Starknet', 'Tether'])
             only_unmatched: Only research items that didn't get a Grid match
+            all_items: If True, research ALL items regardless of category
 
         Returns:
             Items with 'comments' field populated for researched articles
@@ -1143,17 +1145,17 @@ class DataCSVProcessor:
         # Filter items to research
         items_to_research = []
         for item in items:
-            # Check if category matches
             item_cat = item.category.lower() if item.category else ''
 
-            # Skip excluded categories
+            # Skip excluded categories (even when all_items is True)
             if any(exc in item_cat for exc in exclude_categories):
                 continue
 
-            cat_match = any(cat in item_cat for cat in categories_lower)
-
-            if not cat_match:
-                continue
+            # Check if category matches (skip if all_items is True)
+            if not all_items:
+                cat_match = any(cat in item_cat for cat in categories_lower)
+                if not cat_match:
+                    continue
 
             # Check if we should skip matched items
             if only_unmatched and item.custom_fields.get('grid_matched'):
@@ -1166,10 +1168,12 @@ class DataCSVProcessor:
             items_to_research.append(item)
 
         if not items_to_research:
-            print(f"\n[*] No items to research (categories: {categories})")
+            scope = "all categories" if all_items else f"categories: {categories}"
+            print(f"\n[*] No items to research ({scope})")
             return items
 
-        print(f"\n[*] Researching {len(items_to_research)} articles for mentions of: {', '.join(search_terms)}")
+        scope_msg = "all items" if all_items else f"categories: {', '.join(categories)}"
+        print(f"\n[*] Researching {len(items_to_research)} articles ({scope_msg}) for mentions of: {', '.join(search_terms)}")
 
         # Import Grid matcher once
         try:

@@ -395,6 +395,7 @@ class GridEntityMatcher:
         """
         keywords = []
         text_lower = text.lower()
+        first_100_chars = text[:100]  # Used by multiple patterns
 
         # Only match if the entity appears to be the SUBJECT (at start of title,
         # or is the primary focus based on context)
@@ -413,7 +414,15 @@ class GridEntityMatcher:
             if phrase not in stop_phrases:
                 keywords.append(phrase)
 
-        # Priority 2: Look for ticker symbols in context like "$BTC" or "(ETH)"
+        # Priority 2: Mixed-case crypto names (BitMEX, dYdX, zkSync, OpenAI)
+        # These often appear at the start of headlines
+        mixed_case_pattern = r'\b([A-Za-z]*[A-Z][a-z]+[A-Z][a-zA-Z]*|[a-z]+[A-Z][a-zA-Z]+)\b'
+        mixed_names = re.findall(mixed_case_pattern, first_100_chars)
+        for name in mixed_names:
+            if len(name) >= 3 and name.lower() not in [k.lower() for k in keywords]:
+                keywords.append(name)
+
+        # Priority 4: Look for ticker symbols in context like "$BTC" or "(ETH)"
         ticker_context_pattern = r'[\$\(]([A-Z]{2,5})[\)\s]'
         context_tickers = re.findall(ticker_context_pattern, text)
 
@@ -424,13 +433,12 @@ class GridEntityMatcher:
                 if expanded.lower() not in [k.lower() for k in keywords]:
                     keywords.append(expanded)
 
-        # Priority 3: Single capitalized words that appear at the START of the text
+        # Priority 5: Single capitalized words that appear at the START of the text
         # (likely the subject) - not just anywhere in the text
-        first_100_chars = text[:100]  # Expand to 100 chars to catch more subjects
         caps_pattern = r'\b[A-Z][a-z]{2,}\b'
         leading_caps = re.findall(caps_pattern, first_100_chars)
 
-        # Priority 4: All-caps tickers (BTC, ETH, XRP, etc.) anywhere in text
+        # Priority 6: All-caps tickers (BTC, ETH, XRP, etc.) anywhere in text
         ticker_pattern = r'\b([A-Z]{2,5})\b'
         tickers_found = re.findall(ticker_pattern, text[:150])
 
@@ -575,6 +583,10 @@ class GridEntityMatcher:
         """
         Score how well an entity matches the keyword and original text.
         Higher score = better match.
+
+        Includes relevance filtering to avoid false positives like:
+        - "Bitcoinforme S.L." when searching for "Bitcoin"
+        - "Solana Slugs" when searching for "Solana"
         """
         if not entity_name:
             return 0.0
@@ -585,29 +597,59 @@ class GridEntityMatcher:
 
         score = 0.0
 
+        # Legal entity suffixes - these indicate a specific company, not the main project
+        legal_suffixes = [
+            ' s.l.', ' ltd', ' ltd.', ' gmbh', ' inc', ' inc.', ' corp', ' corp.',
+            ' llc', ' plc', ' pte', ' s.a.', ' s.r.l', ' b.v.', ' n.v.', ' a.g.',
+            ' co.', ' company', ' limited', ' corporation', ' d.o.o', ' s.p.a.',
+            ' slugs', ' gang', ' bear', ' bull', ' punks', ' apes', ' club',
+            ' nft', ' dao', ' token', ' coin',  # NFT/meme projects
+        ]
+
+        # Check if entity has a legal suffix that isn't in the search text
+        has_irrelevant_suffix = False
+        for suffix in legal_suffixes:
+            if suffix in entity_lower and suffix not in text_lower:
+                has_irrelevant_suffix = True
+                break
+
         # Exact name match with keyword (highest priority)
         if entity_lower == keyword_lower:
             score += 1.0
-        # Entity name starts with keyword
+        # Entity name starts with keyword (e.g., "BitMEX" -> "BitMEX Exchange")
+        elif entity_lower.startswith(keyword_lower + ' ') or entity_lower.startswith(keyword_lower + '-'):
+            score += 0.75 if not has_irrelevant_suffix else 0.4
         elif entity_lower.startswith(keyword_lower):
-            score += 0.8
-        # Keyword is contained in entity name
+            score += 0.7 if not has_irrelevant_suffix else 0.3
+        # Keyword is contained in entity name (fuzzy - be more strict)
         elif keyword_lower in entity_lower:
-            score += 0.6
+            # Penalize heavily if entity has extra words not in keyword
+            entity_words = set(entity_lower.split())
+            keyword_words = set(keyword_lower.split())
+            extra_words = entity_words - keyword_words - {'the', 'a', 'an', 'of', 'and', 'for', 'in', 'on', 'to'}
+            if len(extra_words) > 1:
+                score += 0.3  # Many extra words = weak match
+            elif has_irrelevant_suffix:
+                score += 0.3  # Legal entity suffix = weak match
+            else:
+                score += 0.5
         # Entity name is contained in keyword
         elif entity_lower in keyword_lower:
             score += 0.5
 
-        # Bonus: entity name appears in the original text (confirms relevance)
-        if entity_lower in text_lower:
-            score += 0.5
-
-        # Bonus: exact word boundary match in text
-        import re
+        # Strong bonus: full entity name appears in the original text (confirms relevance)
         if re.search(r'\b' + re.escape(entity_lower) + r'\b', text_lower):
+            score += 0.6
+        # Partial bonus: entity name is in text but maybe not word-bounded
+        elif entity_lower in text_lower:
             score += 0.3
 
-        return min(score, 2.0)  # Cap at 2.0
+        # Penalty for matches that are clearly different entities
+        # e.g., "Bitcoin" keyword should not highly match "Bitcoinforme S.L."
+        if has_irrelevant_suffix and entity_lower != keyword_lower:
+            score -= 0.3
+
+        return max(0.0, min(score, 2.0))  # Clamp between 0 and 2.0
 
     def _create_match_from_profile(self, profile: Dict) -> GridMatch:
         """Create GridMatch from a profile (project/brand) result."""
