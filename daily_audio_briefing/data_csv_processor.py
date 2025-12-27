@@ -1269,18 +1269,29 @@ class DataCSVProcessor:
                         subjects = ", ".join(m.name for m in best_match.matches[:2])
                         comments.append(f"Grid: {subjects}")
 
-                        # LLM analysis for Grid profile suggestions (if profile matched)
+                        # LLM analysis for Grid profile suggestions
                         try:
                             from grid_api import analyze_grid_profile_with_llm
-                            profile_matches = best_match.profiles
-                            if profile_matches and article_text:
-                                profile_name = profile_matches[0].name
-                                if profile_name:
-                                    profile_details = article_matcher.client.get_profile_details(profile_name)
-                                    suggestion = analyze_grid_profile_with_llm(article_text, profile_details)
-                                    if suggestion:
-                                        comments.append(f"Suggest: {suggestion}")
+                            primary_match = best_match.primary
+                            if primary_match and article_text:
+                                entity_name = primary_match.name
+                                # Try to get profile details (works for profiles, may be empty for assets)
+                                profile_details = article_matcher.client.get_profile_details(entity_name)
+                                # If no profile found, create minimal context from the match
+                                if not profile_details.get("profile"):
+                                    profile_details = {
+                                        "profile": {
+                                            "name": entity_name,
+                                            "descriptionShort": primary_match.description or f"{primary_match.grid_type}: {entity_name}"
+                                        },
+                                        "products": [],
+                                        "assets": []
+                                    }
+                                suggestion = analyze_grid_profile_with_llm(article_text, profile_details)
+                                if suggestion:
+                                    comments.append(f"Suggest: {suggestion}")
                         except Exception as llm_err:
+                            # Uncomment for debugging: print(f"       [!] LLM error: {llm_err}")
                             pass  # LLM analysis is optional
 
                 # Combine comments
