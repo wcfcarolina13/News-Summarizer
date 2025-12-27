@@ -1085,7 +1085,11 @@ class DataCSVProcessor:
                 item.custom_fields[key] = value
 
             if match.matched:
-                print(f"  [{i+1}] ✓ {item.title[:40]}... → {match.entity_name} (conf: {match.confidence:.2f})")
+                # Show all matched subjects
+                subjects = ", ".join(m.name for m in match.matches[:3])  # Show top 3
+                extra = f" (+{len(match.matches)-3} more)" if len(match.matches) > 3 else ""
+                conf = match.primary.confidence if match.primary else 0
+                print(f"  [{i+1}] ✓ {item.title[:40]}... → {subjects}{extra} (conf: {conf:.2f})")
             else:
                 # Show why it didn't match
                 if debug:
@@ -1235,7 +1239,7 @@ class DataCSVProcessor:
                     # Priority: Match ecosystem terms directly (Solana, Tether, Starknet)
                     for eco_term in set(found_ecosystem_terms):
                         match = article_matcher.match_entity(eco_term, item.url, article_text[:200])
-                        if match.matched and match.confidence >= 0.7:
+                        if match.matched and match.primary and match.primary.confidence >= 0.7:
                             best_match = match
                             break
 
@@ -1244,7 +1248,7 @@ class DataCSVProcessor:
                         article_keywords = article_matcher.extract_keywords(article_text[:500])
                         for kw in article_keywords[:3]:
                             match = article_matcher.match_entity(kw, item.url, article_text[:200])
-                            if match.matched and match.confidence >= 0.8:
+                            if match.matched and match.primary and match.primary.confidence >= 0.8:
                                 best_match = match
                                 break
 
@@ -1252,7 +1256,9 @@ class DataCSVProcessor:
                     if best_match and best_match.matched:
                         for key, value in best_match.to_dict().items():
                             item.custom_fields[key] = value
-                        comments.append(f"Grid: {best_match.entity_name} ({best_match.entity_type})")
+                        # Show all matched subjects
+                        subjects = ", ".join(m.name for m in best_match.matches[:2])
+                        comments.append(f"Grid: {subjects}")
 
                 # Combine comments
                 if comments:

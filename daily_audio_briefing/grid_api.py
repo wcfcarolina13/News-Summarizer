@@ -59,62 +59,115 @@ NAME_ALIASES = {
 
 @dataclass
 class GridMatch:
-    """Represents a match from The Grid API."""
+    """
+    Represents a single match from The Grid API.
+
+    Grid Types (not to be confused):
+    - profile: The project/brand (e.g., "Solana" the project)
+    - product: Things built by profiles (e.g., "Phantom Wallet")
+    - asset: Tokens/coins (e.g., "SOL" token)
+    - entity: Legal structures (e.g., "Solana Foundation" LLC/Corp)
+    """
     matched: bool = False
-    entity_id: str = ""
-    entity_name: str = ""
-    entity_type: str = ""  # profile, product, asset
+    grid_type: str = ""  # profile, product, asset, entity
+    grid_id: str = ""
+    name: str = ""
     description: str = ""
     category: str = ""
-    tags: List[str] = field(default_factory=list)
-    website: str = ""
-    logo_url: str = ""
-    tgs_fields: Dict[str, Any] = field(default_factory=dict)
     confidence: float = 0.0
-    # Separate fields for each entity type
-    profile_id: str = ""
-    profile_name: str = ""
-    product_id: str = ""
-    product_name: str = ""
-    asset_id: str = ""
-    asset_name: str = ""
-    asset_ticker: str = ""
+    # Type-specific fields
+    ticker: str = ""  # For assets
+    entity_type_name: str = ""  # For entities (Foundation, Corporation, etc.)
+    country: str = ""  # For entities
+
+
+@dataclass
+class GridMultiMatch:
+    """
+    Represents multiple matches from The Grid API for a single news item.
+    A headline like "Coinbase opens Solana DEX access" can match multiple subjects.
+    """
+    matched: bool = False
+    matches: List[GridMatch] = field(default_factory=list)
+
+    # Convenience accessors for the primary (highest confidence) match
+    @property
+    def primary(self) -> Optional[GridMatch]:
+        return self.matches[0] if self.matches else None
+
+    @property
+    def profiles(self) -> List[GridMatch]:
+        return [m for m in self.matches if m.grid_type == "profile"]
+
+    @property
+    def products(self) -> List[GridMatch]:
+        return [m for m in self.matches if m.grid_type == "product"]
+
+    @property
+    def assets(self) -> List[GridMatch]:
+        return [m for m in self.matches if m.grid_type == "asset"]
+
+    @property
+    def entities(self) -> List[GridMatch]:
+        return [m for m in self.matches if m.grid_type == "entity"]
 
     def to_dict(self) -> Dict[str, Any]:
-        """Return Grid match data with separate columns per entity type."""
-        return {
+        """Return Grid match data with all matched subjects."""
+        result = {
             "grid_matched": self.matched,
-            "grid_entity_type": self.entity_type if self.matched else "",
-            "grid_profile_id": self.profile_id,
-            "grid_profile_name": self.profile_name,
-            "grid_product_id": self.product_id,
-            "grid_product_name": self.product_name,
-            "grid_asset_id": self.asset_id,
-            "grid_asset_name": self.asset_name,
-            "grid_asset_ticker": self.asset_ticker,
-            "grid_confidence": round(self.confidence, 2) if self.matched else 0,
+            "grid_match_count": len(self.matches),
         }
 
-    def _generate_tgs_recommendation(self) -> str:
-        """Generate TGS schema recommendation based on match."""
-        if not self.matched:
-            return ""
+        # Add all matched subjects as comma-separated list
+        if self.matches:
+            result["grid_subjects"] = ", ".join(m.name for m in self.matches)
+        else:
+            result["grid_subjects"] = ""
 
-        recommendations = []
+        # Profile fields (first match or empty)
+        profiles = self.profiles
+        if profiles:
+            result["grid_profile_id"] = profiles[0].grid_id
+            result["grid_profile_name"] = profiles[0].name
+        else:
+            result["grid_profile_id"] = ""
+            result["grid_profile_name"] = ""
 
-        # Based on entity type, recommend TGS fields to populate
-        if self.entity_type == "profile":
-            recommendations.append(f"Link to Grid Profile: {self.entity_id}")
-            if self.category:
-                recommendations.append(f"Category: {self.category}")
+        # Product fields
+        products = self.products
+        if products:
+            result["grid_product_id"] = products[0].grid_id
+            result["grid_product_name"] = products[0].name
+        else:
+            result["grid_product_id"] = ""
+            result["grid_product_name"] = ""
 
-        if self.tags:
-            recommendations.append(f"Tags: {', '.join(self.tags[:5])}")
+        # Asset fields
+        assets = self.assets
+        if assets:
+            result["grid_asset_id"] = assets[0].grid_id
+            result["grid_asset_name"] = assets[0].name
+            result["grid_asset_ticker"] = assets[0].ticker
+        else:
+            result["grid_asset_id"] = ""
+            result["grid_asset_name"] = ""
+            result["grid_asset_ticker"] = ""
 
-        if self.website:
-            recommendations.append(f"Official URL: {self.website}")
+        # Entity fields (legal structures)
+        entities = self.entities
+        if entities:
+            result["grid_entity_id"] = entities[0].grid_id
+            result["grid_entity_name"] = entities[0].name
+            result["grid_entity_type"] = entities[0].entity_type_name
+        else:
+            result["grid_entity_id"] = ""
+            result["grid_entity_name"] = ""
+            result["grid_entity_type"] = ""
 
-        return " | ".join(recommendations) if recommendations else f"Grid ID: {self.entity_id}"
+        # Primary match confidence
+        result["grid_confidence"] = round(self.primary.confidence, 2) if self.primary else 0
+
+        return result
 
 
 # =============================================================================
@@ -184,6 +237,31 @@ query SearchAssets($search: String!) {
     name
     ticker
     icon
+  }
+}
+"""
+
+# Query to search entities (legal structures - foundations, corporations, LLCs)
+SEARCH_ENTITIES_QUERY = """
+query SearchEntities($search: String!) {
+  entities(
+    where: {
+      _or: [
+        { name: { _contains: $search } },
+        { tradeName: { _contains: $search } }
+      ]
+    }
+    limit: 10
+  ) {
+    id
+    name
+    tradeName
+    entityType {
+      name
+    }
+    country {
+      name
+    }
   }
 }
 """
@@ -269,12 +347,18 @@ class GridAPIClient:
         data = self._execute_query(SEARCH_ASSETS_QUERY, {"search": search_term})
         return data.get("assets", [])
 
+    def search_entities(self, search_term: str) -> List[Dict]:
+        """Search for entities (legal structures: foundations, corporations, LLCs)."""
+        data = self._execute_query(SEARCH_ENTITIES_QUERY, {"search": search_term})
+        return data.get("entities", [])
+
     def search_all(self, search_term: str) -> Dict[str, List[Dict]]:
-        """Search across all entity types."""
+        """Search across all Grid types: profiles, products, assets, and entities."""
         return {
             "profiles": self.search_profiles(search_term),
             "products": self.search_products(search_term),
-            "assets": self.search_assets(search_term)
+            "assets": self.search_assets(search_term),
+            "entities": self.search_entities(search_term),
         }
 
     def get_schema(self) -> Dict:
@@ -287,11 +371,19 @@ class GridAPIClient:
 # =============================================================================
 
 class GridEntityMatcher:
-    """Matches news items to Grid entities."""
+    """
+    Matches news items to Grid subjects (profiles, products, assets, entities).
+
+    Note on terminology:
+    - profile: The project/brand (e.g., "Solana")
+    - product: Things built by profiles (e.g., "Phantom Wallet")
+    - asset: Tokens/coins (e.g., "SOL")
+    - entity: Legal structures (e.g., "Solana Foundation" - the LLC/Corp)
+    """
 
     def __init__(self, api_key: str = None):
         self.client = GridAPIClient(api_key=api_key)
-        self._cache: Dict[str, GridMatch] = {}
+        self._cache: Dict[str, GridMultiMatch] = {}
 
     def extract_keywords(self, text: str) -> List[str]:
         """
@@ -393,12 +485,15 @@ class GridEntityMatcher:
 
         return keywords[:7]  # Return max 7 keywords - allow more matches
 
-    def match_entity(self, title: str, url: str = "", description: str = "") -> GridMatch:
+    def match_entity(self, title: str, url: str = "", description: str = "") -> GridMultiMatch:
         """
-        Try to match a news item to a Grid entity.
+        Match a news item to Grid subjects (profiles, products, assets, entities).
 
-        Returns GridMatch with matched=True if found, along with TGS data.
-        Uses fuzzy matching to find the best match across profiles, products, and assets.
+        Returns GridMultiMatch containing ALL valid matches above confidence threshold.
+        For example, "Coinbase opens Solana DEX" would match both Coinbase AND Solana.
+
+        Returns:
+            GridMultiMatch with all matched subjects, sorted by confidence
         """
         # Check cache first - use title + description for cache key
         full_text = f"{title} {description}"
@@ -410,53 +505,69 @@ class GridEntityMatcher:
         keywords = self.extract_keywords(full_text)
 
         if not keywords:
-            result = GridMatch(matched=False)
+            result = GridMultiMatch(matched=False)
             self._cache[cache_key] = result
             return result
 
         # Collect all candidate matches with scores
         all_candidates: List[Tuple[GridMatch, float]] = []
+        seen_names: set = set()  # Avoid duplicate matches for same subject
 
         for keyword in keywords:
-            # Search across all entity types
+            # Search across all Grid types
             results = self.client.search_all(keyword)
 
             # Score and collect profile matches
             for profile in results.get("profiles", []):
-                match = self._create_match_from_profile(profile, keyword)
-                score = self._score_match(match.entity_name, keyword, full_text)
-                all_candidates.append((match, score))
+                match = self._create_match_from_profile(profile)
+                if match.name.lower() not in seen_names:
+                    score = self._score_match(match.name, keyword, full_text)
+                    if score >= 0.7:  # Only keep high-confidence matches
+                        match.confidence = score
+                        all_candidates.append((match, score))
+                        seen_names.add(match.name.lower())
 
             # Score and collect product matches
             for product in results.get("products", []):
-                match = self._create_match_from_product(product, keyword)
-                score = self._score_match(match.entity_name, keyword, full_text)
-                all_candidates.append((match, score))
+                match = self._create_match_from_product(product)
+                if match.name.lower() not in seen_names:
+                    score = self._score_match(match.name, keyword, full_text)
+                    if score >= 0.7:
+                        match.confidence = score
+                        all_candidates.append((match, score))
+                        seen_names.add(match.name.lower())
 
             # Score and collect asset matches
             for asset in results.get("assets", []):
-                match = self._create_match_from_asset(asset, keyword)
-                score = self._score_match(match.entity_name, keyword, full_text)
-                all_candidates.append((match, score))
+                match = self._create_match_from_asset(asset)
+                if match.name.lower() not in seen_names:
+                    score = self._score_match(match.name, keyword, full_text)
+                    if score >= 0.7:
+                        match.confidence = score
+                        all_candidates.append((match, score))
+                        seen_names.add(match.name.lower())
+
+            # Score and collect entity matches (legal structures)
+            for entity in results.get("entities", []):
+                match = self._create_match_from_entity(entity)
+                if match.name.lower() not in seen_names:
+                    score = self._score_match(match.name, keyword, full_text)
+                    if score >= 0.7:
+                        match.confidence = score
+                        all_candidates.append((match, score))
+                        seen_names.add(match.name.lower())
 
         if not all_candidates:
-            result = GridMatch(matched=False)
+            result = GridMultiMatch(matched=False)
             self._cache[cache_key] = result
             return result
 
-        # Sort by score (highest first) and pick the best match
+        # Sort by score (highest first)
         all_candidates.sort(key=lambda x: x[1], reverse=True)
-        best_match, best_score = all_candidates[0]
 
-        # Only accept matches with HIGH confidence (0.7+)
-        # This prevents loose matches like "any article mentioning X" -> X entity
-        if best_score >= 0.7:
-            best_match.confidence = best_score
-            self._cache[cache_key] = best_match
-            return best_match
-
-        # No good match found
-        result = GridMatch(matched=False)
+        # Create multi-match result with all valid matches
+        matches = [match for match, score in all_candidates]
+        result = GridMultiMatch(matched=True, matches=matches)
         self._cache[cache_key] = result
         return result
 
@@ -498,91 +609,51 @@ class GridEntityMatcher:
 
         return min(score, 2.0)  # Cap at 2.0
 
-    def _create_match_from_profile(self, profile: Dict, keyword: str) -> GridMatch:
-        """Create GridMatch from a profile result."""
-        # Extract sector as tag
-        tags = []
-        sector = profile.get("profileSector", {})
-        if sector and sector.get("name"):
-            tags.append(sector["name"])
-
-        profile_id = profile.get("id", "")
-        profile_name = profile.get("name", "")
-
+    def _create_match_from_profile(self, profile: Dict) -> GridMatch:
+        """Create GridMatch from a profile (project/brand) result."""
         return GridMatch(
             matched=True,
-            entity_id=profile_id,
-            entity_name=profile_name,
-            entity_type="profile",
+            grid_type="profile",
+            grid_id=profile.get("id", ""),
+            name=profile.get("name", ""),
             description=profile.get("descriptionShort", ""),
-            category=profile.get("profileType", {}).get("name", ""),
-            tags=tags,
-            confidence=self._calculate_confidence(profile_name, keyword),
-            profile_id=profile_id,
-            profile_name=profile_name,
+            category=profile.get("profileType", {}).get("name", "") if profile.get("profileType") else "",
         )
 
-    def _create_match_from_product(self, product: Dict, keyword: str) -> GridMatch:
+    def _create_match_from_product(self, product: Dict) -> GridMatch:
         """Create GridMatch from a product result."""
-        product_id = product.get("id", "")
-        product_name = product.get("name", "")
-
         return GridMatch(
             matched=True,
-            entity_id=product_id,
-            entity_name=product_name,
-            entity_type="product",
+            grid_type="product",
+            grid_id=product.get("id", ""),
+            name=product.get("name", ""),
             description=product.get("description", ""),
-            category=product.get("productType", {}).get("name", ""),
-            confidence=self._calculate_confidence(product_name, keyword),
-            product_id=product_id,
-            product_name=product_name,
+            category=product.get("productType", {}).get("name", "") if product.get("productType") else "",
         )
 
-    def _create_match_from_asset(self, asset: Dict, keyword: str) -> GridMatch:
-        """Create GridMatch from an asset result."""
-        asset_id = asset.get("id", "")
-        asset_name = asset.get("name", "")
-        asset_ticker = asset.get("ticker", "")
-
+    def _create_match_from_asset(self, asset: Dict) -> GridMatch:
+        """Create GridMatch from an asset (token/coin) result."""
         return GridMatch(
             matched=True,
-            entity_id=asset_id,
-            entity_name=asset_name,
-            entity_type="asset",
-            category=f"Token ({asset_ticker})" if asset_ticker else "Token",
-            logo_url=asset.get("icon", ""),
-            confidence=self._calculate_confidence(asset_name, keyword),
-            asset_id=asset_id,
-            asset_name=asset_name,
-            asset_ticker=asset_ticker,
+            grid_type="asset",
+            grid_id=asset.get("id", ""),
+            name=asset.get("name", ""),
+            ticker=asset.get("ticker", ""),
+            category="Token",
         )
 
-    def _calculate_confidence(self, entity_name: str, keyword: str) -> float:
-        """Calculate match confidence (0-1)."""
-        if not entity_name or not keyword:
-            return 0.0
-
-        entity_lower = entity_name.lower()
-        keyword_lower = keyword.lower()
-
-        # Exact match
-        if entity_lower == keyword_lower:
-            return 1.0
-
-        # Entity name contains keyword
-        if keyword_lower in entity_lower:
-            return 0.9
-
-        # Keyword contains entity name
-        if entity_lower in keyword_lower:
-            return 0.8
-
-        # Partial match (first few chars)
-        if entity_lower.startswith(keyword_lower[:3]):
-            return 0.6
-
-        return 0.5
+    def _create_match_from_entity(self, entity: Dict) -> GridMatch:
+        """Create GridMatch from an entity (legal structure) result."""
+        entity_type = entity.get("entityType", {})
+        country = entity.get("country", {})
+        return GridMatch(
+            matched=True,
+            grid_type="entity",
+            grid_id=entity.get("id", ""),
+            name=entity.get("name", ""),
+            entity_type_name=entity_type.get("name", "") if entity_type else "",
+            country=country.get("name", "") if country else "",
+        )
 
 
 # =============================================================================
