@@ -744,12 +744,29 @@ class DataCSVProcessor:
 
     def _fetch_content(self, url: str) -> str:
         """Fetch HTML content from URL with multiple fallback methods."""
-        # Method 1: Try requests first
+        # Browser-like headers to bypass bot detection
+        headers = {
+            'User-Agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+            'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8',
+            'Accept-Language': 'en-US,en;q=0.9',
+            'Accept-Encoding': 'gzip, deflate, br',
+            'DNT': '1',
+            'Connection': 'keep-alive',
+            'Upgrade-Insecure-Requests': '1',
+            'Sec-Fetch-Dest': 'document',
+            'Sec-Fetch-Mode': 'navigate',
+            'Sec-Fetch-Site': 'none',
+            'Sec-Fetch-User': '?1',
+            'Cache-Control': 'max-age=0',
+        }
+
+        # Method 1: Try requests first with full browser headers
         try:
             response = requests.get(
                 url,
-                headers={'User-Agent': self.config.user_agent},
-                timeout=self.config.timeout
+                headers=headers,
+                timeout=self.config.timeout,
+                allow_redirects=True
             )
             response.raise_for_status()
             return response.text
@@ -758,7 +775,7 @@ class DataCSVProcessor:
 
         # Method 2: Try urllib with custom SSL context
         try:
-            req = urllib.request.Request(url, headers={'User-Agent': self.config.user_agent})
+            req = urllib.request.Request(url, headers=headers)
             if SSL_CONTEXT:
                 with urllib.request.urlopen(req, timeout=self.config.timeout, context=SSL_CONTEXT) as response:
                     return response.read().decode('utf-8', errors='ignore')
@@ -774,7 +791,7 @@ class DataCSVProcessor:
             no_verify_ctx = ssl.create_default_context()
             no_verify_ctx.check_hostname = False
             no_verify_ctx.verify_mode = ssl.CERT_NONE
-            req = urllib.request.Request(url, headers={'User-Agent': self.config.user_agent})
+            req = urllib.request.Request(url, headers=headers)
             with urllib.request.urlopen(req, timeout=self.config.timeout, context=no_verify_ctx) as response:
                 return response.read().decode('utf-8', errors='ignore')
         except Exception as e:
@@ -1007,7 +1024,11 @@ class DataCSVProcessor:
         if categories is None:
             categories = ['Venture Capital', 'Launches']
         if search_terms is None:
-            search_terms = ['Solana', 'Starknet', 'Tether', 'Ethereum', 'Base', 'Arbitrum', 'Optimism']
+            # Only search for priority ecosystems - others are covered by Grid matches
+            search_terms = ['Solana', 'Starknet', 'Tether', 'USDT', 'SOL']
+
+        # Categories to exclude from research
+        exclude_categories = ['extra reads', 'extra read']
 
         # Normalize categories for comparison
         categories_lower = [c.lower() for c in categories]
@@ -1023,6 +1044,11 @@ class DataCSVProcessor:
         for item in items:
             # Check if category matches
             item_cat = item.category.lower() if item.category else ''
+
+            # Skip excluded categories
+            if any(exc in item_cat for exc in exclude_categories):
+                continue
+
             cat_match = any(cat in item_cat for cat in categories_lower)
 
             if not cat_match:

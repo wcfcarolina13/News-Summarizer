@@ -356,9 +356,10 @@ class GridEntityMatcher:
             'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday', 'Sunday',
             'January', 'February', 'March', 'April', 'May', 'June', 'July',
             'August', 'September', 'October', 'November', 'December',
-            # Generic crypto terms - DON'T auto-match these
-            'Bitcoin', 'Ethereum', 'Crypto', 'Solana', 'Binance', 'Coinbase',
-            'Tether', 'Ripple', 'Cardano', 'Dogecoin', 'Polygon', 'Avalanche',
+            # Generic crypto terms - DON'T auto-match these (except priority ecosystems)
+            # Priority ecosystems (Solana, Starknet, Tether) are NOT in stop_words - they SHOULD match
+            'Bitcoin', 'Ethereum', 'Crypto', 'Binance', 'Coinbase',
+            'Ripple', 'Cardano', 'Dogecoin', 'Polygon', 'Avalanche',
             'Polkadot', 'Chainlink', 'Uniswap', 'Arbitrum', 'Optimism',
             # Political/news figures - prevent matching to meme tokens
             'Trump', 'Biden', 'Musk', 'Elon', 'Obama', 'Powell', 'Gensler',
