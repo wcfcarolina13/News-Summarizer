@@ -360,6 +360,11 @@ class GridEntityMatcher:
             'Bitcoin', 'Ethereum', 'Crypto', 'Solana', 'Binance', 'Coinbase',
             'Tether', 'Ripple', 'Cardano', 'Dogecoin', 'Polygon', 'Avalanche',
             'Polkadot', 'Chainlink', 'Uniswap', 'Arbitrum', 'Optimism',
+            # Political/news figures - prevent matching to meme tokens
+            'Trump', 'Biden', 'Musk', 'Elon', 'Obama', 'Powell', 'Gensler',
+            'Yellen', 'Congress', 'Senate', 'Federal', 'Reserve', 'Government',
+            # Common news prefixes/sources
+            'Daily', 'Breaking', 'Update', 'Alert', 'News', 'Report',
         }
 
         for word in leading_caps:
