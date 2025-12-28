@@ -150,9 +150,16 @@ class AudioBriefingApp(ctk.CTk):
             frame_row0, text="💾", width=30,
             command=lambda: self.save_api_key(self.gemini_key_entry.get().strip())
         )
-        self.btn_save_key.grid(row=0, column=2, padx=(0, 10))
+        self.btn_save_key.grid(row=0, column=2, padx=(0, 2))
 
-        ctk.CTkLabel(frame_row0, text="Model:").grid(row=0, column=3, padx=(0, 5), sticky="w")
+        # Toggle API key visibility button
+        self.btn_toggle_key = ctk.CTkButton(
+            frame_row0, text="👁", width=30,
+            command=self.toggle_api_key_visibility
+        )
+        self.btn_toggle_key.grid(row=0, column=3, padx=(0, 10))
+
+        ctk.CTkLabel(frame_row0, text="Model:").grid(row=0, column=4, padx=(0, 5), sticky="w")
         
         self.model_var = ctk.StringVar(value="Fast (FREE)")
         self.model_combo = ctk.CTkComboBox(
@@ -162,7 +169,7 @@ class AudioBriefingApp(ctk.CTk):
             width=180,
             state="readonly"
         )
-        self.model_combo.grid(row=0, column=4, sticky="w")
+        self.model_combo.grid(row=0, column=5, sticky="w")
         
         # Row 1: Help text
         help_text = "💡 Fast: 4000/min | Balanced: 1500/day | Best: 50/day (highest quality)"
@@ -571,11 +578,34 @@ class AudioBriefingApp(ctk.CTk):
 
     def save_api_key(self, key):
         """Save API key to file.
-        
+
         Args:
             key: API key to save
         """
-        self.file_manager.save_api_key(key)
+        print(f"[API Key] Saving key: {'*' * (len(key) - 4) + key[-4:] if len(key) > 4 else '(empty)'}")
+        try:
+            self.file_manager.save_api_key(key)
+            print(f"[API Key] Saved successfully")
+            # Visual feedback - flash the button green
+            self.btn_save_key.configure(fg_color="green")
+            self.label_status.configure(text="API key saved!", text_color="green")
+            # Reset button color after 1 second
+            self.after(1000, lambda: self.btn_save_key.configure(fg_color=("#3B8ED0", "#1F6AA5")))
+        except Exception as e:
+            print(f"[API Key] Error saving: {e}")
+            self.label_status.configure(text=f"Error saving API key: {e}", text_color="red")
+
+    def toggle_api_key_visibility(self):
+        """Toggle showing/hiding the API key."""
+        current_show = self.gemini_key_entry.cget("show")
+        if current_show == "*":
+            self.gemini_key_entry.configure(show="")
+            self.btn_toggle_key.configure(text="🙈")
+            print("[API Key] Visibility: shown")
+        else:
+            self.gemini_key_entry.configure(show="*")
+            self.btn_toggle_key.configure(text="👁")
+            print("[API Key] Visibility: hidden")
 
     def save_summary(self):
         """Save textbox content to summary file.
