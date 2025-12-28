@@ -785,29 +785,31 @@ class AudioBriefingApp(ctk.CTk):
         )
 
     def open_fetch_article_dialog(self):
-        """Open dialog to fetch article content from a URL."""
+        """Open dialog to fetch article content from URLs."""
         dialog = ctk.CTkToplevel(self)
-        dialog.title("Fetch Article")
-        dialog.geometry("600x200")
+        dialog.title("Fetch Articles")
+        dialog.geometry("650x350")
         dialog.transient(self)
         dialog.lift()
         dialog.grab_set()
 
         dialog.grid_columnconfigure(0, weight=1)
+        dialog.grid_rowconfigure(1, weight=1)
 
         # Instructions
         ctk.CTkLabel(
             dialog,
-            text="Enter an article URL to fetch its content:",
+            text="Enter article URLs (one per line):",
             font=ctk.CTkFont(size=14)
         ).grid(row=0, column=0, padx=20, pady=(20, 10), sticky="w")
 
-        # URL entry
-        url_entry = ctk.CTkEntry(dialog, placeholder_text="https://example.com/article...")
-        url_entry.grid(row=1, column=0, padx=20, pady=10, sticky="ew")
+        # URL text area (instead of single entry)
+        url_textbox = ctk.CTkTextbox(dialog, height=150, font=ctk.CTkFont(size=12))
+        url_textbox.grid(row=1, column=0, padx=20, pady=10, sticky="nsew")
+        url_textbox.insert("0.0", "https://")
 
         # Status label
-        status_label = ctk.CTkLabel(dialog, text="", text_color="gray")
+        status_label = ctk.CTkLabel(dialog, text="Paste one or more URLs, each on a separate line", text_color="gray")
         status_label.grid(row=2, column=0, padx=20, pady=5, sticky="w")
 
         # Buttons
@@ -815,35 +817,69 @@ class AudioBriefingApp(ctk.CTk):
         btn_frame.grid(row=3, column=0, padx=20, pady=(10, 20), sticky="ew")
         btn_frame.grid_columnconfigure((0, 1), weight=1)
 
-        def fetch_article():
-            url = url_entry.get().strip()
-            if not url:
-                status_label.configure(text="Please enter a URL", text_color="orange")
+        def fetch_articles():
+            import re
+            text = url_textbox.get("0.0", "end-1c").strip()
+            if not text:
+                status_label.configure(text="Please enter at least one URL", text_color="orange")
                 return
-            if not url.startswith("http"):
-                url = "https://" + url
 
-            status_label.configure(text="Fetching article...", text_color="orange")
+            # Extract all URLs from the text
+            url_pattern = r'https?://[^\s]+'
+            urls = re.findall(url_pattern, text)
+
+            if not urls:
+                # Try adding https:// to lines that look like domains
+                lines = [l.strip() for l in text.split('\n') if l.strip()]
+                urls = []
+                for line in lines:
+                    if not line.startswith("http"):
+                        line = "https://" + line
+                    urls.append(line)
+
+            if not urls:
+                status_label.configure(text="No valid URLs found", text_color="orange")
+                return
+
+            status_label.configure(text=f"Fetching {len(urls)} article(s)...", text_color="orange")
             dialog.update()
 
             # Fetch in background
             def fetch_thread():
-                content = self._fetch_article_content(url)
-                if content:
+                all_content = []
+                success_count = 0
+
+                for i, url in enumerate(urls):
+                    self.after(0, lambda i=i: status_label.configure(
+                        text=f"Fetching article {i+1}/{len(urls)}...", text_color="orange"
+                    ))
+                    print(f"[Fetch] Fetching URL {i+1}/{len(urls)}: {url[:60]}...")
+
+                    content = self._fetch_article_content(url)
+                    if content and len(content) > 100:
+                        if all_content:
+                            all_content.append("\n\n---\n\n")
+                        all_content.append(content)
+                        success_count += 1
+                        print(f"[Fetch] Success: {len(content)} chars")
+                    else:
+                        print(f"[Fetch] Failed: {url[:60]}")
+
+                if all_content:
+                    combined = "".join(all_content)
                     def update_ui():
                         self.textbox.delete("0.0", "end")
-                        self.textbox.insert("0.0", content)
-                        # Update placeholder
+                        self.textbox.insert("0.0", combined)
                         self._placeholder.place_forget()
                         dialog.destroy()
                         self.label_status.configure(
-                            text=f"Fetched article ({len(content)} chars). Use Direct Audio to clean and convert.",
+                            text=f"Fetched {success_count} article(s) ({len(combined)} chars). Use Direct Audio to clean and convert.",
                             text_color="green"
                         )
                     self.after(0, update_ui)
                 else:
                     self.after(0, lambda: status_label.configure(
-                        text="Failed to fetch article. Check URL and try again.",
+                        text="Failed to fetch any articles. Check URLs and try again.",
                         text_color="red"
                     ))
 
@@ -852,7 +888,7 @@ class AudioBriefingApp(ctk.CTk):
         ctk.CTkButton(btn_frame, text="Cancel", fg_color="gray", command=dialog.destroy).grid(
             row=0, column=0, padx=5, sticky="ew"
         )
-        ctk.CTkButton(btn_frame, text="Fetch", fg_color="green", command=fetch_article).grid(
+        ctk.CTkButton(btn_frame, text="Fetch All", fg_color="green", command=fetch_articles).grid(
             row=0, column=1, padx=5, sticky="ew"
         )
 
@@ -1474,25 +1510,46 @@ class AudioBriefingApp(ctk.CTk):
             self.label_status.configure(text="No text to convert", text_color="red")
             return
 
-        # Check if auto-fetch URLs is enabled and text looks like a URL
+        # Check if auto-fetch URLs is enabled and text contains URLs
         if self.settings.get("auto_fetch_urls", False):
-            # Check if text is just a URL (possibly with whitespace)
-            potential_url = raw_text.split()[0] if raw_text.split() else ""
-            if potential_url.startswith(("http://", "https://")) and len(raw_text.split()) <= 2:
-                self.label_status.configure(text="Fetching article from URL...", text_color="orange")
+            # Extract all URLs from the text (one per line or space-separated)
+            import re
+            url_pattern = r'https?://[^\s]+'
+            urls = re.findall(url_pattern, raw_text)
+
+            if urls:
+                self.label_status.configure(text=f"Fetching {len(urls)} article(s)...", text_color="orange")
                 self.update()
 
-                # Fetch the article content
-                fetched_content = self._fetch_article_content(potential_url)
-                if fetched_content and len(fetched_content) > 100:
-                    raw_text = fetched_content
+                # Fetch all articles
+                all_content = []
+                for i, url in enumerate(urls):
+                    self.label_status.configure(text=f"Fetching article {i+1}/{len(urls)}...", text_color="orange")
+                    self.update()
+                    print(f"[Fetch] Fetching URL {i+1}/{len(urls)}: {url[:60]}...")
+
+                    fetched_content = self._fetch_article_content(url)
+                    if fetched_content and len(fetched_content) > 100:
+                        # Add separator between articles
+                        if all_content:
+                            all_content.append("\n\n---\n\n")
+                        all_content.append(fetched_content)
+                        print(f"[Fetch] Success: {len(fetched_content)} chars")
+                    else:
+                        print(f"[Fetch] Failed to fetch: {url[:60]}")
+
+                if all_content:
+                    raw_text = "".join(all_content)
                     self.textbox.delete("0.0", "end")
                     self.textbox.insert("0.0", raw_text)
                     self._placeholder.place_forget()
-                    self.label_status.configure(text="Article fetched. Processing...", text_color="green")
+                    self.label_status.configure(
+                        text=f"Fetched {len([c for c in all_content if c != '\n\n---\n\n'])} article(s). Processing...",
+                        text_color="green"
+                    )
                 else:
                     self.label_status.configure(
-                        text="Failed to fetch article. Paste content manually or use Fetch Article button.",
+                        text="Failed to fetch articles. Paste content manually or use Fetch Article button.",
                         text_color="red"
                     )
                     return
