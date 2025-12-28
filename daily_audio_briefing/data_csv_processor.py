@@ -1113,7 +1113,8 @@ class DataCSVProcessor:
                           categories: List[str] = None,
                           search_terms: List[str] = None,
                           only_unmatched: bool = True,
-                          all_items: bool = False) -> List[ExtractedItem]:
+                          all_items: bool = False,
+                          api_key: str = None) -> List[ExtractedItem]:
         """
         Research article content for blockchain/ecosystem mentions.
 
@@ -1127,6 +1128,7 @@ class DataCSVProcessor:
             search_terms: Terms to search for (default: ['Solana', 'Starknet', 'Tether'])
             only_unmatched: Only research items that didn't get a Grid match
             all_items: If True, research ALL items regardless of category
+            api_key: Gemini API key for LLM analysis (optional)
 
         Returns:
             Items with 'comments' field populated for researched articles
@@ -1280,7 +1282,7 @@ class DataCSVProcessor:
                         try:
                             from grid_api import analyze_grid_profile_with_llm
                             primary_match = best_match.primary
-                            if primary_match and article_text:
+                            if primary_match and article_text and api_key:
                                 entity_name = primary_match.name
                                 # Try to get profile details (works for profiles, may be empty for assets)
                                 profile_details = article_matcher.client.get_profile_details(entity_name)
@@ -1294,7 +1296,7 @@ class DataCSVProcessor:
                                         "products": [],
                                         "assets": []
                                     }
-                                suggestion = analyze_grid_profile_with_llm(article_text, profile_details)
+                                suggestion = analyze_grid_profile_with_llm(article_text, profile_details, api_key=api_key)
                                 if suggestion:
                                     comments.append(f"Suggest: {suggestion}")
                         except Exception as llm_err:

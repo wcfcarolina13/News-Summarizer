@@ -1874,6 +1874,7 @@ This will incur charges to your Google Cloud account!
         config_name = self.extract_config_var.get()
         enrich_grid = self.grid_enrich_var.get()
         research_articles = self.research_articles_var.get()
+        api_key = self.gemini_key_entry.get().strip()  # For LLM analysis
 
         # Disable button during extraction
         self.btn_extract.configure(state="disabled", text="Extracting...")
@@ -1906,7 +1907,7 @@ This will incur charges to your Google Cloud account!
                 # Research articles if requested - research ALL items for Grid matching
                 if research_articles and items:
                     self.after(0, lambda: self.label_status.configure(text="Researching articles...", text_color="orange"))
-                    items = processor.research_articles(items, all_items=True)
+                    items = processor.research_articles(items, all_items=True, api_key=api_key)
 
                 # Store and display results
                 self.extracted_items = items

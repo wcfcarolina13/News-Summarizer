@@ -795,7 +795,8 @@ def enrich_with_grid_data(items: List[Dict], api_key: str = None) -> List[Dict]:
 def analyze_grid_profile_with_llm(
     article_text: str,
     profile_details: Dict,
-    model_name: str = "gemini-2.0-flash-exp"
+    model_name: str = "gemini-2.0-flash-exp",
+    api_key: str = None
 ) -> Optional[str]:
     """
     Use LLM to analyze article against Grid profile and suggest updates.
@@ -804,6 +805,7 @@ def analyze_grid_profile_with_llm(
         article_text: The article content
         profile_details: Dict with 'profile', 'products', 'assets' from Grid
         model_name: Gemini model to use (default: gemini-2.0-flash-exp for free)
+        api_key: Gemini API key (optional, falls back to environment variable)
 
     Returns:
         Suggested updates or None if analysis not possible
@@ -812,8 +814,9 @@ def analyze_grid_profile_with_llm(
         import google.generativeai as genai
         import os
 
-        # Get API key from environment
-        api_key = os.environ.get("GEMINI_API_KEY")
+        # Get API key from parameter or environment
+        if not api_key:
+            api_key = os.environ.get("GEMINI_API_KEY")
         if not api_key:
             return None
 
