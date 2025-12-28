@@ -995,6 +995,57 @@ class AudioBriefingApp(ctk.CTk):
             except Exception as e:
                 print(f"       [Fetch] Paywall check error: {e}")
 
+            article_text = None
+
+            # IMPORTANT: Extract Substack/Next.js content BEFORE removing scripts
+            # Substack uses Next.js which embeds article content in __NEXT_DATA__ script
+            try:
+                next_data_script = soup.find('script', {'id': '__NEXT_DATA__'})
+                if next_data_script and next_data_script.string:
+                    import json
+                    try:
+                        next_data = json.loads(next_data_script.string)
+                        # Navigate to the post content in the JSON structure
+                        # Substack structure: props.pageProps.post.body_html or similar
+                        post = None
+                        if 'props' in next_data and 'pageProps' in next_data['props']:
+                            page_props = next_data['props']['pageProps']
+                            if 'post' in page_props:
+                                post = page_props['post']
+                            elif 'initialPost' in page_props:
+                                post = page_props['initialPost']
+
+                        if post:
+                            # Try to get the body HTML
+                            body_html = post.get('body_html', '')
+                            if body_html:
+                                body_soup = BeautifulSoup(body_html, 'html.parser')
+                                text = body_soup.get_text(separator='\n', strip=True)
+                                if len(text) > 200:
+                                    article_text = text
+                                    print(f"       [Fetch] Next.js JSON: found {len(text)} chars from body_html")
+
+                            # Also try truncated_body_text for paywalled content
+                            if not article_text or len(article_text) < 200:
+                                truncated = post.get('truncated_body_text', '')
+                                if truncated and len(truncated) > 200:
+                                    article_text = truncated
+                                    print(f"       [Fetch] Next.js JSON: found {len(truncated)} chars from truncated_body_text")
+
+                            # Try subtitle + body combination
+                            if not article_text or len(article_text) < 200:
+                                subtitle = post.get('subtitle', '')
+                                description = post.get('description', '')
+                                combined = f"{subtitle}\n\n{description}".strip()
+                                if len(combined) > 200:
+                                    article_text = combined
+                                    print(f"       [Fetch] Next.js JSON: found {len(combined)} chars from subtitle+description")
+
+                    except json.JSONDecodeError as je:
+                        print(f"       [Fetch] Next.js JSON parse error: {je}")
+            except Exception as e:
+                print(f"       [Fetch] Next.js extraction error: {e}")
+
             # Remove elements that are definitely not article content
             try:
                 for tag in soup.find_all(['script', 'style', 'nav', 'footer', 'header',
@@ -1020,51 +1071,50 @@ class AudioBriefingApp(ctk.CTk):
             except Exception as e:
                 print(f"       [Fetch] Pattern removal error: {e}")
 
-            article_text = None
-
-            # Platform-specific extraction
+            # Platform-specific extraction (if JSON extraction didn't work)
             # Substack (multiple variations) - includes custom domains
-            try:
-                is_substack = 'substack.com' in url or 'experimental-history.com' in url
-                if not is_substack:
-                    # Check for Substack-like structure in HTML
-                    is_substack = (
-                        soup.find('div', class_='available-content') is not None or
-                        soup.find('div', class_='body markup') is not None or
-                        soup.find('meta', {'property': 'og:site_name', 'content': lambda x: x and 'Substack' in str(x)}) is not None or
-                        'substack' in str(soup.find('script', {'src': True}) or '').lower()
-                    )
+            if not article_text or len(article_text) < 200:
+                try:
+                    is_substack = 'substack.com' in url or 'experimental-history.com' in url
+                    if not is_substack:
+                        # Check for Substack-like structure in HTML
+                        is_substack = (
+                            soup.find('div', class_='available-content') is not None or
+                            soup.find('div', class_='body markup') is not None or
+                            soup.find('meta', {'property': 'og:site_name', 'content': lambda x: x and 'Substack' in str(x)}) is not None or
+                            'substack' in str(soup.find('script', {'src': True}) or '').lower()
+                        )
 
-                if is_substack:
-                    print(f"       [Fetch] Trying Substack extraction...")
-                    # More comprehensive Substack selectors
-                    substack_selectors = [
-                        'div.body.markup',
-                        'div.body-markup',
-                        'div.available-content',
-                        'div.post-content',
-                        'div.post-content-final',
-                        'div.body',
-                        'div.markup',
-                        'article.post',
-                        'article',
-                        '.post-content',
-                        '.body.markup',
-                        '[data-testid="post-content"]',
-                    ]
-                    for selector in substack_selectors:
-                        try:
-                            content = soup.select_one(selector)
-                            if content:
-                                text = content.get_text(separator='\n', strip=True)
-                                if len(text) > 200:
-                                    article_text = text
-                                    print(f"       [Fetch] Substack: found {len(text)} chars with {selector}")
-                                    break
-                        except Exception as sel_err:
-                            continue
-            except Exception as e:
-                print(f"       [Fetch] Substack extraction error: {e}")
+                    if is_substack:
+                        print(f"       [Fetch] Trying Substack extraction...")
+                        # More comprehensive Substack selectors
+                        substack_selectors = [
+                            'div.body.markup',
+                            'div.body-markup',
+                            'div.available-content',
+                            'div.post-content',
+                            'div.post-content-final',
+                            'div.body',
+                            'div.markup',
+                            'article.post',
+                            'article',
+                            '.post-content',
+                            '.body.markup',
+                            '[data-testid="post-content"]',
+                        ]
+                        for selector in substack_selectors:
+                            try:
+                                content = soup.select_one(selector)
+                                if content:
+                                    text = content.get_text(separator='\n', strip=True)
+                                    if len(text) > 200:
+                                        article_text = text
+                                        print(f"       [Fetch] Substack: found {len(text)} chars with {selector}")
+                                        break
+                            except Exception as sel_err:
+                                continue
+                except Exception as e:
+                    print(f"       [Fetch] Substack extraction error: {e}")
 
             # Generic article selectors (priority order)
             if not article_text or len(article_text) < 200:
@@ -1753,8 +1803,10 @@ class AudioBriefingApp(ctk.CTk):
                     self.textbox.delete("0.0", "end")
                     self.textbox.insert("0.0", raw_text)
                     self._placeholder.place_forget()
+                    separator = "\n\n---\n\n"
+                    article_count = len([c for c in all_content if c != separator])
                     self.label_status.configure(
-                        text=f"Fetched {len([c for c in all_content if c != '\n\n---\n\n'])} article(s). Processing...",
+                        text=f"Fetched {article_count} article(s). Processing...",
                         text_color="green"
                     )
                 else:
