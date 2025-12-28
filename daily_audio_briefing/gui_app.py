@@ -157,9 +157,16 @@ class AudioBriefingApp(ctk.CTk):
             frame_row0, text="👁", width=30,
             command=self.toggle_api_key_visibility
         )
-        self.btn_toggle_key.grid(row=0, column=3, padx=(0, 10))
+        self.btn_toggle_key.grid(row=0, column=3, padx=(0, 2))
 
-        ctk.CTkLabel(frame_row0, text="Model:").grid(row=0, column=4, padx=(0, 5), sticky="w")
+        # API Key Manager button
+        self.btn_key_manager = ctk.CTkButton(
+            frame_row0, text="⚙", width=30,
+            command=self.open_api_key_manager
+        )
+        self.btn_key_manager.grid(row=0, column=4, padx=(0, 10))
+
+        ctk.CTkLabel(frame_row0, text="Model:").grid(row=0, column=5, padx=(0, 5), sticky="w")
         
         self.model_var = ctk.StringVar(value="Fast (FREE)")
         self.model_combo = ctk.CTkComboBox(
@@ -169,7 +176,7 @@ class AudioBriefingApp(ctk.CTk):
             width=180,
             state="readonly"
         )
-        self.model_combo.grid(row=0, column=5, sticky="w")
+        self.model_combo.grid(row=0, column=6, sticky="w")
         
         # Row 1: Help text
         help_text = "💡 Fast: 4000/min | Balanced: 1500/day | Best: 50/day (highest quality)"
@@ -586,14 +593,24 @@ class AudioBriefingApp(ctk.CTk):
         try:
             self.file_manager.save_api_key(key)
             print(f"[API Key] Saved successfully")
-            # Visual feedback - flash the button green
-            self.btn_save_key.configure(fg_color="green")
-            self.label_status.configure(text="API key saved!", text_color="green")
-            # Reset button color after 1 second
-            self.after(1000, lambda: self.btn_save_key.configure(fg_color=("#3B8ED0", "#1F6AA5")))
+            # Visual feedback - flash the button green and show checkmark
+            self.btn_save_key.configure(fg_color="green", text="✓")
+            # Also flash the entry border green
+            self.gemini_key_entry.configure(border_color="green")
+            # Update status if it exists
+            if hasattr(self, 'label_status'):
+                self.label_status.configure(text="API key saved!", text_color="green")
+            # Reset after 1.5 seconds
+            def reset_visual():
+                self.btn_save_key.configure(fg_color=("#3B8ED0", "#1F6AA5"), text="💾")
+                self.gemini_key_entry.configure(border_color=("#979DA2", "#565B5E"))
+            self.after(1500, reset_visual)
         except Exception as e:
             print(f"[API Key] Error saving: {e}")
-            self.label_status.configure(text=f"Error saving API key: {e}", text_color="red")
+            self.btn_save_key.configure(fg_color="red", text="✗")
+            if hasattr(self, 'label_status'):
+                self.label_status.configure(text=f"Error saving API key: {e}", text_color="red")
+            self.after(1500, lambda: self.btn_save_key.configure(fg_color=("#3B8ED0", "#1F6AA5"), text="💾"))
 
     def toggle_api_key_visibility(self):
         """Toggle showing/hiding the API key."""
@@ -606,6 +623,80 @@ class AudioBriefingApp(ctk.CTk):
             self.gemini_key_entry.configure(show="*")
             self.btn_toggle_key.configure(text="👁")
             print("[API Key] Visibility: hidden")
+
+    def open_api_key_manager(self):
+        """Open the API Key Manager popup window."""
+        dialog = ctk.CTkToplevel(self)
+        dialog.title("API Key Manager")
+        dialog.geometry("450x250")
+        dialog.transient(self)
+        dialog.grab_set()
+        dialog.lift()
+
+        # Center the dialog
+        dialog.update_idletasks()
+        x = self.winfo_x() + (self.winfo_width() // 2) - (450 // 2)
+        y = self.winfo_y() + (self.winfo_height() // 2) - (250 // 2)
+        dialog.geometry(f"450x250+{x}+{y}")
+
+        # Current key display
+        ctk.CTkLabel(dialog, text="Current API Key:", font=ctk.CTkFont(weight="bold")).pack(pady=(20, 5))
+
+        current_key = self.gemini_key_entry.get().strip()
+        if current_key:
+            masked_key = f"{current_key[:8]}...{current_key[-4:]}" if len(current_key) > 12 else "****"
+        else:
+            masked_key = "(No key saved)"
+
+        key_label = ctk.CTkLabel(dialog, text=masked_key, font=ctk.CTkFont(family="Courier"))
+        key_label.pack(pady=(0, 15))
+
+        # Key file location
+        key_file = os.path.join(os.path.dirname(__file__), "gemini_api_key.txt")
+        ctk.CTkLabel(dialog, text=f"Stored in: {os.path.basename(key_file)}", text_color="gray", font=ctk.CTkFont(size=11)).pack(pady=(0, 20))
+
+        # Buttons frame
+        btn_frame = ctk.CTkFrame(dialog, fg_color="transparent")
+        btn_frame.pack(pady=10)
+
+        def clear_key():
+            """Clear the API key."""
+            self.gemini_key_entry.delete(0, "end")
+            try:
+                if os.path.exists(key_file):
+                    os.remove(key_file)
+                print("[API Key] Cleared")
+                key_label.configure(text="(No key saved)")
+                if hasattr(self, 'label_status'):
+                    self.label_status.configure(text="API key cleared", text_color="orange")
+            except Exception as e:
+                print(f"[API Key] Error clearing: {e}")
+
+        def copy_key():
+            """Copy the current key to clipboard."""
+            key = self.gemini_key_entry.get().strip()
+            if key:
+                self.clipboard_clear()
+                self.clipboard_append(key)
+                print("[API Key] Copied to clipboard")
+                # Flash feedback
+                copy_btn.configure(text="Copied!")
+                dialog.after(1000, lambda: copy_btn.configure(text="Copy Key"))
+
+        copy_btn = ctk.CTkButton(btn_frame, text="Copy Key", width=100, command=copy_key)
+        copy_btn.pack(side="left", padx=5)
+
+        ctk.CTkButton(btn_frame, text="Clear Key", width=100, fg_color="orange", hover_color="darkorange", command=clear_key).pack(side="left", padx=5)
+
+        ctk.CTkButton(btn_frame, text="Close", width=100, fg_color="gray", command=dialog.destroy).pack(side="left", padx=5)
+
+        # Info text
+        ctk.CTkLabel(
+            dialog,
+            text="Get a free API key at: aistudio.google.com",
+            text_color="gray",
+            font=ctk.CTkFont(size=11)
+        ).pack(pady=(20, 10))
 
     def save_summary(self):
         """Save textbox content to summary file.
