@@ -48,8 +48,9 @@ class AudioBriefingApp(ctk.CTk):
         self.geometry("950x900") # Wider default width to fit controls
 
         self.grid_columnconfigure(0, weight=1)
-        self.grid_rowconfigure(1, weight=1)
-        
+        # Row weights: row 1 is the collapsible text area that can expand
+        self.grid_rowconfigure(1, weight=1, minsize=50)
+
         # Initialize managers
         self.file_manager = FileManager()
         self.selected_file_paths = []
@@ -67,10 +68,31 @@ class AudioBriefingApp(ctk.CTk):
         self.label_header = ctk.CTkLabel(self, text="Daily News Summary & YouTube Integration", font=ctk.CTkFont(size=20, weight="bold"))
         self.label_header.grid(row=0, column=0, padx=20, pady=(20, 10), sticky="ew")
 
-        # Text Area
-        self.textbox = ctk.CTkTextbox(self, width=600, height=200, font=ctk.CTkFont(size=14))
-        self.textbox.grid(row=1, column=0, padx=20, pady=10, sticky="ew")
-        
+        # Text Area Section (collapsible)
+        self.frame_text = ctk.CTkFrame(self)
+        self.frame_text.grid(row=1, column=0, padx=20, pady=10, sticky="nsew")
+        self.frame_text.grid_columnconfigure(0, weight=1)
+        self.frame_text.grid_rowconfigure(1, weight=1)
+
+        # Header with expand/collapse toggle
+        text_header = ctk.CTkFrame(self.frame_text, fg_color="transparent")
+        text_header.grid(row=0, column=0, sticky="ew", padx=10, pady=(5, 0))
+        text_header.grid_columnconfigure(0, weight=1)
+
+        ctk.CTkLabel(text_header, text="News Summary", font=ctk.CTkFont(size=14, weight="bold")).grid(row=0, column=0, sticky="w")
+        self.text_toggle_btn = ctk.CTkButton(text_header, text="Collapse", width=70, fg_color="gray", command=self.toggle_text_section)
+        self.text_toggle_btn.grid(row=0, column=1, padx=(10, 0))
+
+        # Text content frame (collapsible)
+        self.text_content = ctk.CTkFrame(self.frame_text, fg_color="transparent")
+        self.text_content.grid(row=1, column=0, sticky="nsew", padx=5, pady=5)
+        self.text_content.grid_columnconfigure(0, weight=1)
+        self.text_content.grid_rowconfigure(0, weight=1)
+        self.text_expanded = True  # Track expansion state
+
+        self.textbox = ctk.CTkTextbox(self.text_content, font=ctk.CTkFont(size=14))
+        self.textbox.grid(row=0, column=0, sticky="nsew")
+
         # Non-textual placeholder overlay
         self._placeholder = ctk.CTkLabel(self.textbox, text="Paste or edit the news summary here. You can also load it via Get YouTube News or Upload File.", text_color="gray")
         self._placeholder.place(relx=0.02, rely=0.02, anchor="nw")
@@ -1600,6 +1622,21 @@ This will incur charges to your Google Cloud account!
                     name = f.replace(".json", "").replace("_", " ").title()
                     configs.append(name)
         return configs
+
+    def toggle_text_section(self):
+        """Toggle the news summary text area visibility."""
+        if self.text_expanded:
+            # Collapse: hide content, remove weight from row
+            self.text_content.grid_remove()
+            self.text_toggle_btn.configure(text="Expand")
+            self.grid_rowconfigure(1, weight=0, minsize=0)
+            self.text_expanded = False
+        else:
+            # Expand: show content, restore weight
+            self.text_content.grid()
+            self.text_toggle_btn.configure(text="Collapse")
+            self.grid_rowconfigure(1, weight=1, minsize=50)
+            self.text_expanded = True
 
     def toggle_extract_section(self):
         """Toggle the data extraction section visibility."""
