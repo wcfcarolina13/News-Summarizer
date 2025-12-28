@@ -1284,6 +1284,7 @@ class DataCSVProcessor:
                             primary_match = best_match.primary
                             if primary_match and article_text and api_key:
                                 entity_name = primary_match.name
+                                print(f"       [LLM] Analyzing: {entity_name}")
                                 # Try to get profile details (works for profiles, may be empty for assets)
                                 profile_details = article_matcher.client.get_profile_details(entity_name)
                                 # If no profile found, create minimal context from the match
@@ -1299,8 +1300,12 @@ class DataCSVProcessor:
                                 suggestion = analyze_grid_profile_with_llm(article_text, profile_details, api_key=api_key)
                                 if suggestion:
                                     comments.append(f"Suggest: {suggestion}")
+                                else:
+                                    print(f"       [LLM] No suggestion returned")
+                            elif not api_key:
+                                print(f"       [LLM] Skipped - no API key")
                         except Exception as llm_err:
-                            # Uncomment for debugging: print(f"       [!] LLM error: {llm_err}")
+                            print(f"       [!] LLM error: {llm_err}")
                             pass  # LLM analysis is optional
 
                 # Combine comments
