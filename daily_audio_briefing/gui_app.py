@@ -2127,7 +2127,8 @@ This will incur charges to your Google Cloud account!
         self.audio_generator.open_folder()
 
     def start_tutorial(self):
-        """Start an interactive tutorial walkthrough of the app features."""
+        """Start an interactive tutorial walkthrough of the app features with widget highlighting."""
+        # Define tutorial steps with widget references for highlighting
         tutorial_steps = [
             {
                 "title": "Welcome to Daily Audio Briefing!",
@@ -2138,11 +2139,12 @@ This will incur charges to your Google Cloud account!
 1. **YouTube News Summary** - Fetch and summarize videos from YouTube channels
 2. **Direct Audio** - Convert articles/text directly to audio
 
-Click 'Next' to continue or 'Skip' to exit the tutorial."""
+Click 'Next' to continue or 'Skip' to exit the tutorial.""",
+                "highlight": None  # No highlight for welcome
             },
             {
                 "title": "Step 1: API Key Setup",
-                "content": """**API Key Row** (top of the app):
+                "content": """**API Key Row** (highlighted above):
 
 • **API Key field** - Paste your Gemini API key here
 • **💾 Save** - Saves your key (turns green ✓ when saved)
@@ -2150,7 +2152,8 @@ Click 'Next' to continue or 'Skip' to exit the tutorial."""
 • **⚙ Manager** - Open Key Manager to copy or clear your key
 • **Model dropdown** - Choose AI model speed/quality
 
-Get a free API key at: aistudio.google.com/apikey"""
+Get a free API key at: aistudio.google.com/apikey""",
+                "highlight": "frame_yt_api"
             },
             {
                 "title": "Step 2: YouTube News (Traditional Workflow)",
@@ -2162,79 +2165,51 @@ Get a free API key at: aistudio.google.com/apikey"""
 4. AI fetches videos and creates a summary
 5. Generate audio with **'Fast'** or **'Quality'** button
 
-The summary appears in the text area for review before audio generation."""
+The summary appears in the text area for review before audio generation.""",
+                "highlight": "frame_yt_api"
             },
             {
-                "title": "Step 3: Direct Audio Mode (NEW)",
-                "content": """**Convert articles to audio without summarization:**
+                "title": "Step 3: Text Area & Direct Audio",
+                "content": """**Text Area** (highlighted):
 
+• View and edit summaries or article content
+• **Fetch Article** - Fetch content from URLs
+• **Settings** - Configure auto-fetch and other options
+
+**Direct Audio Mode:**
 1. Check **'Direct Audio'** checkbox (below audio buttons)
-2. Add content using one of these methods:
-   • **Paste text** directly in the text area
-   • **Paste URLs** (one per line) - they'll be auto-fetched
-   • Click **'Fetch Article'** button to fetch from URLs
-3. Click **'Fast'** or **'Quality'** button
-4. Preview dialog shows AI-cleaned text
-5. Click **'Convert to Audio'**
+2. Paste text or URLs in the text area
+3. Click **'Fast'** or **'Quality'** to convert
 
-**Tip:** Enable 'Auto-fetch URLs' in Settings for automatic URL detection."""
+**Tip:** Enable 'Auto-fetch URLs' in Settings for automatic URL detection.""",
+                "highlight": "frame_text"
             },
             {
-                "title": "Step 4: Fetching Articles",
-                "content": """**Fetch Article Button:**
+                "title": "Step 4: Audio Generation",
+                "content": """**Audio Controls** (highlighted):
 
-• Click **'Fetch Article'** next to the text area header
-• Paste one or more URLs (one per line)
-• Click **'Fetch All'** to download all articles
-• Content is combined with '---' separators
+• **Voice dropdown** - Select voice for quality audio
+• **Play Sample** - Preview the selected voice
+• **Generate Fast** - Quick TTS (gTTS)
+• **Generate Quality** - High-quality TTS (Kokoro)
+• **Direct Audio checkbox** - Skip summarization, convert directly
 
-**Auto-fetch URLs:**
-
-• Open **'Settings'** button
-• Enable **'Auto-fetch URLs in Direct Audio mode'**
-• Now just paste URLs and click Fast/Quality - they're fetched automatically!"""
+**Smart Filenames:** Audio files are named by date + topic automatically.""",
+                "highlight": "frame_audio_controls"
             },
             {
-                "title": "Step 5: Smart Audio Filenames",
-                "content": """**Audio files are automatically named based on content:**
-
-• Single article: `2025-12-28_bitcoin-etf-approval.wav`
-• Multiple topics: `2025-12-28_crypto-markets-regulation.wav`
-
-The filename includes:
-• Today's date
-• Key topic words extracted from the content
-
-Files are saved in weekly folders (Week_52_2025, etc.)"""
-            },
-            {
-                "title": "Step 6: Data Extraction (Advanced)",
+                "title": "Step 5: Data Extraction (Advanced)",
                 "content": """**Extract article links from newsletters:**
 
 1. Paste newsletter content in text area
 2. Select an **extraction config** from dropdown
-3. Enable options:
-   • **'Enrich with Grid'** - Match entities to The Grid database
-   • **'Research Articles'** - Fetch content and run LLM analysis
+3. Enable **'Enrich with Grid'** and/or **'Research Articles'**
 4. Click **'Extract Links'**
-5. Results appear in table with Grid matches
-6. Export to CSV with all data
+5. Results appear in table below
+6. Export to CSV
 
-**Use case:** Processing crypto newsletter digests for research."""
-            },
-            {
-                "title": "Step 7: Voice Selection",
-                "content": """**For high-quality audio:**
-
-• Use the **Voice dropdown** to select a voice
-• Click **'Play Sample'** to preview the voice
-• Different voices have different tones and accents
-
-**Audio Quality:**
-• **Fast (gTTS)** - Quick, robotic, smaller files
-• **Quality (Kokoro)** - Natural, expressive, larger files
-
-**Tip:** WAV files can be converted to MP3 - see the compression guide."""
+**Use case:** Processing crypto newsletter digests for research.""",
+                "highlight": "extract_content"
             },
             {
                 "title": "Tutorial Complete!",
@@ -2250,17 +2225,62 @@ Files are saved in weekly folders (Week_52_2025, etc.)"""
 
 **Debug Output:** Check the terminal/console for detailed logs.
 
-**Need help?** See README.md for full documentation."""
+**Need help?** See README.md for full documentation.""",
+                "highlight": None
             }
         ]
 
         self.current_tutorial_step = 0
+        self._tutorial_original_borders = {}  # Store original border colors
+
+        def highlight_widget(widget_name):
+            """Highlight a widget by changing its border color."""
+            # Clear previous highlights
+            for name, original in self._tutorial_original_borders.items():
+                try:
+                    widget = getattr(self, name, None)
+                    if widget:
+                        widget.configure(border_color=original, border_width=original[1] if isinstance(original, tuple) else 1)
+                except:
+                    pass
+            self._tutorial_original_borders.clear()
+
+            if not widget_name:
+                return
+
+            # Highlight new widget
+            try:
+                widget = getattr(self, widget_name, None)
+                if widget:
+                    # Store original border
+                    try:
+                        orig_color = widget.cget("border_color")
+                        orig_width = widget.cget("border_width")
+                        self._tutorial_original_borders[widget_name] = (orig_color, orig_width)
+                    except:
+                        self._tutorial_original_borders[widget_name] = (("gray50", "gray50"), 1)
+
+                    # Apply highlight
+                    widget.configure(border_color="#00AAFF", border_width=3)
+
+                    # Scroll to make widget visible
+                    try:
+                        self.main_scroll._parent_canvas.yview_moveto(0)  # Scroll to top first
+                        widget.update_idletasks()
+                    except:
+                        pass
+            except Exception as e:
+                print(f"[Tutorial] Highlight error: {e}")
 
         def show_step(step_index):
             if step_index >= len(tutorial_steps):
+                highlight_widget(None)  # Clear highlights when done
                 return
 
             step = tutorial_steps[step_index]
+
+            # Highlight the relevant widget
+            highlight_widget(step.get("highlight"))
 
             dialog = ctk.CTkToplevel(self)
             dialog.title(f"Tutorial ({step_index + 1}/{len(tutorial_steps)})")
@@ -2306,8 +2326,14 @@ Files are saved in weekly folders (Week_52_2025, etc.)"""
                     show_step(step_index + 1)
 
             def skip():
+                highlight_widget(None)  # Clear highlights
                 dialog.destroy()
                 self.label_status.configure(text="Tutorial skipped", text_color="gray")
+
+            def finish():
+                highlight_widget(None)  # Clear highlights
+                dialog.destroy()
+                self.label_status.configure(text="Tutorial complete!", text_color="green")
 
             if step_index > 0:
                 ctk.CTkButton(btn_frame, text="← Back", fg_color="gray", command=go_prev).grid(row=0, column=0, padx=5, sticky="ew")
@@ -2319,7 +2345,7 @@ Files are saved in weekly folders (Week_52_2025, etc.)"""
             if step_index < len(tutorial_steps) - 1:
                 ctk.CTkButton(btn_frame, text="Next →", fg_color="green", command=go_next).grid(row=0, column=2, padx=5, sticky="ew")
             else:
-                ctk.CTkButton(btn_frame, text="Finish", fg_color="green", command=dialog.destroy).grid(row=0, column=2, padx=5, sticky="ew")
+                ctk.CTkButton(btn_frame, text="Finish", fg_color="green", command=finish).grid(row=0, column=2, padx=5, sticky="ew")
 
         show_step(0)
 
