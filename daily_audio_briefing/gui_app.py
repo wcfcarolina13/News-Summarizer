@@ -731,14 +731,15 @@ class AudioBriefingApp(ctk.CTk):
         """Fetch and extract article body from URL."""
         try:
             headers = {
-                'User-Agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36',
-                'Accept': 'text/html,application/xhtml+xml',
+                'User-Agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+                'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
+                'Accept-Language': 'en-US,en;q=0.5',
             }
 
             # Try requests first
             try:
                 import requests
-                response = requests.get(url, headers=headers, timeout=15)
+                response = requests.get(url, headers=headers, timeout=15, allow_redirects=True)
                 response.raise_for_status()
                 html = response.text
             except Exception:
@@ -748,28 +749,100 @@ class AudioBriefingApp(ctk.CTk):
                 with urllib.request.urlopen(req, timeout=15) as response:
                     html = response.read().decode('utf-8', errors='ignore')
 
-            # Extract article body using the data processor's method
-            processor = self._get_data_processor()
-            article_text = processor._extract_article_body(html)
-
-            if article_text and len(article_text) > 100:
-                return article_text
-
-            # If extraction failed, try basic text extraction
             from bs4 import BeautifulSoup
+            import re
+
             soup = BeautifulSoup(html, 'lxml')
 
-            # Remove scripts, styles, nav, etc.
-            for tag in soup.find_all(['script', 'style', 'nav', 'footer', 'header', 'aside']):
+            # Remove elements that are definitely not article content
+            for tag in soup.find_all(['script', 'style', 'nav', 'footer', 'header',
+                                       'aside', 'iframe', 'noscript', 'form', 'button']):
                 tag.decompose()
 
-            # Get text from body
-            if soup.body:
-                text = soup.body.get_text(separator='\n', strip=True)
-                # Clean up multiple newlines
-                import re
-                text = re.sub(r'\n{3,}', '\n\n', text)
-                return text
+            # Remove common non-content patterns by class/id
+            remove_patterns = [
+                'subscribe', 'newsletter', 'sidebar', 'comment', 'share',
+                'social', 'related', 'recommended', 'footer', 'header',
+                'navigation', 'nav-', 'menu', 'ad-', 'advertisement',
+                'signup', 'sign-up', 'login', 'paywall', 'premium'
+            ]
+            for pattern in remove_patterns:
+                for tag in soup.find_all(class_=lambda x: x and pattern in str(x).lower()):
+                    tag.decompose()
+                for tag in soup.find_all(id=lambda x: x and pattern in str(x).lower()):
+                    tag.decompose()
+
+            article_text = None
+
+            # Platform-specific extraction
+            # Substack
+            if 'substack.com' in url or soup.find('div', class_='post-content'):
+                content = soup.find('div', class_='body')
+                if not content:
+                    content = soup.find('div', class_='post-content')
+                if not content:
+                    content = soup.find('div', class_='available-content')
+                if content:
+                    article_text = content.get_text(separator='\n', strip=True)
+
+            # Generic article selectors (priority order)
+            if not article_text or len(article_text) < 200:
+                selectors = [
+                    ('article', {}),
+                    ('div', {'class_': 'article-content'}),
+                    ('div', {'class_': 'article-body'}),
+                    ('div', {'class_': 'post-content'}),
+                    ('div', {'class_': 'entry-content'}),
+                    ('div', {'class_': 'content-body'}),
+                    ('div', {'class_': 'story-body'}),
+                    ('main', {}),
+                    ('div', {'role': 'main'}),
+                    ('div', {'class_': 'content'}),
+                ]
+
+                for tag, attrs in selectors:
+                    if attrs:
+                        content = soup.find(tag, **attrs)
+                    else:
+                        content = soup.find(tag)
+                    if content:
+                        text = content.get_text(separator='\n', strip=True)
+                        if len(text) > 200:
+                            article_text = text
+                            break
+
+            # Fallback: get largest text block
+            if not article_text or len(article_text) < 200:
+                # Find all paragraph containers
+                all_divs = soup.find_all(['div', 'article', 'section'])
+                best_text = ""
+                for div in all_divs:
+                    paragraphs = div.find_all('p')
+                    if len(paragraphs) >= 3:  # At least 3 paragraphs
+                        text = div.get_text(separator='\n', strip=True)
+                        if len(text) > len(best_text):
+                            best_text = text
+                if best_text:
+                    article_text = best_text
+
+            # Clean up the text
+            if article_text:
+                # Remove multiple newlines
+                article_text = re.sub(r'\n{3,}', '\n\n', article_text)
+                # Remove common junk phrases
+                junk_phrases = [
+                    r'Subscribe.*?newsletter',
+                    r'Sign up.*?free',
+                    r'Click here to.*',
+                    r'Share this.*',
+                    r'Follow us on.*',
+                    r'Read more:.*',
+                    r'Related:.*',
+                ]
+                for phrase in junk_phrases:
+                    article_text = re.sub(phrase, '', article_text, flags=re.IGNORECASE)
+
+                return article_text.strip()
 
             return ""
 
@@ -1283,12 +1356,16 @@ class AudioBriefingApp(ctk.CTk):
                     self.textbox.delete("0.0", "end")
                     self.textbox.insert("0.0", raw_text)
                     self._placeholder.place_forget()
+                    self.label_status.configure(text="Article fetched. Processing...", text_color="green")
                 else:
                     self.label_status.configure(
                         text="Failed to fetch article. Paste content manually or use Fetch Article button.",
                         text_color="red"
                     )
                     return
+
+        # Clear status when opening dialog
+        self.label_status.configure(text="Ready", text_color="gray")
 
         # Create dialog
         dialog = ctk.CTkToplevel(self)
@@ -1347,6 +1424,7 @@ class AudioBriefingApp(ctk.CTk):
                 self.run_script("make_audio_quality.py", "daily_quality.wav", extra_args=["--voice", voice])
 
         def on_cancel():
+            self.label_status.configure(text="Ready", text_color="gray")
             dialog.destroy()
 
         btn_cancel = ctk.CTkButton(btn_frame, text="Cancel", fg_color="gray", command=on_cancel)
