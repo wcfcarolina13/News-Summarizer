@@ -1282,6 +1282,7 @@ class DataCSVProcessor:
                         try:
                             from grid_api import analyze_grid_profile_with_llm
                             primary_match = best_match.primary
+                            print(f"       [LLM Debug] primary={primary_match is not None}, text={len(article_text) if article_text else 0}, key={'set' if api_key else 'None'}")
                             if primary_match and article_text and api_key:
                                 entity_name = primary_match.name
                                 print(f"       [LLM] Analyzing: {entity_name}")

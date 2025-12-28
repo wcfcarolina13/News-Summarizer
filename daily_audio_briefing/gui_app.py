@@ -5,6 +5,7 @@ import os
 import sys
 import glob
 import datetime
+import json
 import tkinter.filedialog as filedialog
 import qrcode
 from PIL import Image # PIL is imported by qrcode, but explicit import helps CTkImage
