@@ -143,19 +143,26 @@ class AudioBriefingApp(ctk.CTk):
         ctk.CTkLabel(frame_row0, text="API Key:").grid(row=0, column=0, padx=(0, 10), sticky="w")
         
         self.gemini_key_entry = ctk.CTkEntry(frame_row0, show="*")
-        self.gemini_key_entry.grid(row=0, column=1, sticky="ew", padx=(0, 10))
-        
-        ctk.CTkLabel(frame_row0, text="Model:").grid(row=0, column=2, padx=(0, 5), sticky="w")
+        self.gemini_key_entry.grid(row=0, column=1, sticky="ew", padx=(0, 5))
+
+        # Save API key button
+        self.btn_save_key = ctk.CTkButton(
+            frame_row0, text="💾", width=30,
+            command=lambda: self.save_api_key(self.gemini_key_entry.get().strip())
+        )
+        self.btn_save_key.grid(row=0, column=2, padx=(0, 10))
+
+        ctk.CTkLabel(frame_row0, text="Model:").grid(row=0, column=3, padx=(0, 5), sticky="w")
         
         self.model_var = ctk.StringVar(value="Fast (FREE)")
         self.model_combo = ctk.CTkComboBox(
-            frame_row0, 
+            frame_row0,
             variable=self.model_var,
             values=["Fast (FREE)", "Balanced (FREE)", "Best (FREE, 50/day)"],
             width=180,
             state="readonly"
         )
-        self.model_combo.grid(row=0, column=3, sticky="w")
+        self.model_combo.grid(row=0, column=4, sticky="w")
         
         # Row 1: Help text
         help_text = "💡 Fast: 4000/min | Balanced: 1500/day | Best: 50/day (highest quality)"
