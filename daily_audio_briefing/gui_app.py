@@ -928,13 +928,25 @@ class AudioBriefingApp(ctk.CTk):
 
             html = None
             fetch_error = None
+            content_type = None
 
             # Try with requests session (handles cookies)
             try:
                 session = requests.Session()
                 response = session.get(url, headers=headers, timeout=20, allow_redirects=True)
                 response.raise_for_status()
-                html = response.text
+                content_type = response.headers.get('content-type', '').lower()
+
+                # Check for non-HTML content
+                if content_type and not any(ct in content_type for ct in ['text/html', 'text/plain', 'application/xhtml']):
+                    print(f"       [Fetch] Skipping non-HTML content-type: {content_type}")
+                    return ""
+
+                # Use proper encoding
+                if response.encoding:
+                    html = response.text
+                else:
+                    html = response.content.decode('utf-8', errors='ignore')
                 print(f"       [Fetch] HTTP {response.status_code}, {len(html)} bytes")
             except Exception as e:
                 fetch_error = str(e)
@@ -959,10 +971,20 @@ class AudioBriefingApp(ctk.CTk):
                 print(f"       [Fetch] All fetch methods failed")
                 return ""
 
+            # Try lxml first, fallback to html.parser
+            soup = None
             try:
                 soup = BeautifulSoup(html, 'lxml')
             except Exception as e:
-                print(f"       [Fetch] BeautifulSoup parse error: {e}")
+                print(f"       [Fetch] lxml parse error: {e}, trying html.parser")
+                try:
+                    soup = BeautifulSoup(html, 'html.parser')
+                except Exception as e2:
+                    print(f"       [Fetch] html.parser also failed: {e2}")
+                    return ""
+
+            if soup is None:
+                print(f"       [Fetch] BeautifulSoup parsing failed")
                 return ""
 
             # Check for paywall or login-required indicators
@@ -1102,6 +1124,37 @@ class AudioBriefingApp(ctk.CTk):
                     ]
                     for phrase in junk_phrases:
                         article_text = re.sub(phrase, '', article_text, flags=re.IGNORECASE)
+
+                    # Filter out garbage/binary text
+                    # Check for high ratio of non-printable or special characters
+                    printable_chars = sum(1 for c in article_text if c.isprintable() or c in '\n\t')
+                    total_chars = len(article_text)
+                    if total_chars > 0:
+                        printable_ratio = printable_chars / total_chars
+                        if printable_ratio < 0.85:
+                            print(f"       [Fetch] Detected garbage text (only {printable_ratio:.1%} printable)")
+                            # Try to extract only clean lines
+                            clean_lines = []
+                            for line in article_text.split('\n'):
+                                line_printable = sum(1 for c in line if c.isprintable() or c in '\t')
+                                if len(line) > 0 and line_printable / len(line) > 0.9:
+                                    # Also check for excessive special characters
+                                    alpha_count = sum(1 for c in line if c.isalnum() or c.isspace())
+                                    if alpha_count / len(line) > 0.6:
+                                        clean_lines.append(line)
+                            if clean_lines:
+                                article_text = '\n'.join(clean_lines)
+                                print(f"       [Fetch] Filtered to {len(article_text)} clean chars")
+                            else:
+                                print(f"       [Fetch] No clean content after filtering")
+                                article_text = ""
+
+                    # Remove non-ASCII garbage characters
+                    article_text = re.sub(r'[^\x00-\x7F]+', ' ', article_text)
+                    # Remove excessive whitespace
+                    article_text = re.sub(r' {3,}', ' ', article_text)
+                    article_text = re.sub(r'\n{3,}', '\n\n', article_text)
+
                 except Exception as e:
                     print(f"       [Fetch] Cleanup error: {e}")
 
@@ -2129,6 +2182,7 @@ This will incur charges to your Google Cloud account!
     def start_tutorial(self):
         """Start an interactive tutorial walkthrough of the app features with widget highlighting."""
         # Define tutorial steps with widget references for highlighting
+        # Using specific small widgets instead of large frames for better focus
         tutorial_steps = [
             {
                 "title": "Welcome to Daily Audio Briefing!",
@@ -2144,72 +2198,64 @@ Click 'Next' to continue or 'Skip' to exit the tutorial.""",
             },
             {
                 "title": "Step 1: API Key Setup",
-                "content": """**API Key Row** (highlighted above):
+                "content": """**API Key Field** (highlighted):
 
-• **API Key field** - Paste your Gemini API key here
+• Paste your Gemini API key in this field
 • **💾 Save** - Saves your key (turns green ✓ when saved)
 • **👁 Toggle** - Show/hide your API key
 • **⚙ Manager** - Open Key Manager to copy or clear your key
-• **Model dropdown** - Choose AI model speed/quality
 
 Get a free API key at: aistudio.google.com/apikey""",
-                "highlight": "frame_yt_api"
+                "highlight": "gemini_key_entry"
             },
             {
-                "title": "Step 2: YouTube News (Traditional Workflow)",
-                "content": """**To summarize YouTube videos:**
+                "title": "Step 2: Get YouTube News",
+                "content": """**Get YouTube News Button** (highlighted):
 
-1. Click **'Edit Sources'** to add YouTube channel URLs
-2. Set **days to fetch** (or use date range)
-3. Click **'Get YouTube News'**
-4. AI fetches videos and creates a summary
-5. Generate audio with **'Fast'** or **'Quality'** button
+1. First click **'Edit Sources'** to add YouTube channel URLs
+2. Set **days to fetch** (or use date range picker)
+3. Click this button to fetch and summarize videos
+4. AI creates a summary in the text area below
 
-The summary appears in the text area for review before audio generation.""",
-                "highlight": "frame_yt_api"
+The summary can be reviewed and edited before audio generation.""",
+                "highlight": "btn_get_yt_news"
             },
             {
-                "title": "Step 3: Text Area & Direct Audio",
+                "title": "Step 3: Text Area",
                 "content": """**Text Area** (highlighted):
 
 • View and edit summaries or article content
-• **Fetch Article** - Fetch content from URLs
-• **Settings** - Configure auto-fetch and other options
+• Use **Fetch Article** button to fetch content from URLs
+• Use **Settings** to configure auto-fetch options
 
 **Direct Audio Mode:**
 1. Check **'Direct Audio'** checkbox (below audio buttons)
-2. Paste text or URLs in the text area
-3. Click **'Fast'** or **'Quality'** to convert
-
-**Tip:** Enable 'Auto-fetch URLs' in Settings for automatic URL detection.""",
-                "highlight": "frame_text"
+2. Paste text or URLs here
+3. Click **'Fast'** or **'Quality'** to convert directly""",
+                "highlight": "textbox"
             },
             {
-                "title": "Step 4: Audio Generation",
-                "content": """**Audio Controls** (highlighted):
+                "title": "Step 4: Generate Fast Audio",
+                "content": """**Generate Fast Button** (highlighted):
 
-• **Voice dropdown** - Select voice for quality audio
-• **Play Sample** - Preview the selected voice
-• **Generate Fast** - Quick TTS (gTTS)
-• **Generate Quality** - High-quality TTS (Kokoro)
-• **Direct Audio checkbox** - Skip summarization, convert directly
+• Uses gTTS for quick text-to-speech conversion
+• Good for testing or quick previews
+• Output is saved as WAV file
+
+For higher quality audio, use **Generate Quality** instead.""",
+                "highlight": "btn_fast"
+            },
+            {
+                "title": "Step 5: Generate Quality Audio",
+                "content": """**Generate Quality Button** (highlighted):
+
+• Uses Kokoro for high-quality voice synthesis
+• Select voice from dropdown above
+• Use **Play Sample** to preview voices
+• **Direct Audio** checkbox skips summarization
 
 **Smart Filenames:** Audio files are named by date + topic automatically.""",
-                "highlight": "frame_audio_controls"
-            },
-            {
-                "title": "Step 5: Data Extraction (Advanced)",
-                "content": """**Extract article links from newsletters:**
-
-1. Paste newsletter content in text area
-2. Select an **extraction config** from dropdown
-3. Enable **'Enrich with Grid'** and/or **'Research Articles'**
-4. Click **'Extract Links'**
-5. Results appear in table below
-6. Export to CSV
-
-**Use case:** Processing crypto newsletter digests for research.""",
-                "highlight": "extract_content"
+                "highlight": "btn_quality"
             },
             {
                 "title": "Tutorial Complete!",
@@ -2231,19 +2277,27 @@ The summary appears in the text area for review before audio generation.""",
         ]
 
         self.current_tutorial_step = 0
-        self._tutorial_original_borders = {}  # Store original border colors
+        self._tutorial_original_borders = {}  # Store original border colors as (color, width) tuples
+        self._tutorial_dialog = None  # Track current dialog for cleanup
 
-        def highlight_widget(widget_name):
-            """Highlight a widget by changing its border color."""
-            # Clear previous highlights
+        def clear_all_highlights():
+            """Clear all tutorial highlights and restore original borders."""
             for name, original in self._tutorial_original_borders.items():
                 try:
                     widget = getattr(self, name, None)
                     if widget:
-                        widget.configure(border_color=original, border_width=original[1] if isinstance(original, tuple) else 1)
-                except:
+                        if isinstance(original, tuple) and len(original) == 2:
+                            widget.configure(border_color=original[0], border_width=original[1])
+                        else:
+                            widget.configure(border_color="gray50", border_width=1)
+                except Exception:
                     pass
             self._tutorial_original_borders.clear()
+
+        def highlight_widget(widget_name):
+            """Highlight a widget by changing its border color."""
+            # Clear previous highlights
+            clear_all_highlights()
 
             if not widget_name:
                 return
@@ -2257,8 +2311,8 @@ The summary appears in the text area for review before audio generation.""",
                         orig_color = widget.cget("border_color")
                         orig_width = widget.cget("border_width")
                         self._tutorial_original_borders[widget_name] = (orig_color, orig_width)
-                    except:
-                        self._tutorial_original_borders[widget_name] = (("gray50", "gray50"), 1)
+                    except Exception:
+                        self._tutorial_original_borders[widget_name] = ("gray50", 1)
 
                     # Apply highlight
                     widget.configure(border_color="#00AAFF", border_width=3)
@@ -2267,14 +2321,14 @@ The summary appears in the text area for review before audio generation.""",
                     try:
                         self.main_scroll._parent_canvas.yview_moveto(0)  # Scroll to top first
                         widget.update_idletasks()
-                    except:
+                    except Exception:
                         pass
             except Exception as e:
                 print(f"[Tutorial] Highlight error: {e}")
 
         def show_step(step_index):
             if step_index >= len(tutorial_steps):
-                highlight_widget(None)  # Clear highlights when done
+                clear_all_highlights()  # Clear highlights when done
                 return
 
             step = tutorial_steps[step_index]
@@ -2283,17 +2337,27 @@ The summary appears in the text area for review before audio generation.""",
             highlight_widget(step.get("highlight"))
 
             dialog = ctk.CTkToplevel(self)
+            self._tutorial_dialog = dialog  # Track for cleanup
             dialog.title(f"Tutorial ({step_index + 1}/{len(tutorial_steps)})")
-            dialog.geometry("550x420")
+            dialog.geometry("550x380")
             dialog.transient(self)
             dialog.grab_set()
             dialog.lift()
 
+            # Handle dialog close via X button or escape
+            def on_close():
+                clear_all_highlights()
+                self._tutorial_dialog = None
+                dialog.destroy()
+                self.label_status.configure(text="Tutorial closed", text_color="gray")
+
+            dialog.protocol("WM_DELETE_WINDOW", on_close)
+
             # Center dialog
             dialog.update_idletasks()
             x = self.winfo_x() + (self.winfo_width() // 2) - 275
-            y = self.winfo_y() + (self.winfo_height() // 2) - 210
-            dialog.geometry(f"550x420+{x}+{y}")
+            y = self.winfo_y() + (self.winfo_height() // 2) - 190
+            dialog.geometry(f"550x380+{x}+{y}")
 
             dialog.grid_columnconfigure(0, weight=1)
             dialog.grid_rowconfigure(1, weight=1)
@@ -2317,21 +2381,27 @@ The summary appears in the text area for review before audio generation.""",
             btn_frame.grid_columnconfigure((0, 1, 2), weight=1)
 
             def go_prev():
+                self._tutorial_dialog = None
                 dialog.destroy()
                 show_step(step_index - 1)
 
             def go_next():
+                self._tutorial_dialog = None
                 dialog.destroy()
                 if step_index < len(tutorial_steps) - 1:
                     show_step(step_index + 1)
+                else:
+                    clear_all_highlights()
 
             def skip():
-                highlight_widget(None)  # Clear highlights
+                clear_all_highlights()  # Clear highlights
+                self._tutorial_dialog = None
                 dialog.destroy()
                 self.label_status.configure(text="Tutorial skipped", text_color="gray")
 
             def finish():
-                highlight_widget(None)  # Clear highlights
+                clear_all_highlights()  # Clear highlights
+                self._tutorial_dialog = None
                 dialog.destroy()
                 self.label_status.configure(text="Tutorial complete!", text_color="green")
 
