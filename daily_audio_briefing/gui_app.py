@@ -895,33 +895,69 @@ class AudioBriefingApp(ctk.CTk):
     def _fetch_article_content(self, url: str) -> str:
         """Fetch and extract article body from URL."""
         try:
-            headers = {
-                'User-Agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
-                'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
-                'Accept-Language': 'en-US,en;q=0.5',
-            }
-
-            # Try requests first
-            try:
-                import requests
-                response = requests.get(url, headers=headers, timeout=15, allow_redirects=True)
-                response.raise_for_status()
-                html = response.text
-            except Exception:
-                # Fallback to urllib
-                import urllib.request
-                req = urllib.request.Request(url, headers=headers)
-                with urllib.request.urlopen(req, timeout=15) as response:
-                    html = response.read().decode('utf-8', errors='ignore')
-
+            import requests
             from bs4 import BeautifulSoup
             import re
 
+            # More complete browser headers
+            headers = {
+                'User-Agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+                'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8',
+                'Accept-Language': 'en-US,en;q=0.9',
+                'Accept-Encoding': 'gzip, deflate, br',
+                'DNT': '1',
+                'Connection': 'keep-alive',
+                'Upgrade-Insecure-Requests': '1',
+                'Sec-Fetch-Dest': 'document',
+                'Sec-Fetch-Mode': 'navigate',
+                'Sec-Fetch-Site': 'none',
+                'Sec-Fetch-User': '?1',
+                'Cache-Control': 'max-age=0',
+            }
+
+            html = None
+            fetch_error = None
+
+            # Try with requests session (handles cookies)
+            try:
+                session = requests.Session()
+                response = session.get(url, headers=headers, timeout=20, allow_redirects=True)
+                response.raise_for_status()
+                html = response.text
+                print(f"       [Fetch] HTTP {response.status_code}, {len(html)} bytes")
+            except Exception as e:
+                fetch_error = str(e)
+                print(f"       [Fetch] requests failed: {e}")
+
+            # Fallback to urllib with SSL context
+            if not html:
+                try:
+                    import urllib.request
+                    import ssl
+                    ctx = ssl.create_default_context()
+                    ctx.check_hostname = False
+                    ctx.verify_mode = ssl.CERT_NONE
+                    req = urllib.request.Request(url, headers=headers)
+                    with urllib.request.urlopen(req, timeout=20, context=ctx) as response:
+                        html = response.read().decode('utf-8', errors='ignore')
+                    print(f"       [Fetch] urllib success: {len(html)} bytes")
+                except Exception as e:
+                    print(f"       [Fetch] urllib failed: {e}")
+
+            if not html:
+                print(f"       [Fetch] All fetch methods failed")
+                return ""
+
             soup = BeautifulSoup(html, 'lxml')
+
+            # Check for paywall or login-required indicators
+            page_text = soup.get_text().lower()
+            if 'subscribe to read' in page_text or 'sign in to read' in page_text:
+                print(f"       [Fetch] Possible paywall detected")
 
             # Remove elements that are definitely not article content
             for tag in soup.find_all(['script', 'style', 'nav', 'footer', 'header',
-                                       'aside', 'iframe', 'noscript', 'form', 'button']):
+                                       'aside', 'iframe', 'noscript', 'form', 'button', 'svg']):
                 tag.decompose()
 
             # Remove common non-content patterns by class/id
@@ -929,7 +965,8 @@ class AudioBriefingApp(ctk.CTk):
                 'subscribe', 'newsletter', 'sidebar', 'comment', 'share',
                 'social', 'related', 'recommended', 'footer', 'header',
                 'navigation', 'nav-', 'menu', 'ad-', 'advertisement',
-                'signup', 'sign-up', 'login', 'paywall', 'premium'
+                'signup', 'sign-up', 'login', 'paywall', 'premium', 'popup',
+                'modal', 'cookie', 'banner', 'promo'
             ]
             for pattern in remove_patterns:
                 for tag in soup.find_all(class_=lambda x: x and pattern in str(x).lower()):
@@ -940,15 +977,24 @@ class AudioBriefingApp(ctk.CTk):
             article_text = None
 
             # Platform-specific extraction
-            # Substack
-            if 'substack.com' in url or soup.find('div', class_='post-content'):
-                content = soup.find('div', class_='body')
-                if not content:
-                    content = soup.find('div', class_='post-content')
-                if not content:
-                    content = soup.find('div', class_='available-content')
-                if content:
-                    article_text = content.get_text(separator='\n', strip=True)
+            # Substack (multiple variations)
+            if 'substack.com' in url or soup.find('div', class_='available-content') or soup.find('div', class_='body markup'):
+                print(f"       [Fetch] Trying Substack extraction...")
+                selectors = [
+                    ('div', {'class_': 'body markup'}),
+                    ('div', {'class_': 'available-content'}),
+                    ('div', {'class_': 'post-content'}),
+                    ('div', {'class_': 'body'}),
+                    ('article', {}),
+                ]
+                for tag, attrs in selectors:
+                    content = soup.find(tag, **attrs) if attrs else soup.find(tag)
+                    if content:
+                        text = content.get_text(separator='\n', strip=True)
+                        if len(text) > 200:
+                            article_text = text
+                            print(f"       [Fetch] Substack: found {len(text)} chars with {tag}")
+                            break
 
             # Generic article selectors (priority order)
             if not article_text or len(article_text) < 200:
@@ -960,9 +1006,13 @@ class AudioBriefingApp(ctk.CTk):
                     ('div', {'class_': 'entry-content'}),
                     ('div', {'class_': 'content-body'}),
                     ('div', {'class_': 'story-body'}),
+                    ('div', {'class_': 'post-body'}),
+                    ('div', {'class_': 'article'}),
                     ('main', {}),
                     ('div', {'role': 'main'}),
+                    ('div', {'role': 'article'}),
                     ('div', {'class_': 'content'}),
+                    ('div', {'class_': 'post'}),
                 ]
 
                 for tag, attrs in selectors:
@@ -974,21 +1024,33 @@ class AudioBriefingApp(ctk.CTk):
                         text = content.get_text(separator='\n', strip=True)
                         if len(text) > 200:
                             article_text = text
+                            print(f"       [Fetch] Generic: found {len(text)} chars with {tag} {attrs}")
                             break
 
-            # Fallback: get largest text block
+            # Fallback: get largest text block with paragraphs
             if not article_text or len(article_text) < 200:
-                # Find all paragraph containers
-                all_divs = soup.find_all(['div', 'article', 'section'])
+                print(f"       [Fetch] Trying fallback paragraph extraction...")
+                all_divs = soup.find_all(['div', 'article', 'section', 'main'])
                 best_text = ""
+                best_source = ""
                 for div in all_divs:
                     paragraphs = div.find_all('p')
-                    if len(paragraphs) >= 3:  # At least 3 paragraphs
+                    if len(paragraphs) >= 2:  # At least 2 paragraphs
                         text = div.get_text(separator='\n', strip=True)
                         if len(text) > len(best_text):
                             best_text = text
-                if best_text:
+                            best_source = div.name
+                if best_text and len(best_text) > 200:
                     article_text = best_text
+                    print(f"       [Fetch] Fallback: found {len(best_text)} chars from {best_source}")
+
+            # Last resort: just get body text
+            if not article_text or len(article_text) < 200:
+                if soup.body:
+                    body_text = soup.body.get_text(separator='\n', strip=True)
+                    if len(body_text) > 500:
+                        article_text = body_text
+                        print(f"       [Fetch] Last resort: using body text ({len(body_text)} chars)")
 
             # Clean up the text
             if article_text:
@@ -1003,16 +1065,23 @@ class AudioBriefingApp(ctk.CTk):
                     r'Follow us on.*',
                     r'Read more:.*',
                     r'Related:.*',
+                    r'Comments.*',
+                    r'Leave a comment.*',
                 ]
                 for phrase in junk_phrases:
                     article_text = re.sub(phrase, '', article_text, flags=re.IGNORECASE)
 
-                return article_text.strip()
+                final_text = article_text.strip()
+                if len(final_text) > 100:
+                    return final_text
+                else:
+                    print(f"       [Fetch] Text too short after cleanup: {len(final_text)} chars")
 
+            print(f"       [Fetch] No usable content found")
             return ""
 
         except Exception as e:
-            print(f"Error fetching article: {e}")
+            print(f"       [Fetch] Error: {e}")
             return ""
 
     def open_sources_editor(self):
