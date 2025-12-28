@@ -2493,7 +2493,7 @@ Click the '? Tutorial' button next to the status bar!""",
             self._tutorial_original_borders.clear()
 
         def highlight_widget(widget_name):
-            """Highlight a widget by changing its border color."""
+            """Highlight a widget by changing its border color and scroll to show it."""
             # Clear previous highlights
             clear_all_highlights()
 
@@ -2515,12 +2515,45 @@ Click the '? Tutorial' button next to the status bar!""",
                     # Apply highlight - using bright yellow for visibility
                     widget.configure(border_color="#FFD700", border_width=3)
 
-                    # Scroll to make widget visible
+                    # Scroll to make widget visible in the main scrollable area
                     try:
-                        self.main_scroll._parent_canvas.yview_moveto(0)  # Scroll to top first
                         widget.update_idletasks()
-                    except Exception:
-                        pass
+                        self.update_idletasks()
+
+                        # Get the canvas and its scrollable region
+                        canvas = self.main_scroll._parent_canvas
+
+                        # Get widget position relative to the scrollable content
+                        widget_y = widget.winfo_y()
+                        widget_height = widget.winfo_height()
+
+                        # Get the parent frames to calculate total offset
+                        parent = widget.master
+                        while parent and parent != self.main_scroll:
+                            widget_y += parent.winfo_y()
+                            parent = parent.master
+
+                        # Get canvas visible area
+                        canvas_height = canvas.winfo_height()
+                        scroll_region = canvas.cget("scrollregion")
+                        if scroll_region:
+                            total_height = int(scroll_region.split()[-1])
+                        else:
+                            total_height = canvas_height
+
+                        # Calculate scroll position to center the widget
+                        if total_height > canvas_height:
+                            # Target: put widget in upper third of visible area
+                            target_y = max(0, widget_y - canvas_height // 3)
+                            scroll_fraction = target_y / total_height
+                            scroll_fraction = min(1.0, max(0.0, scroll_fraction))
+                            canvas.yview_moveto(scroll_fraction)
+                    except Exception as e:
+                        # Fallback: try simple scroll to top for top widgets
+                        try:
+                            self.main_scroll._parent_canvas.yview_moveto(0)
+                        except Exception:
+                            pass
             except Exception as e:
                 print(f"[Tutorial] Highlight error: {e}")
 
@@ -2539,8 +2572,9 @@ Click the '? Tutorial' button next to the status bar!""",
             dialog.title(f"Tutorial ({step_index + 1}/{len(tutorial_steps)})")
             dialog.geometry("550x380")
             dialog.transient(self)
-            dialog.grab_set()
+            # Don't use grab_set() - allow user to scroll main window to see highlights
             dialog.lift()
+            dialog.attributes('-topmost', True)  # Keep dialog on top
 
             # Handle dialog close via X button or escape
             def on_close():
