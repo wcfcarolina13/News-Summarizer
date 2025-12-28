@@ -414,9 +414,20 @@ class AudioBriefingApp(ctk.CTk):
         # self.btn_sync_drive = ctk.CTkButton(self.frame_audio_controls, text="Sync to Google Drive", fg_color="blue", command=self.sync_drive_action)
         # (button removed)
 
-        # Status Label
-        self.label_status = ctk.CTkLabel(self.main_scroll, text="Ready", text_color=("gray10", "#DCE4EE"), font=("Arial", 14, "bold"))
-        self.label_status.grid(row=6, column=0, padx=20, pady=(0, 10)) # Row 6
+        # Status and Tutorial row
+        status_frame = ctk.CTkFrame(self.main_scroll, fg_color="transparent")
+        status_frame.grid(row=6, column=0, padx=20, pady=(0, 10), sticky="ew")
+        status_frame.grid_columnconfigure(0, weight=1)
+
+        self.label_status = ctk.CTkLabel(status_frame, text="Ready", text_color=("gray10", "#DCE4EE"), font=("Arial", 14, "bold"))
+        self.label_status.grid(row=0, column=0, sticky="w")
+
+        self.btn_tutorial = ctk.CTkButton(
+            status_frame, text="? Tutorial", width=80,
+            fg_color=("gray70", "gray30"), hover_color=("gray60", "gray40"),
+            command=self.start_tutorial
+        )
+        self.btn_tutorial.grid(row=0, column=1, sticky="e")
 
         # Compression Status Indicator
         self.compression_enabled = check_ffmpeg()
@@ -2091,6 +2102,226 @@ This will incur charges to your Google Cloud account!
     def open_output_folder(self):
         """Open the output folder in file browser."""
         self.audio_generator.open_folder()
+
+    def start_tutorial(self):
+        """Start an interactive tutorial walkthrough of the app features."""
+        tutorial_steps = [
+            {
+                "title": "Welcome to Daily Audio Briefing!",
+                "content": """This tutorial will walk you through all the features of the app.
+
+**Two Main Workflows:**
+
+1. **YouTube News Summary** - Fetch and summarize videos from YouTube channels
+2. **Direct Audio** - Convert articles/text directly to audio
+
+Click 'Next' to continue or 'Skip' to exit the tutorial."""
+            },
+            {
+                "title": "Step 1: API Key Setup",
+                "content": """**API Key Row** (top of the app):
+
+• **API Key field** - Paste your Gemini API key here
+• **💾 Save** - Saves your key (turns green ✓ when saved)
+• **👁 Toggle** - Show/hide your API key
+• **⚙ Manager** - Open Key Manager to copy or clear your key
+• **Model dropdown** - Choose AI model speed/quality
+
+Get a free API key at: aistudio.google.com/apikey"""
+            },
+            {
+                "title": "Step 2: YouTube News (Traditional Workflow)",
+                "content": """**To summarize YouTube videos:**
+
+1. Click **'Edit Sources'** to add YouTube channel URLs
+2. Set **days to fetch** (or use date range)
+3. Click **'Get YouTube News'**
+4. AI fetches videos and creates a summary
+5. Generate audio with **'Fast'** or **'Quality'** button
+
+The summary appears in the text area for review before audio generation."""
+            },
+            {
+                "title": "Step 3: Direct Audio Mode (NEW)",
+                "content": """**Convert articles to audio without summarization:**
+
+1. Check **'Direct Audio'** checkbox (below audio buttons)
+2. Add content using one of these methods:
+   • **Paste text** directly in the text area
+   • **Paste URLs** (one per line) - they'll be auto-fetched
+   • Click **'Fetch Article'** button to fetch from URLs
+3. Click **'Fast'** or **'Quality'** button
+4. Preview dialog shows AI-cleaned text
+5. Click **'Convert to Audio'**
+
+**Tip:** Enable 'Auto-fetch URLs' in Settings for automatic URL detection."""
+            },
+            {
+                "title": "Step 4: Fetching Articles",
+                "content": """**Fetch Article Button:**
+
+• Click **'Fetch Article'** next to the text area header
+• Paste one or more URLs (one per line)
+• Click **'Fetch All'** to download all articles
+• Content is combined with '---' separators
+
+**Auto-fetch URLs:**
+
+• Open **'Settings'** button
+• Enable **'Auto-fetch URLs in Direct Audio mode'**
+• Now just paste URLs and click Fast/Quality - they're fetched automatically!"""
+            },
+            {
+                "title": "Step 5: Smart Audio Filenames",
+                "content": """**Audio files are automatically named based on content:**
+
+• Single article: `2025-12-28_bitcoin-etf-approval.wav`
+• Multiple topics: `2025-12-28_crypto-markets-regulation.wav`
+
+The filename includes:
+• Today's date
+• Key topic words extracted from the content
+
+Files are saved in weekly folders (Week_52_2025, etc.)"""
+            },
+            {
+                "title": "Step 6: Data Extraction (Advanced)",
+                "content": """**Extract article links from newsletters:**
+
+1. Paste newsletter content in text area
+2. Select an **extraction config** from dropdown
+3. Enable options:
+   • **'Enrich with Grid'** - Match entities to The Grid database
+   • **'Research Articles'** - Fetch content and run LLM analysis
+4. Click **'Extract Links'**
+5. Results appear in table with Grid matches
+6. Export to CSV with all data
+
+**Use case:** Processing crypto newsletter digests for research."""
+            },
+            {
+                "title": "Step 7: Voice Selection",
+                "content": """**For high-quality audio:**
+
+• Use the **Voice dropdown** to select a voice
+• Click **'Play Sample'** to preview the voice
+• Different voices have different tones and accents
+
+**Audio Quality:**
+• **Fast (gTTS)** - Quick, robotic, smaller files
+• **Quality (Kokoro)** - Natural, expressive, larger files
+
+**Tip:** WAV files can be converted to MP3 - see the compression guide."""
+            },
+            {
+                "title": "Tutorial Complete!",
+                "content": """**You're ready to use Daily Audio Briefing!**
+
+**Quick Reference:**
+
+• **💾** Save API key | **👁** Show/hide key | **⚙** Key manager
+• **Direct Audio** checkbox for article-to-audio conversion
+• **Fetch Article** for multiple URLs
+• **Settings** for auto-fetch toggle
+• **? Tutorial** to restart this guide anytime
+
+**Debug Output:** Check the terminal/console for detailed logs.
+
+**Need help?** See README.md for full documentation."""
+            }
+        ]
+
+        self.current_tutorial_step = 0
+
+        def show_step(step_index):
+            if step_index >= len(tutorial_steps):
+                return
+
+            step = tutorial_steps[step_index]
+
+            dialog = ctk.CTkToplevel(self)
+            dialog.title(f"Tutorial ({step_index + 1}/{len(tutorial_steps)})")
+            dialog.geometry("550x420")
+            dialog.transient(self)
+            dialog.grab_set()
+            dialog.lift()
+
+            # Center dialog
+            dialog.update_idletasks()
+            x = self.winfo_x() + (self.winfo_width() // 2) - 275
+            y = self.winfo_y() + (self.winfo_height() // 2) - 210
+            dialog.geometry(f"550x420+{x}+{y}")
+
+            dialog.grid_columnconfigure(0, weight=1)
+            dialog.grid_rowconfigure(1, weight=1)
+
+            # Title
+            ctk.CTkLabel(
+                dialog, text=step["title"],
+                font=ctk.CTkFont(size=18, weight="bold")
+            ).grid(row=0, column=0, padx=20, pady=(20, 10), sticky="w")
+
+            # Content
+            content_frame = ctk.CTkScrollableFrame(dialog, fg_color="transparent")
+            content_frame.grid(row=1, column=0, padx=20, pady=10, sticky="nsew")
+
+            # Render content with basic markdown
+            self._render_tutorial_content(content_frame, step["content"])
+
+            # Buttons
+            btn_frame = ctk.CTkFrame(dialog, fg_color="transparent")
+            btn_frame.grid(row=2, column=0, padx=20, pady=(10, 20), sticky="ew")
+            btn_frame.grid_columnconfigure((0, 1, 2), weight=1)
+
+            def go_prev():
+                dialog.destroy()
+                show_step(step_index - 1)
+
+            def go_next():
+                dialog.destroy()
+                if step_index < len(tutorial_steps) - 1:
+                    show_step(step_index + 1)
+
+            def skip():
+                dialog.destroy()
+                self.label_status.configure(text="Tutorial skipped", text_color="gray")
+
+            if step_index > 0:
+                ctk.CTkButton(btn_frame, text="← Back", fg_color="gray", command=go_prev).grid(row=0, column=0, padx=5, sticky="ew")
+            else:
+                ctk.CTkLabel(btn_frame, text="").grid(row=0, column=0)
+
+            ctk.CTkButton(btn_frame, text="Skip Tutorial", fg_color="gray", command=skip).grid(row=0, column=1, padx=5, sticky="ew")
+
+            if step_index < len(tutorial_steps) - 1:
+                ctk.CTkButton(btn_frame, text="Next →", fg_color="green", command=go_next).grid(row=0, column=2, padx=5, sticky="ew")
+            else:
+                ctk.CTkButton(btn_frame, text="Finish", fg_color="green", command=dialog.destroy).grid(row=0, column=2, padx=5, sticky="ew")
+
+        show_step(0)
+
+    def _render_tutorial_content(self, parent, content):
+        """Render tutorial content with basic markdown formatting."""
+        lines = content.strip().split('\n')
+        for line in lines:
+            if line.startswith('**') and line.endswith('**'):
+                # Bold header
+                text = line.strip('*')
+                ctk.CTkLabel(parent, text=text, font=ctk.CTkFont(weight="bold"), wraplength=480, justify="left").pack(anchor="w", pady=(5, 2))
+            elif line.startswith('• '):
+                # Bullet point
+                text = line[2:]
+                # Handle inline bold
+                if '**' in text:
+                    text = text.replace('**', '')
+                ctk.CTkLabel(parent, text=f"  • {text}", wraplength=480, justify="left").pack(anchor="w")
+            elif line.strip() == '':
+                # Empty line
+                ctk.CTkLabel(parent, text="", height=5).pack()
+            else:
+                # Regular text - handle inline bold
+                text = line.replace('**', '')
+                ctk.CTkLabel(parent, text=text, wraplength=480, justify="left").pack(anchor="w")
 
     def show_compression_guide(self):
         """Show the audio compression installation guide in a popup window."""
