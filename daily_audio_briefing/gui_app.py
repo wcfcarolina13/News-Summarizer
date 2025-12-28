@@ -1454,14 +1454,18 @@ class AudioBriefingApp(ctk.CTk):
         if self.direct_audio_var.get():
             self.show_direct_audio_dialog("fast")
         else:
-            self.run_script("make_audio_fast.py", "daily_fast.mp3")
+            text = self.textbox.get("0.0", "end-1c").strip()
+            filename = self.generate_audio_filename(text, "mp3")
+            self.run_script("make_audio_fast.py", filename, extra_args=["--output", filename])
 
     def start_quality_generation(self):
         if self.direct_audio_var.get():
             self.show_direct_audio_dialog("quality")
         else:
+            text = self.textbox.get("0.0", "end-1c").strip()
+            filename = self.generate_audio_filename(text, "wav")
             voice = self.voice_var.get()
-            self.run_script("make_audio_quality.py", "daily_quality.wav", extra_args=["--voice", voice])
+            self.run_script("make_audio_quality.py", filename, extra_args=["--voice", voice, "--output", filename])
 
     def show_direct_audio_dialog(self, generation_type):
         """Show dialog to preview and edit cleaned text before audio generation."""
@@ -1545,12 +1549,14 @@ class AudioBriefingApp(ctk.CTk):
 
             dialog.destroy()
 
-            # Run the appropriate generation
+            # Generate smart filename based on content
             if generation_type == "fast":
-                self.run_script("make_audio_fast.py", "daily_fast.mp3")
+                filename = self.generate_audio_filename(cleaned_text, "mp3")
+                self.run_script("make_audio_fast.py", filename, extra_args=["--output", filename])
             else:
+                filename = self.generate_audio_filename(cleaned_text, "wav")
                 voice = self.voice_var.get()
-                self.run_script("make_audio_quality.py", "daily_quality.wav", extra_args=["--voice", voice])
+                self.run_script("make_audio_quality.py", filename, extra_args=["--voice", voice, "--output", filename])
 
         def on_cancel():
             self.label_status.configure(text="Ready", text_color="gray")
@@ -1647,7 +1653,76 @@ TEXT TO CLEAN:
         except Exception as e:
             print(f"Error cleaning text: {e}")
             return text  # Return original text on error
-        
+
+    def generate_audio_filename(self, text, extension="wav"):
+        """Generate a smart filename based on date and content topics.
+
+        Args:
+            text: The text content to analyze for topics
+            extension: File extension (wav or mp3)
+
+        Returns:
+            Filename like '2025-12-28_bitcoin-etf-approval.wav'
+        """
+        import re
+
+        date_str = datetime.datetime.now().strftime("%Y-%m-%d")
+
+        if not text or len(text.strip()) < 10:
+            return f"{date_str}_audio.{extension}"
+
+        # Try to extract a title from the first line/sentence
+        lines = text.strip().split('\n')
+        first_line = lines[0].strip() if lines else ""
+
+        # Check if first line looks like a title (short, no period at end)
+        if first_line and len(first_line) < 100 and not first_line.endswith('.'):
+            topic_source = first_line
+        else:
+            # Use first sentence or chunk
+            sentences = re.split(r'[.!?]', text[:500])
+            topic_source = sentences[0] if sentences else text[:100]
+
+        # Extract key words (remove common words)
+        stop_words = {
+            'the', 'a', 'an', 'and', 'or', 'but', 'in', 'on', 'at', 'to', 'for',
+            'of', 'with', 'by', 'from', 'as', 'is', 'was', 'are', 'were', 'been',
+            'be', 'have', 'has', 'had', 'do', 'does', 'did', 'will', 'would',
+            'could', 'should', 'may', 'might', 'must', 'this', 'that', 'these',
+            'those', 'it', 'its', 'they', 'their', 'we', 'our', 'you', 'your',
+            'he', 'she', 'him', 'her', 'his', 'i', 'my', 'me', 'what', 'which',
+            'who', 'how', 'when', 'where', 'why', 'all', 'each', 'every', 'both',
+            'few', 'more', 'most', 'other', 'some', 'such', 'no', 'not', 'only',
+            'own', 'same', 'so', 'than', 'too', 'very', 'just', 'also', 'now',
+            'new', 'says', 'said', 'according', 'report', 'reports', 'today'
+        }
+
+        # Clean and tokenize
+        words = re.findall(r'\b[a-zA-Z]{3,}\b', topic_source.lower())
+        key_words = [w for w in words if w not in stop_words][:5]
+
+        if not key_words:
+            # Fallback: just use first few words
+            key_words = words[:3] if words else ['audio']
+
+        # Create topic slug
+        topic_slug = '-'.join(key_words[:4])  # Max 4 words
+
+        # Sanitize for filename
+        topic_slug = re.sub(r'[^a-z0-9\-]', '', topic_slug)
+        topic_slug = re.sub(r'-+', '-', topic_slug).strip('-')
+
+        # Limit length
+        if len(topic_slug) > 40:
+            topic_slug = topic_slug[:40].rsplit('-', 1)[0]
+
+        if not topic_slug:
+            topic_slug = "audio"
+
+        filename = f"{date_str}_{topic_slug}.{extension}"
+        print(f"[Audio] Generated filename: {filename}")
+        return filename
+
     def estimate_api_usage(self):
         """Estimate API requests and cost based on current settings."""
         # Count enabled channels
