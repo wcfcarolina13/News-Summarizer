@@ -959,128 +959,151 @@ class AudioBriefingApp(ctk.CTk):
                 print(f"       [Fetch] All fetch methods failed")
                 return ""
 
-            soup = BeautifulSoup(html, 'lxml')
+            try:
+                soup = BeautifulSoup(html, 'lxml')
+            except Exception as e:
+                print(f"       [Fetch] BeautifulSoup parse error: {e}")
+                return ""
 
             # Check for paywall or login-required indicators
-            page_text = soup.get_text().lower()
-            if 'subscribe to read' in page_text or 'sign in to read' in page_text:
-                print(f"       [Fetch] Possible paywall detected")
+            try:
+                page_text = soup.get_text().lower()
+                if 'subscribe to read' in page_text or 'sign in to read' in page_text:
+                    print(f"       [Fetch] Possible paywall detected")
+            except Exception as e:
+                print(f"       [Fetch] Paywall check error: {e}")
 
             # Remove elements that are definitely not article content
-            for tag in soup.find_all(['script', 'style', 'nav', 'footer', 'header',
-                                       'aside', 'iframe', 'noscript', 'form', 'button', 'svg']):
-                tag.decompose()
+            try:
+                for tag in soup.find_all(['script', 'style', 'nav', 'footer', 'header',
+                                           'aside', 'iframe', 'noscript', 'form', 'button', 'svg']):
+                    tag.decompose()
+            except Exception as e:
+                print(f"       [Fetch] Tag removal error: {e}")
 
             # Remove common non-content patterns by class/id
-            remove_patterns = [
-                'subscribe', 'newsletter', 'sidebar', 'comment', 'share',
-                'social', 'related', 'recommended', 'footer', 'header',
-                'navigation', 'nav-', 'menu', 'ad-', 'advertisement',
-                'signup', 'sign-up', 'login', 'paywall', 'premium', 'popup',
-                'modal', 'cookie', 'banner', 'promo'
-            ]
-            for pattern in remove_patterns:
-                for tag in soup.find_all(class_=lambda x: x and pattern in str(x).lower()):
-                    tag.decompose()
-                for tag in soup.find_all(id=lambda x: x and pattern in str(x).lower()):
-                    tag.decompose()
+            try:
+                remove_patterns = [
+                    'subscribe', 'newsletter', 'sidebar', 'comment', 'share',
+                    'social', 'related', 'recommended', 'footer', 'header',
+                    'navigation', 'nav-', 'menu', 'ad-', 'advertisement',
+                    'signup', 'sign-up', 'login', 'paywall', 'premium', 'popup',
+                    'modal', 'cookie', 'banner', 'promo'
+                ]
+                for pattern in remove_patterns:
+                    for tag in soup.find_all(class_=lambda x: x and pattern in str(x).lower()):
+                        tag.decompose()
+                    for tag in soup.find_all(id=lambda x: x and pattern in str(x).lower()):
+                        tag.decompose()
+            except Exception as e:
+                print(f"       [Fetch] Pattern removal error: {e}")
 
             article_text = None
 
             # Platform-specific extraction
             # Substack (multiple variations)
-            if 'substack.com' in url or soup.find('div', class_='available-content') or soup.find('div', class_='body markup'):
-                print(f"       [Fetch] Trying Substack extraction...")
-                selectors = [
-                    ('div', {'class_': 'body markup'}),
-                    ('div', {'class_': 'available-content'}),
-                    ('div', {'class_': 'post-content'}),
-                    ('div', {'class_': 'body'}),
-                    ('article', {}),
-                ]
-                for tag, attrs in selectors:
-                    content = soup.find(tag, **attrs) if attrs else soup.find(tag)
-                    if content:
-                        text = content.get_text(separator='\n', strip=True)
-                        if len(text) > 200:
-                            article_text = text
-                            print(f"       [Fetch] Substack: found {len(text)} chars with {tag}")
-                            break
+            try:
+                is_substack = 'substack.com' in url
+                if not is_substack:
+                    # Check for Substack-like structure
+                    is_substack = soup.find('div', class_='available-content') is not None
+
+                if is_substack:
+                    print(f"       [Fetch] Trying Substack extraction...")
+                    for selector in ['div.body.markup', 'div.available-content', 'div.post-content', 'div.body', 'article']:
+                        content = soup.select_one(selector)
+                        if content:
+                            text = content.get_text(separator='\n', strip=True)
+                            if len(text) > 200:
+                                article_text = text
+                                print(f"       [Fetch] Substack: found {len(text)} chars with {selector}")
+                                break
+            except Exception as e:
+                print(f"       [Fetch] Substack extraction error: {e}")
 
             # Generic article selectors (priority order)
             if not article_text or len(article_text) < 200:
-                selectors = [
-                    ('article', {}),
-                    ('div', {'class_': 'article-content'}),
-                    ('div', {'class_': 'article-body'}),
-                    ('div', {'class_': 'post-content'}),
-                    ('div', {'class_': 'entry-content'}),
-                    ('div', {'class_': 'content-body'}),
-                    ('div', {'class_': 'story-body'}),
-                    ('div', {'class_': 'post-body'}),
-                    ('div', {'class_': 'article'}),
-                    ('main', {}),
-                    ('div', {'role': 'main'}),
-                    ('div', {'role': 'article'}),
-                    ('div', {'class_': 'content'}),
-                    ('div', {'class_': 'post'}),
-                ]
+                try:
+                    selectors = [
+                        'article',
+                        'div.article-content',
+                        'div.article-body',
+                        'div.post-content',
+                        'div.entry-content',
+                        'div.content-body',
+                        'div.story-body',
+                        'div.post-body',
+                        'div.article',
+                        'main',
+                        '[role="main"]',
+                        '[role="article"]',
+                        'div.content',
+                        'div.post',
+                    ]
 
-                for tag, attrs in selectors:
-                    if attrs:
-                        content = soup.find(tag, **attrs)
-                    else:
-                        content = soup.find(tag)
-                    if content:
-                        text = content.get_text(separator='\n', strip=True)
-                        if len(text) > 200:
-                            article_text = text
-                            print(f"       [Fetch] Generic: found {len(text)} chars with {tag} {attrs}")
-                            break
+                    for selector in selectors:
+                        content = soup.select_one(selector)
+                        if content:
+                            text = content.get_text(separator='\n', strip=True)
+                            if len(text) > 200:
+                                article_text = text
+                                print(f"       [Fetch] Generic: found {len(text)} chars with {selector}")
+                                break
+                except Exception as e:
+                    print(f"       [Fetch] Generic extraction error: {e}")
 
             # Fallback: get largest text block with paragraphs
             if not article_text or len(article_text) < 200:
-                print(f"       [Fetch] Trying fallback paragraph extraction...")
-                all_divs = soup.find_all(['div', 'article', 'section', 'main'])
-                best_text = ""
-                best_source = ""
-                for div in all_divs:
-                    paragraphs = div.find_all('p')
-                    if len(paragraphs) >= 2:  # At least 2 paragraphs
-                        text = div.get_text(separator='\n', strip=True)
-                        if len(text) > len(best_text):
-                            best_text = text
-                            best_source = div.name
-                if best_text and len(best_text) > 200:
-                    article_text = best_text
-                    print(f"       [Fetch] Fallback: found {len(best_text)} chars from {best_source}")
+                try:
+                    print(f"       [Fetch] Trying fallback paragraph extraction...")
+                    all_divs = soup.find_all(['div', 'article', 'section', 'main'])
+                    best_text = ""
+                    best_source = ""
+                    for div in all_divs:
+                        paragraphs = div.find_all('p')
+                        if len(paragraphs) >= 2:  # At least 2 paragraphs
+                            text = div.get_text(separator='\n', strip=True)
+                            if len(text) > len(best_text):
+                                best_text = text
+                                best_source = div.name
+                    if best_text and len(best_text) > 200:
+                        article_text = best_text
+                        print(f"       [Fetch] Fallback: found {len(best_text)} chars from {best_source}")
+                except Exception as e:
+                    print(f"       [Fetch] Fallback extraction error: {e}")
 
             # Last resort: just get body text
             if not article_text or len(article_text) < 200:
-                if soup.body:
-                    body_text = soup.body.get_text(separator='\n', strip=True)
-                    if len(body_text) > 500:
-                        article_text = body_text
-                        print(f"       [Fetch] Last resort: using body text ({len(body_text)} chars)")
+                try:
+                    if soup.body:
+                        body_text = soup.body.get_text(separator='\n', strip=True)
+                        if len(body_text) > 500:
+                            article_text = body_text
+                            print(f"       [Fetch] Last resort: using body text ({len(body_text)} chars)")
+                except Exception as e:
+                    print(f"       [Fetch] Body text error: {e}")
 
             # Clean up the text
             if article_text:
-                # Remove multiple newlines
-                article_text = re.sub(r'\n{3,}', '\n\n', article_text)
-                # Remove common junk phrases
-                junk_phrases = [
-                    r'Subscribe.*?newsletter',
-                    r'Sign up.*?free',
-                    r'Click here to.*',
-                    r'Share this.*',
-                    r'Follow us on.*',
-                    r'Read more:.*',
-                    r'Related:.*',
-                    r'Comments.*',
-                    r'Leave a comment.*',
-                ]
-                for phrase in junk_phrases:
-                    article_text = re.sub(phrase, '', article_text, flags=re.IGNORECASE)
+                try:
+                    # Remove multiple newlines
+                    article_text = re.sub(r'\n{3,}', '\n\n', article_text)
+                    # Remove common junk phrases
+                    junk_phrases = [
+                        r'Subscribe.*?newsletter',
+                        r'Sign up.*?free',
+                        r'Click here to.*',
+                        r'Share this.*',
+                        r'Follow us on.*',
+                        r'Read more:.*',
+                        r'Related:.*',
+                        r'Comments.*',
+                        r'Leave a comment.*',
+                    ]
+                    for phrase in junk_phrases:
+                        article_text = re.sub(phrase, '', article_text, flags=re.IGNORECASE)
+                except Exception as e:
+                    print(f"       [Fetch] Cleanup error: {e}")
 
                 final_text = article_text.strip()
                 if len(final_text) > 100:
