@@ -72,7 +72,10 @@ class AudioBriefingApp(ctk.CTk):
         # Data extraction
         self.extracted_items = []
         self.data_processor = None  # Lazy init to avoid slow startup
-        
+
+        # App settings
+        self.settings = self._load_settings()
+
         # self.podcast_server = PodcastServer()  # Disabled
         # self.drive_manager = None  # Google Drive features removed
 
@@ -85,14 +88,23 @@ class AudioBriefingApp(ctk.CTk):
         self.frame_text.grid(row=1, column=0, padx=20, pady=10, sticky="ew")
         self.frame_text.grid_columnconfigure(0, weight=1)
 
-        # Header with expand/collapse toggle
+        # Header with expand/collapse toggle and fetch button
         text_header = ctk.CTkFrame(self.frame_text, fg_color="transparent")
         text_header.grid(row=0, column=0, sticky="ew", padx=10, pady=(5, 0))
         text_header.grid_columnconfigure(0, weight=1)
 
         ctk.CTkLabel(text_header, text="News Summary", font=ctk.CTkFont(size=14, weight="bold")).grid(row=0, column=0, sticky="w")
+
+        # Fetch Article button - for loading article content from URL
+        self.btn_fetch_article = ctk.CTkButton(text_header, text="Fetch Article", width=100, fg_color="green", command=self.open_fetch_article_dialog)
+        self.btn_fetch_article.grid(row=0, column=1, padx=(10, 5))
+
+        # Settings button
+        self.btn_settings = ctk.CTkButton(text_header, text="Settings", width=70, fg_color="gray", command=self.open_settings_dialog)
+        self.btn_settings.grid(row=0, column=2, padx=(0, 5))
+
         self.text_toggle_btn = ctk.CTkButton(text_header, text="Collapse", width=70, fg_color="gray", command=self.toggle_text_section)
-        self.text_toggle_btn.grid(row=0, column=1, padx=(10, 0))
+        self.text_toggle_btn.grid(row=0, column=3, padx=(0, 0))
 
         # Text content frame (collapsible)
         self.text_content = ctk.CTkFrame(self.frame_text, fg_color="transparent")
@@ -559,7 +571,7 @@ class AudioBriefingApp(ctk.CTk):
 
     def save_summary(self):
         """Save textbox content to summary file.
-        
+
         Returns:
             bool: True if successful, False otherwise
         """
@@ -569,6 +581,201 @@ class AudioBriefingApp(ctk.CTk):
         else:
             self.label_status.configure(text="Error saving file", text_color="red")
             return False
+
+    def _load_settings(self) -> dict:
+        """Load app settings from settings.json."""
+        settings_path = os.path.join(os.path.dirname(__file__), "settings.json")
+        default_settings = {
+            "auto_fetch_urls": False,  # Auto-fetch URLs in Direct Audio mode
+        }
+        try:
+            if os.path.exists(settings_path):
+                with open(settings_path, 'r') as f:
+                    saved = json.load(f)
+                    # Merge with defaults to handle new settings
+                    return {**default_settings, **saved}
+        except Exception:
+            pass
+        return default_settings
+
+    def _save_settings(self):
+        """Save app settings to settings.json."""
+        settings_path = os.path.join(os.path.dirname(__file__), "settings.json")
+        try:
+            with open(settings_path, 'w') as f:
+                json.dump(self.settings, f, indent=2)
+        except Exception as e:
+            print(f"Error saving settings: {e}")
+
+    def open_settings_dialog(self):
+        """Open the settings dialog."""
+        dialog = ctk.CTkToplevel(self)
+        dialog.title("Settings")
+        dialog.geometry("400x300")
+        dialog.transient(self)
+        dialog.lift()
+        dialog.grab_set()
+
+        dialog.grid_columnconfigure(0, weight=1)
+
+        # Header
+        ctk.CTkLabel(dialog, text="App Settings", font=ctk.CTkFont(size=16, weight="bold")).grid(
+            row=0, column=0, padx=20, pady=(20, 10), sticky="w"
+        )
+
+        # Settings frame
+        settings_frame = ctk.CTkFrame(dialog, fg_color="transparent")
+        settings_frame.grid(row=1, column=0, padx=20, pady=10, sticky="ew")
+        settings_frame.grid_columnconfigure(0, weight=1)
+
+        # Auto-fetch URLs toggle
+        auto_fetch_var = ctk.BooleanVar(value=self.settings.get("auto_fetch_urls", False))
+        chk_auto_fetch = ctk.CTkCheckBox(
+            settings_frame,
+            text="Auto-fetch URLs in Direct Audio mode",
+            variable=auto_fetch_var
+        )
+        chk_auto_fetch.grid(row=0, column=0, pady=5, sticky="w")
+
+        ctk.CTkLabel(
+            settings_frame,
+            text="When enabled, if the textbox contains just a URL,\nDirect Audio will automatically fetch the article.",
+            font=ctk.CTkFont(size=11),
+            text_color="gray"
+        ).grid(row=1, column=0, pady=(0, 15), sticky="w")
+
+        # Save button
+        def save_and_close():
+            self.settings["auto_fetch_urls"] = auto_fetch_var.get()
+            self._save_settings()
+            dialog.destroy()
+            self.label_status.configure(text="Settings saved", text_color="green")
+
+        ctk.CTkButton(dialog, text="Save", command=save_and_close, fg_color="green").grid(
+            row=2, column=0, padx=20, pady=20
+        )
+
+    def open_fetch_article_dialog(self):
+        """Open dialog to fetch article content from a URL."""
+        dialog = ctk.CTkToplevel(self)
+        dialog.title("Fetch Article")
+        dialog.geometry("600x200")
+        dialog.transient(self)
+        dialog.lift()
+        dialog.grab_set()
+
+        dialog.grid_columnconfigure(0, weight=1)
+
+        # Instructions
+        ctk.CTkLabel(
+            dialog,
+            text="Enter an article URL to fetch its content:",
+            font=ctk.CTkFont(size=14)
+        ).grid(row=0, column=0, padx=20, pady=(20, 10), sticky="w")
+
+        # URL entry
+        url_entry = ctk.CTkEntry(dialog, placeholder_text="https://example.com/article...")
+        url_entry.grid(row=1, column=0, padx=20, pady=10, sticky="ew")
+
+        # Status label
+        status_label = ctk.CTkLabel(dialog, text="", text_color="gray")
+        status_label.grid(row=2, column=0, padx=20, pady=5, sticky="w")
+
+        # Buttons
+        btn_frame = ctk.CTkFrame(dialog, fg_color="transparent")
+        btn_frame.grid(row=3, column=0, padx=20, pady=(10, 20), sticky="ew")
+        btn_frame.grid_columnconfigure((0, 1), weight=1)
+
+        def fetch_article():
+            url = url_entry.get().strip()
+            if not url:
+                status_label.configure(text="Please enter a URL", text_color="orange")
+                return
+            if not url.startswith("http"):
+                url = "https://" + url
+
+            status_label.configure(text="Fetching article...", text_color="orange")
+            dialog.update()
+
+            # Fetch in background
+            def fetch_thread():
+                content = self._fetch_article_content(url)
+                if content:
+                    def update_ui():
+                        self.textbox.delete("0.0", "end")
+                        self.textbox.insert("0.0", content)
+                        # Update placeholder
+                        self._placeholder.place_forget()
+                        dialog.destroy()
+                        self.label_status.configure(
+                            text=f"Fetched article ({len(content)} chars). Use Direct Audio to clean and convert.",
+                            text_color="green"
+                        )
+                    self.after(0, update_ui)
+                else:
+                    self.after(0, lambda: status_label.configure(
+                        text="Failed to fetch article. Check URL and try again.",
+                        text_color="red"
+                    ))
+
+            threading.Thread(target=fetch_thread, daemon=True).start()
+
+        ctk.CTkButton(btn_frame, text="Cancel", fg_color="gray", command=dialog.destroy).grid(
+            row=0, column=0, padx=5, sticky="ew"
+        )
+        ctk.CTkButton(btn_frame, text="Fetch", fg_color="green", command=fetch_article).grid(
+            row=0, column=1, padx=5, sticky="ew"
+        )
+
+    def _fetch_article_content(self, url: str) -> str:
+        """Fetch and extract article body from URL."""
+        try:
+            headers = {
+                'User-Agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36',
+                'Accept': 'text/html,application/xhtml+xml',
+            }
+
+            # Try requests first
+            try:
+                import requests
+                response = requests.get(url, headers=headers, timeout=15)
+                response.raise_for_status()
+                html = response.text
+            except Exception:
+                # Fallback to urllib
+                import urllib.request
+                req = urllib.request.Request(url, headers=headers)
+                with urllib.request.urlopen(req, timeout=15) as response:
+                    html = response.read().decode('utf-8', errors='ignore')
+
+            # Extract article body using the data processor's method
+            processor = self._get_data_processor()
+            article_text = processor._extract_article_body(html)
+
+            if article_text and len(article_text) > 100:
+                return article_text
+
+            # If extraction failed, try basic text extraction
+            from bs4 import BeautifulSoup
+            soup = BeautifulSoup(html, 'lxml')
+
+            # Remove scripts, styles, nav, etc.
+            for tag in soup.find_all(['script', 'style', 'nav', 'footer', 'header', 'aside']):
+                tag.decompose()
+
+            # Get text from body
+            if soup.body:
+                text = soup.body.get_text(separator='\n', strip=True)
+                # Clean up multiple newlines
+                import re
+                text = re.sub(r'\n{3,}', '\n\n', text)
+                return text
+
+            return ""
+
+        except Exception as e:
+            print(f"Error fetching article: {e}")
+            return ""
 
     def open_sources_editor(self):
         editor = ctk.CTkToplevel(self)
@@ -1060,6 +1267,28 @@ class AudioBriefingApp(ctk.CTk):
         if not raw_text:
             self.label_status.configure(text="No text to convert", text_color="red")
             return
+
+        # Check if auto-fetch URLs is enabled and text looks like a URL
+        if self.settings.get("auto_fetch_urls", False):
+            # Check if text is just a URL (possibly with whitespace)
+            potential_url = raw_text.split()[0] if raw_text.split() else ""
+            if potential_url.startswith(("http://", "https://")) and len(raw_text.split()) <= 2:
+                self.label_status.configure(text="Fetching article from URL...", text_color="orange")
+                self.update()
+
+                # Fetch the article content
+                fetched_content = self._fetch_article_content(potential_url)
+                if fetched_content and len(fetched_content) > 100:
+                    raw_text = fetched_content
+                    self.textbox.delete("0.0", "end")
+                    self.textbox.insert("0.0", raw_text)
+                    self._placeholder.place_forget()
+                else:
+                    self.label_status.configure(
+                        text="Failed to fetch article. Paste content manually or use Fetch Article button.",
+                        text_color="red"
+                    )
+                    return
 
         # Create dialog
         dialog = ctk.CTkToplevel(self)
