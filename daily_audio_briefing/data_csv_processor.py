@@ -624,8 +624,15 @@ class CSVManager:
             if write_header:
                 writer.writeheader()
 
+            # Checkbox columns that should default to FALSE
+            checkbox_columns = {'Processed', 'Added'}
+
             for item in items:
                 row = item.to_dict()
+                # Add default FALSE for checkbox columns not in row
+                for col in columns:
+                    if col in checkbox_columns and col not in row:
+                        row[col] = 'FALSE'
                 writer.writerow(row)
 
         print(f"{'Appended' if mode == 'a' else 'Wrote'} {len(items)} items to {output_path}")

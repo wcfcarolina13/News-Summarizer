@@ -98,7 +98,9 @@
     "description",
     "source_name",
     "date_published",
-    "comments"
+    "comments",
+    "Processed",
+    "Added"
   ],
 
   "notes": "Extracts market/trading news from CryptoSum. Filters out: prediction markets (ads), regulatory news, hacks/exploits, legal/enforcement, sponsored 'here's why' articles, landing pages, and ad partners."
