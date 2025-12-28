@@ -982,6 +982,11 @@ class AudioBriefingApp(ctk.CTk):
                 print(f"       [Fetch] BeautifulSoup parsing failed")
                 return ""
 
+            # Debug: check soup structure
+            has_body = soup.body is not None
+            body_children = len(list(soup.body.children)) if has_body else 0
+            print(f"       [Fetch] Soup parsed: body={has_body}, children={body_children}")
+
             # Check for paywall or login-required indicators
             try:
                 page_text = soup.get_text().lower()
@@ -1117,9 +1122,17 @@ class AudioBriefingApp(ctk.CTk):
                 try:
                     if soup.body:
                         body_text = soup.body.get_text(separator='\n', strip=True)
+                        print(f"       [Fetch] Body text length: {len(body_text)} chars")
                         if len(body_text) > 500:
                             article_text = body_text
                             print(f"       [Fetch] Last resort: using body text ({len(body_text)} chars)")
+                        else:
+                            print(f"       [Fetch] Body text too short: {len(body_text)} chars")
+                            # Debug: show first 200 chars of body
+                            preview = body_text[:200].replace('\n', ' ')
+                            print(f"       [Fetch] Body preview: {preview}")
+                    else:
+                        print(f"       [Fetch] No body element found in soup")
                 except Exception as e:
                     print(f"       [Fetch] Body text error: {e}")
 
