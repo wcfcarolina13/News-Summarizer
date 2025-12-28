@@ -1023,23 +1023,46 @@ class AudioBriefingApp(ctk.CTk):
             article_text = None
 
             # Platform-specific extraction
-            # Substack (multiple variations)
+            # Substack (multiple variations) - includes custom domains
             try:
-                is_substack = 'substack.com' in url
+                is_substack = 'substack.com' in url or 'experimental-history.com' in url
                 if not is_substack:
-                    # Check for Substack-like structure
-                    is_substack = soup.find('div', class_='available-content') is not None
+                    # Check for Substack-like structure in HTML
+                    is_substack = (
+                        soup.find('div', class_='available-content') is not None or
+                        soup.find('div', class_='body markup') is not None or
+                        soup.find('meta', {'property': 'og:site_name', 'content': lambda x: x and 'Substack' in str(x)}) is not None or
+                        'substack' in str(soup.find('script', {'src': True}) or '').lower()
+                    )
 
                 if is_substack:
                     print(f"       [Fetch] Trying Substack extraction...")
-                    for selector in ['div.body.markup', 'div.available-content', 'div.post-content', 'div.body', 'article']:
-                        content = soup.select_one(selector)
-                        if content:
-                            text = content.get_text(separator='\n', strip=True)
-                            if len(text) > 200:
-                                article_text = text
-                                print(f"       [Fetch] Substack: found {len(text)} chars with {selector}")
-                                break
+                    # More comprehensive Substack selectors
+                    substack_selectors = [
+                        'div.body.markup',
+                        'div.body-markup',
+                        'div.available-content',
+                        'div.post-content',
+                        'div.post-content-final',
+                        'div.body',
+                        'div.markup',
+                        'article.post',
+                        'article',
+                        '.post-content',
+                        '.body.markup',
+                        '[data-testid="post-content"]',
+                    ]
+                    for selector in substack_selectors:
+                        try:
+                            content = soup.select_one(selector)
+                            if content:
+                                text = content.get_text(separator='\n', strip=True)
+                                if len(text) > 200:
+                                    article_text = text
+                                    print(f"       [Fetch] Substack: found {len(text)} chars with {selector}")
+                                    break
+                        except Exception as sel_err:
+                            continue
             except Exception as e:
                 print(f"       [Fetch] Substack extraction error: {e}")
 
@@ -1108,8 +1131,21 @@ class AudioBriefingApp(ctk.CTk):
             # Clean up the text
             if article_text:
                 try:
+                    # First, aggressively remove non-printable/binary characters
+                    # Keep only ASCII printable + common unicode letters
+                    cleaned = []
+                    for char in article_text:
+                        if char.isprintable() or char in '\n\t\r':
+                            cleaned.append(char)
+                        elif ord(char) > 127:
+                            # Replace non-ASCII with space (might be unicode)
+                            cleaned.append(' ')
+                    article_text = ''.join(cleaned)
+
                     # Remove multiple newlines
                     article_text = re.sub(r'\n{3,}', '\n\n', article_text)
+                    article_text = re.sub(r' {3,}', ' ', article_text)
+
                     # Remove common junk phrases
                     junk_phrases = [
                         r'Subscribe.*?newsletter',
@@ -1125,41 +1161,51 @@ class AudioBriefingApp(ctk.CTk):
                     for phrase in junk_phrases:
                         article_text = re.sub(phrase, '', article_text, flags=re.IGNORECASE)
 
-                    # Filter out garbage/binary text
-                    # Check for high ratio of non-printable or special characters
-                    printable_chars = sum(1 for c in article_text if c.isprintable() or c in '\n\t')
-                    total_chars = len(article_text)
-                    if total_chars > 0:
-                        printable_ratio = printable_chars / total_chars
-                        if printable_ratio < 0.85:
-                            print(f"       [Fetch] Detected garbage text (only {printable_ratio:.1%} printable)")
-                            # Try to extract only clean lines
+                    # Check content quality - must have real words
+                    # Split into words and check that most are actual words (letters only)
+                    words = article_text.split()
+                    if words:
+                        # Count words that are mostly alphabetic (allowing some punctuation)
+                        real_words = sum(1 for w in words if sum(c.isalpha() for c in w) > len(w) * 0.5)
+                        word_ratio = real_words / len(words)
+                        if word_ratio < 0.5:
+                            print(f"       [Fetch] Low word quality ({word_ratio:.1%} real words), filtering lines...")
+                            # Filter line by line
                             clean_lines = []
                             for line in article_text.split('\n'):
-                                line_printable = sum(1 for c in line if c.isprintable() or c in '\t')
-                                if len(line) > 0 and line_printable / len(line) > 0.9:
-                                    # Also check for excessive special characters
-                                    alpha_count = sum(1 for c in line if c.isalnum() or c.isspace())
-                                    if alpha_count / len(line) > 0.6:
+                                line = line.strip()
+                                if len(line) < 10:
+                                    continue
+                                # Check if line has mostly real words
+                                line_words = line.split()
+                                if line_words:
+                                    line_real = sum(1 for w in line_words if sum(c.isalpha() for c in w) > len(w) * 0.5)
+                                    if line_real / len(line_words) > 0.6:
                                         clean_lines.append(line)
                             if clean_lines:
                                 article_text = '\n'.join(clean_lines)
                                 print(f"       [Fetch] Filtered to {len(article_text)} clean chars")
                             else:
-                                print(f"       [Fetch] No clean content after filtering")
+                                print(f"       [Fetch] No readable content after word filtering")
                                 article_text = ""
 
-                    # Remove non-ASCII garbage characters
-                    article_text = re.sub(r'[^\x00-\x7F]+', ' ', article_text)
-                    # Remove excessive whitespace
-                    article_text = re.sub(r' {3,}', ' ', article_text)
+                    # Final cleanup
                     article_text = re.sub(r'\n{3,}', '\n\n', article_text)
+                    article_text = re.sub(r' {2,}', ' ', article_text)
 
                 except Exception as e:
                     print(f"       [Fetch] Cleanup error: {e}")
 
                 final_text = article_text.strip()
                 if len(final_text) > 100:
+                    # Final sanity check - sample the text
+                    sample = final_text[:500]
+                    sample_words = sample.split()
+                    if sample_words:
+                        alpha_words = sum(1 for w in sample_words if any(c.isalpha() for c in w))
+                        if alpha_words / len(sample_words) < 0.3:
+                            print(f"       [Fetch] Final check failed - content appears to be garbage")
+                            return ""
                     return final_text
                 else:
                     print(f"       [Fetch] Text too short after cleanup: {len(final_text)} chars")
@@ -2186,92 +2232,249 @@ This will incur charges to your Google Cloud account!
         tutorial_steps = [
             {
                 "title": "Welcome to Daily Audio Briefing!",
-                "content": """This tutorial will walk you through all the features of the app.
+                "content": """Don't worry - this app is simpler than it looks!
 
-**Two Main Workflows:**
+This tutorial will guide you through everything step-by-step. By the end, you'll know exactly how to turn articles and news into audio you can listen to anywhere.
 
-1. **YouTube News Summary** - Fetch and summarize videos from YouTube channels
-2. **Direct Audio** - Convert articles/text directly to audio
+**What This App Does:**
 
-Click 'Next' to continue or 'Skip' to exit the tutorial.""",
+• Takes articles, blog posts, or YouTube videos
+• Uses AI to summarize them (optional)
+• Converts everything to audio files you can listen to
+
+**Two Ways to Use It:**
+
+1. **YouTube Mode** - Summarize videos from channels you follow
+2. **Direct Audio Mode** - Convert any text or article to audio
+
+Let's start with the basics. Click 'Next' to continue.""",
                 "highlight": None  # No highlight for welcome
             },
             {
-                "title": "Step 1: API Key Setup",
-                "content": """**API Key Field** (highlighted):
+                "title": "Step 1: Your API Key (Required First Step)",
+                "content": """**Look at the highlighted field** - this is where your API key goes.
 
-• Paste your Gemini API key in this field
-• **💾 Save** - Saves your key (turns green ✓ when saved)
-• **👁 Toggle** - Show/hide your API key
-• **⚙ Manager** - Open Key Manager to copy or clear your key
+**What is an API key?**
+It's like a password that lets this app talk to Google's AI. Without it, the app can't summarize or process anything.
 
-Get a free API key at: aistudio.google.com/apikey""",
+**How to get one (it's free!):**
+
+1. Go to: aistudio.google.com/apikey
+2. Sign in with your Google account
+3. Click "Create API Key"
+4. Copy the key (it looks like a long string of letters and numbers)
+5. Paste it in the highlighted field
+6. Click the 💾 button to save it
+
+**The buttons next to the field:**
+• **💾** = Save your key (turns green ✓ when saved)
+• **👁** = Show/hide your key (for privacy)
+• **⚙** = Open key manager (to copy or delete your key)
+
+Once saved, you won't need to enter it again!""",
                 "highlight": "gemini_key_entry"
             },
             {
-                "title": "Step 2: Get YouTube News",
-                "content": """**Get YouTube News Button** (highlighted):
+                "title": "Step 2: Choose Your AI Model",
+                "content": """**The Model Dropdown** (next to your API key)
 
-1. First click **'Edit Sources'** to add YouTube channel URLs
-2. Set **days to fetch** (or use date range picker)
-3. Click this button to fetch and summarize videos
-4. AI creates a summary in the text area below
+This controls which AI model processes your content. Think of it like choosing between different assistants.
 
-The summary can be reviewed and edited before audio generation.""",
+**Available Models:**
+
+• **Flash** - Fastest, good for most tasks
+• **Pro** - More thorough, takes longer
+• **Flash 8B** - Lightweight, very fast
+• **Flash Thinking** - Best for complex analysis
+
+**Which should you pick?**
+
+For everyday use, **Flash** is recommended. It's fast and handles most content well.
+
+If you're summarizing very complex or technical content, try **Pro** for better results.
+
+You can change this anytime - just pick from the dropdown!""",
+                "highlight": None
+            },
+            {
+                "title": "Step 3: YouTube News Mode",
+                "content": """**The 'Get YouTube News' Button** (highlighted)
+
+This is the traditional workflow for summarizing YouTube videos.
+
+**How it works:**
+
+1. **Edit Sources** - Click this first to add YouTube channels you want to follow
+
+2. **Set the timeframe** - Use the number field and dropdown:
+   • "7 Days" = videos from the past week
+   • "24 Hours" = just today's videos
+   • "10 Videos" = the 10 most recent videos
+
+3. **Click 'Get YouTube News'** - The AI will:
+   • Find recent videos from your channels
+   • Fetch their transcripts
+   • Create a summary of all the content
+
+4. The summary appears in the text area below
+
+**Tip:** Start with just 1-2 channels and a few days to test it out.""",
                 "highlight": "btn_get_yt_news"
             },
             {
-                "title": "Step 3: Text Area",
-                "content": """**Text Area** (highlighted):
+                "title": "Step 4: The Text Area",
+                "content": """**The Main Text Area** (highlighted)
 
-• View and edit summaries or article content
-• Use **Fetch Article** button to fetch content from URLs
-• Use **Settings** to configure auto-fetch options
+This is where all your content lives - summaries, articles, or text you paste in.
 
-**Direct Audio Mode:**
-1. Check **'Direct Audio'** checkbox (below audio buttons)
-2. Paste text or URLs here
-3. Click **'Fast'** or **'Quality'** to convert directly""",
+**What you can do here:**
+
+• **View** summaries generated by the AI
+• **Edit** content before converting to audio
+• **Paste** your own text or article URLs
+• **Type** anything you want to convert to audio
+
+**The buttons above the text area:**
+
+• **Fetch Article** - Opens a window to fetch multiple article URLs at once
+• **Settings** - Configure options like auto-fetch for URLs
+• **Collapse** - Hide the text area to save space
+
+**Pro Tip:** You can paste multiple URLs in the Fetch Article dialog - one per line - and it will fetch all of them!""",
                 "highlight": "textbox"
             },
             {
-                "title": "Step 4: Generate Fast Audio",
-                "content": """**Generate Fast Button** (highlighted):
+                "title": "Step 5: Direct Audio Mode (Easiest Way!)",
+                "content": """**The 'Direct Audio' Checkbox**
 
-• Uses gTTS for quick text-to-speech conversion
+This is the simplest way to use the app!
+
+**How Direct Audio works:**
+
+1. Check the **'Direct Audio'** checkbox (below the audio buttons)
+2. Paste text OR article URLs in the text area
+3. Click either audio button - done!
+
+**What's different from YouTube mode?**
+
+• No summarization - converts exactly what's in the text area
+• Perfect for articles you want to listen to in full
+• Works with plain text or fetched article content
+
+**When to use Direct Audio:**
+
+• You have an article you want to listen to
+• You pasted text from somewhere
+• You want the full content, not a summary
+
+**When to use YouTube mode:**
+
+• You want AI to summarize multiple videos
+• You're catching up on channel content""",
+                "highlight": None
+            },
+            {
+                "title": "Step 6: Generate Fast Audio",
+                "content": """**The 'Generate Fast' Button** (highlighted)
+
+This creates audio quickly using Google's text-to-speech (gTTS).
+
+**Pros:**
+• Very fast - usually under a minute
+• Works reliably
 • Good for testing or quick previews
-• Output is saved as WAV file
 
-For higher quality audio, use **Generate Quality** instead.""",
+**Cons:**
+• Robotic-sounding voice
+• Less natural than quality option
+
+**When to use Fast:**
+
+• You want to quickly test if content sounds right
+• You're in a hurry
+• You don't mind a computer-sounding voice
+
+**Output:**
+Audio files are saved in the output folder. Click 'Open Folder' to find them.""",
                 "highlight": "btn_fast"
             },
             {
-                "title": "Step 5: Generate Quality Audio",
-                "content": """**Generate Quality Button** (highlighted):
+                "title": "Step 7: Generate Quality Audio",
+                "content": """**The 'Generate Quality' Button** (highlighted)
 
-• Uses Kokoro for high-quality voice synthesis
-• Select voice from dropdown above
-• Use **Play Sample** to preview voices
-• **Direct Audio** checkbox skips summarization
+This creates natural-sounding audio using Kokoro TTS.
 
-**Smart Filenames:** Audio files are named by date + topic automatically.""",
+**Before clicking:**
+
+1. **Choose a voice** from the dropdown above the button
+2. Click **'Play Sample'** to preview how the voice sounds
+3. Then click **'Generate Quality'**
+
+**Voice options include:**
+• Male and female voices
+• Different accents and speaking styles
+• Various speeds and tones
+
+**Pros:**
+• Much more natural sounding
+• Multiple voice choices
+• Great for longer content
+
+**Cons:**
+• Takes longer to generate
+• Requires more processing power
+
+**Tip:** Try different voices to find one you like!""",
                 "highlight": "btn_quality"
             },
             {
-                "title": "Tutorial Complete!",
-                "content": """**You're ready to use Daily Audio Briefing!**
+                "title": "Step 8: Finding Your Audio Files",
+                "content": """**Where do your audio files go?**
 
-**Quick Reference:**
+Click the **'Open Folder'** button (at the bottom) to see your audio files.
 
-• **💾** Save API key | **👁** Show/hide key | **⚙** Key manager
-• **Direct Audio** checkbox for article-to-audio conversion
-• **Fetch Article** for multiple URLs
-• **Settings** for auto-fetch toggle
-• **? Tutorial** to restart this guide anytime
+**File naming:**
 
-**Debug Output:** Check the terminal/console for detailed logs.
+Audio files are automatically named with:
+• The date (e.g., 2024-12-28)
+• A topic from the content (e.g., "bitcoin-analysis")
+• The format (e.g., .wav)
 
-**Need help?** See README.md for full documentation.""",
+Example: `2024-12-28_bitcoin-market-analysis.wav`
+
+**Playing your files:**
+
+• Double-click any .wav file to play it
+• Transfer to your phone or music player
+• Upload to podcast apps or cloud storage
+
+**Tip:** The output folder is in the same location as the app.""",
+                "highlight": None
+            },
+            {
+                "title": "You're All Set!",
+                "content": """**Congratulations! You know the basics.**
+
+**Quick Start Recipe:**
+
+1. Paste your API key and click 💾 to save
+2. Check the 'Direct Audio' checkbox
+3. Click 'Fetch Article' and paste an article URL
+4. Click 'Fetch All'
+5. Click 'Generate Fast' or 'Generate Quality'
+6. Click 'Open Folder' to find your audio file
+
+**Keyboard shortcuts:**
+• The app remembers your API key
+• Your last settings are preserved
+
+**Getting Help:**
+• Click **'? Tutorial'** anytime to restart this guide
+• Check the terminal/console window for detailed logs
+• See README.md for full documentation
+
+**Need to see this again?**
+Click the '? Tutorial' button next to the status bar!""",
                 "highlight": None
             }
         ]
@@ -2314,8 +2517,8 @@ For higher quality audio, use **Generate Quality** instead.""",
                     except Exception:
                         self._tutorial_original_borders[widget_name] = ("gray50", 1)
 
-                    # Apply highlight
-                    widget.configure(border_color="#00AAFF", border_width=3)
+                    # Apply highlight - using bright yellow for visibility
+                    widget.configure(border_color="#FFD700", border_width=3)
 
                     # Scroll to make widget visible
                     try:
