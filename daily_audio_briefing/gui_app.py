@@ -47,10 +47,21 @@ class AudioBriefingApp(ctk.CTk):
         self.title("Daily Audio Briefing")
         self.geometry("950x900") # Wider default width to fit controls
 
+        # Main window grid - single scrollable container
         self.grid_columnconfigure(0, weight=1)
-        # Row weights: row 1 is the collapsible text area that can expand
-        # minsize=150 ensures text area is always visible even in smaller windows
-        self.grid_rowconfigure(1, weight=1, minsize=150)
+        self.grid_rowconfigure(0, weight=1)
+
+        # Create scrollable main container with wider scrollbar
+        self.main_scroll = ctk.CTkScrollableFrame(self, fg_color="transparent")
+        self.main_scroll.grid(row=0, column=0, sticky="nsew", padx=0, pady=0)
+        self.main_scroll.grid_columnconfigure(0, weight=1)
+
+        # Widen the scrollbar for easier interaction
+        try:
+            # Access the internal scrollbar and make it wider
+            self.main_scroll._scrollbar.configure(width=16)
+        except:
+            pass  # Fallback if internal structure changes
 
         # Initialize managers
         self.file_manager = FileManager()
@@ -66,14 +77,13 @@ class AudioBriefingApp(ctk.CTk):
         # self.drive_manager = None  # Google Drive features removed
 
         # Header
-        self.label_header = ctk.CTkLabel(self, text="Daily News Summary & YouTube Integration", font=ctk.CTkFont(size=20, weight="bold"))
+        self.label_header = ctk.CTkLabel(self.main_scroll, text="Daily News Summary & YouTube Integration", font=ctk.CTkFont(size=20, weight="bold"))
         self.label_header.grid(row=0, column=0, padx=20, pady=(20, 10), sticky="ew")
 
         # Text Area Section (collapsible)
-        self.frame_text = ctk.CTkFrame(self)
-        self.frame_text.grid(row=1, column=0, padx=20, pady=10, sticky="nsew")
+        self.frame_text = ctk.CTkFrame(self.main_scroll)
+        self.frame_text.grid(row=1, column=0, padx=20, pady=10, sticky="ew")
         self.frame_text.grid_columnconfigure(0, weight=1)
-        self.frame_text.grid_rowconfigure(1, weight=1, minsize=120)
 
         # Header with expand/collapse toggle
         text_header = ctk.CTkFrame(self.frame_text, fg_color="transparent")
@@ -86,14 +96,13 @@ class AudioBriefingApp(ctk.CTk):
 
         # Text content frame (collapsible)
         self.text_content = ctk.CTkFrame(self.frame_text, fg_color="transparent")
-        self.text_content.grid(row=1, column=0, sticky="nsew", padx=5, pady=5)
+        self.text_content.grid(row=1, column=0, sticky="ew", padx=5, pady=5)
         self.text_content.grid_columnconfigure(0, weight=1)
-        self.text_content.grid_rowconfigure(0, weight=1)
         self.text_expanded = True  # Track expansion state
 
-        # Textbox with minimum height of 120px, expands with window
-        self.textbox = ctk.CTkTextbox(self.text_content, height=120, font=ctk.CTkFont(size=14))
-        self.textbox.grid(row=0, column=0, sticky="nsew")
+        # Textbox with fixed height (scrollable container handles overflow)
+        self.textbox = ctk.CTkTextbox(self.text_content, height=150, font=ctk.CTkFont(size=14))
+        self.textbox.grid(row=0, column=0, sticky="ew")
 
         # Non-textual placeholder overlay
         self._placeholder = ctk.CTkLabel(self.textbox, text="Paste or edit the news summary here. You can also load it via Get YouTube News or Upload File.", text_color="gray")
@@ -108,7 +117,7 @@ class AudioBriefingApp(ctk.CTk):
         self.textbox.bind("<FocusIn>", _toggle_placeholder)
         self.textbox.bind("<FocusOut>", _toggle_placeholder)
 
-        self.frame_yt_api = ctk.CTkFrame(self)
+        self.frame_yt_api = ctk.CTkFrame(self.main_scroll)
         self.frame_yt_api.grid(row=2, column=0, padx=20, pady=(10, 5), sticky="ew")
         self.frame_yt_api.grid_columnconfigure(0, weight=0)
         self.frame_yt_api.grid_columnconfigure(1, weight=1)
@@ -216,7 +225,7 @@ class AudioBriefingApp(ctk.CTk):
         self.btn_specific_urls.grid(row=6, column=0, columnspan=2, padx=10, pady=(0, 10), sticky="ew")
 
         # Audio Controls Frame
-        self.frame_audio_controls = ctk.CTkFrame(self)
+        self.frame_audio_controls = ctk.CTkFrame(self.main_scroll)
         self.frame_audio_controls.grid(row=3, column=0, padx=20, pady=(5, 20), sticky="ew")
         self.frame_audio_controls.grid_columnconfigure((0, 1), weight=1)
 
@@ -246,11 +255,20 @@ class AudioBriefingApp(ctk.CTk):
         self.btn_convert_dates = ctk.CTkButton(self.frame_audio_controls, text="Convert Selected Dates to Audio", command=self.select_dates_to_audio)
         self.btn_convert_dates.grid(row=3, column=0, columnspan=2, padx=10, pady=(5, 10), sticky="ew")
 
+        # Direct Audio option (skip summary, clean text for listening)
+        self.direct_audio_var = ctk.BooleanVar(value=False)
+        self.chk_direct_audio = ctk.CTkCheckBox(
+            self.frame_audio_controls,
+            text="Direct Audio (clean text for listening, no summary)",
+            variable=self.direct_audio_var
+        )
+        self.chk_direct_audio.grid(row=4, column=0, columnspan=2, padx=10, pady=(5, 5), sticky="w")
+
         self.btn_quality = ctk.CTkButton(self.frame_audio_controls, text="Generate Quality (Kokoro)", command=self.start_quality_generation)
         self.btn_quality.grid(row=5, column=0, columnspan=2, padx=10, pady=(5, 10), sticky="ew")
 
         # Data Extraction Section
-        self.frame_extract = ctk.CTkFrame(self)
+        self.frame_extract = ctk.CTkFrame(self.main_scroll)
         self.frame_extract.grid(row=4, column=0, padx=20, pady=(5, 10), sticky="ew")
         self.frame_extract.grid_columnconfigure(0, weight=1)
 
@@ -363,7 +381,7 @@ class AudioBriefingApp(ctk.CTk):
         # (button removed)
 
         # Status Label
-        self.label_status = ctk.CTkLabel(self, text="Ready", text_color=("gray10", "#DCE4EE"), font=("Arial", 14, "bold"))
+        self.label_status = ctk.CTkLabel(self.main_scroll, text="Ready", text_color=("gray10", "#DCE4EE"), font=("Arial", 14, "bold"))
         self.label_status.grid(row=6, column=0, padx=20, pady=(0, 10)) # Row 6
 
         # Compression Status Indicator
@@ -372,8 +390,8 @@ class AudioBriefingApp(ctk.CTk):
         compression_color = "green" if self.compression_enabled else "orange"
         
         self.label_compression = ctk.CTkLabel(
-            self, 
-            text=compression_text, 
+            self.main_scroll,
+            text=compression_text,
             text_color=compression_color,
             font=("Arial", 11),
             cursor="hand2"  # Show clickable cursor
@@ -405,7 +423,7 @@ class AudioBriefingApp(ctk.CTk):
             cursor_type = "hand2"
 
         self.label_transcription = ctk.CTkLabel(
-            self,
+            self.main_scroll,
             text=transcription_text,
             text_color=transcription_color,
             font=("Arial", 11),
@@ -417,8 +435,8 @@ class AudioBriefingApp(ctk.CTk):
             missing_whisper=not self.transcription_whisper_installed
         ))
         # Open Folder Button
-        self.btn_open = ctk.CTkButton(self, text="Open Output Folder", fg_color="transparent", border_width=2, text_color=("gray10", "#DCE4EE"), command=self.open_output_folder)
-        self.btn_open.grid(row=9, column=0, padx=20, pady=(0, 20)) # Row 8
+        self.btn_open = ctk.CTkButton(self.main_scroll, text="Open Output Folder", fg_color="transparent", border_width=2, text_color=("gray10", "#DCE4EE"), command=self.open_output_folder)
+        self.btn_open.grid(row=9, column=0, padx=20, pady=(0, 20)) # Row 9
 
         # Load data
 
@@ -1024,11 +1042,175 @@ class AudioBriefingApp(ctk.CTk):
         self.btn_upload_file.configure(state="normal")
 
     def start_fast_generation(self):
-        self.run_script("make_audio_fast.py", "daily_fast.mp3")
+        if self.direct_audio_var.get():
+            self.show_direct_audio_dialog("fast")
+        else:
+            self.run_script("make_audio_fast.py", "daily_fast.mp3")
 
     def start_quality_generation(self):
-        voice = self.voice_var.get()
-        self.run_script("make_audio_quality.py", "daily_quality.wav", extra_args=["--voice", voice])
+        if self.direct_audio_var.get():
+            self.show_direct_audio_dialog("quality")
+        else:
+            voice = self.voice_var.get()
+            self.run_script("make_audio_quality.py", "daily_quality.wav", extra_args=["--voice", voice])
+
+    def show_direct_audio_dialog(self, generation_type):
+        """Show dialog to preview and edit cleaned text before audio generation."""
+        raw_text = self.textbox.get("0.0", "end-1c").strip()
+        if not raw_text:
+            self.label_status.configure(text="No text to convert", text_color="red")
+            return
+
+        # Create dialog
+        dialog = ctk.CTkToplevel(self)
+        dialog.title("Direct Audio - Preview & Edit")
+        dialog.geometry("800x600")
+        dialog.transient(self)
+        dialog.minsize(600, 400)
+        dialog.lift()
+        dialog.grab_set()
+
+        dialog.grid_columnconfigure(0, weight=1)
+        dialog.grid_rowconfigure(1, weight=1)
+
+        # Header
+        header_frame = ctk.CTkFrame(dialog, fg_color="transparent")
+        header_frame.grid(row=0, column=0, padx=20, pady=(20, 10), sticky="ew")
+        header_frame.grid_columnconfigure(1, weight=1)
+
+        ctk.CTkLabel(header_frame, text="Preview Text for Audio", font=ctk.CTkFont(size=16, weight="bold")).grid(row=0, column=0, sticky="w")
+
+        # Status label
+        status_label = ctk.CTkLabel(header_frame, text="Cleaning text for listening...", text_color="orange")
+        status_label.grid(row=0, column=1, padx=20, sticky="e")
+
+        # Text editor
+        text_editor = ctk.CTkTextbox(dialog, font=ctk.CTkFont(size=13))
+        text_editor.grid(row=1, column=0, padx=20, pady=10, sticky="nsew")
+
+        # Insert raw text initially (will be replaced with cleaned version)
+        text_editor.insert("0.0", "Cleaning text for audio... please wait...")
+        text_editor.configure(state="disabled")
+
+        # Button frame
+        btn_frame = ctk.CTkFrame(dialog, fg_color="transparent")
+        btn_frame.grid(row=2, column=0, padx=20, pady=(10, 20), sticky="ew")
+        btn_frame.grid_columnconfigure((0, 1, 2), weight=1)
+
+        def on_convert():
+            """Convert the edited text to audio."""
+            cleaned_text = text_editor.get("0.0", "end-1c").strip()
+            if not cleaned_text:
+                status_label.configure(text="No text to convert", text_color="red")
+                return
+
+            # Save the cleaned text to the main textbox for audio generation
+            self.textbox.delete("0.0", "end")
+            self.textbox.insert("0.0", cleaned_text)
+
+            dialog.destroy()
+
+            # Run the appropriate generation
+            if generation_type == "fast":
+                self.run_script("make_audio_fast.py", "daily_fast.mp3")
+            else:
+                voice = self.voice_var.get()
+                self.run_script("make_audio_quality.py", "daily_quality.wav", extra_args=["--voice", voice])
+
+        def on_cancel():
+            dialog.destroy()
+
+        btn_cancel = ctk.CTkButton(btn_frame, text="Cancel", fg_color="gray", command=on_cancel)
+        btn_cancel.grid(row=0, column=0, padx=5, sticky="ew")
+
+        btn_use_raw = ctk.CTkButton(btn_frame, text="Use Raw Text", fg_color="orange", command=lambda: use_raw_text())
+        btn_use_raw.grid(row=0, column=1, padx=5, sticky="ew")
+
+        btn_convert = ctk.CTkButton(btn_frame, text="Convert to Audio", fg_color="green", command=on_convert, state="disabled")
+        btn_convert.grid(row=0, column=2, padx=5, sticky="ew")
+
+        def use_raw_text():
+            """Use the original raw text without cleaning."""
+            text_editor.configure(state="normal")
+            text_editor.delete("0.0", "end")
+            text_editor.insert("0.0", raw_text)
+            status_label.configure(text="Using raw text (no cleaning)", text_color="orange")
+            btn_convert.configure(state="normal")
+
+        # Start cleaning in background
+        def clean_async():
+            api_key = self.gemini_key_entry.get().strip()
+            if not api_key:
+                dialog.after(0, lambda: status_label.configure(text="No API key - using raw text", text_color="orange"))
+                dialog.after(0, lambda: use_raw_text())
+                return
+
+            cleaned = self.clean_text_for_listening(raw_text, api_key)
+
+            def update_ui():
+                text_editor.configure(state="normal")
+                text_editor.delete("0.0", "end")
+                text_editor.insert("0.0", cleaned)
+                status_label.configure(text="Text cleaned and ready for review", text_color="green")
+                btn_convert.configure(state="normal")
+
+            dialog.after(0, update_ui)
+
+        threading.Thread(target=clean_async, daemon=True).start()
+
+    def clean_text_for_listening(self, text, api_key):
+        """Use Gemini to clean and format text for audio listening."""
+        import google.generativeai as genai
+
+        try:
+            genai.configure(api_key=api_key)
+
+            # Use the selected model
+            model_choice = self.model_var.get()
+            if "Best" in model_choice:
+                model_name = "gemini-1.5-pro"
+            elif "Balanced" in model_choice:
+                model_name = "gemini-1.5-flash"
+            else:
+                model_name = "gemini-2.0-flash-exp"
+
+            model = genai.GenerativeModel(model_name)
+
+            prompt = """Clean and format this text for audio listening. Your task:
+
+1. EXTRACT only the main article/content body
+2. REMOVE all of the following:
+   - URLs, links, and email addresses
+   - Asterisks (*), bullet point markers, markdown formatting
+   - "Subscribe", "Click here", "Read more", "Share", "Follow us" and similar CTAs
+   - Author bios, bylines, and "About the author" sections
+   - "Related articles", "You might also like" sections
+   - Advertisements and promotional content
+   - Social media handles and hashtags
+   - Navigation elements, headers/footers
+   - Image captions and alt text descriptions
+   - Any text that wouldn't make sense when read aloud
+
+3. PRESERVE the original wording and structure of the actual content
+4. FORMAT for natural speech:
+   - Expand common abbreviations (e.g., "approx." → "approximately")
+   - Keep paragraph breaks for natural pauses
+   - Ensure sentences flow naturally when spoken
+
+Return ONLY the cleaned text, nothing else.
+
+TEXT TO CLEAN:
+\"\"\"
+{text}
+\"\"\"
+""".format(text=text)
+
+            response = model.generate_content(prompt)
+            return response.text.strip()
+
+        except Exception as e:
+            print(f"Error cleaning text: {e}")
+            return text  # Return original text on error
         
     def estimate_api_usage(self):
         """Estimate API requests and cost based on current settings."""
@@ -1628,16 +1810,14 @@ This will incur charges to your Google Cloud account!
     def toggle_text_section(self):
         """Toggle the news summary text area visibility."""
         if self.text_expanded:
-            # Collapse: hide content, remove weight from row
+            # Collapse: hide content
             self.text_content.grid_remove()
             self.text_toggle_btn.configure(text="Expand")
-            self.grid_rowconfigure(1, weight=0, minsize=0)
             self.text_expanded = False
         else:
-            # Expand: show content, restore weight
+            # Expand: show content
             self.text_content.grid()
             self.text_toggle_btn.configure(text="Collapse")
-            self.grid_rowconfigure(1, weight=1, minsize=50)
             self.text_expanded = True
 
     def toggle_extract_section(self):
