@@ -49,7 +49,8 @@ class AudioBriefingApp(ctk.CTk):
 
         self.grid_columnconfigure(0, weight=1)
         # Row weights: row 1 is the collapsible text area that can expand
-        self.grid_rowconfigure(1, weight=1, minsize=50)
+        # minsize=150 ensures text area is always visible even in smaller windows
+        self.grid_rowconfigure(1, weight=1, minsize=150)
 
         # Initialize managers
         self.file_manager = FileManager()
@@ -72,7 +73,7 @@ class AudioBriefingApp(ctk.CTk):
         self.frame_text = ctk.CTkFrame(self)
         self.frame_text.grid(row=1, column=0, padx=20, pady=10, sticky="nsew")
         self.frame_text.grid_columnconfigure(0, weight=1)
-        self.frame_text.grid_rowconfigure(1, weight=1)
+        self.frame_text.grid_rowconfigure(1, weight=1, minsize=120)
 
         # Header with expand/collapse toggle
         text_header = ctk.CTkFrame(self.frame_text, fg_color="transparent")
@@ -90,7 +91,8 @@ class AudioBriefingApp(ctk.CTk):
         self.text_content.grid_rowconfigure(0, weight=1)
         self.text_expanded = True  # Track expansion state
 
-        self.textbox = ctk.CTkTextbox(self.text_content, font=ctk.CTkFont(size=14))
+        # Textbox with minimum height of 120px, expands with window
+        self.textbox = ctk.CTkTextbox(self.text_content, height=120, font=ctk.CTkFont(size=14))
         self.textbox.grid(row=0, column=0, sticky="nsew")
 
         # Non-textual placeholder overlay
