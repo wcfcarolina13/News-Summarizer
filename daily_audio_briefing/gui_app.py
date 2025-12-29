@@ -716,7 +716,9 @@ class AudioBriefingApp(ctk.CTk):
             bool: True if successful, False otherwise
         """
         text = self.textbox.get("0.0", "end-1c")
+        print(f"[Save] Saving {len(text)} chars to summary.txt")
         if self.file_manager.save_summary(text):
+            print(f"[Save] Success - summary.txt saved")
             return True
         else:
             self.label_status.configure(text="Error saving file", text_color="red")
