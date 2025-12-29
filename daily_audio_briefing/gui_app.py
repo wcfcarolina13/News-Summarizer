@@ -878,9 +878,12 @@ class AudioBriefingApp(ctk.CTk):
 
                 if all_content:
                     combined = "".join(all_content)
+                    print(f"[Fetch] Combined {len(all_content)} pieces, total {len(combined)} chars")
+                    print(f"[Fetch] Combined preview: {combined[:200]}...")
                     def update_ui():
                         self.textbox.delete("0.0", "end")
                         self.textbox.insert("0.0", combined)
+                        print(f"[Fetch] Inserted {len(combined)} chars into textbox")
                         self._placeholder.place_forget()
                         dialog.destroy()
                         self.label_status.configure(
