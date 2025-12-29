@@ -1001,48 +1001,61 @@ class AudioBriefingApp(ctk.CTk):
             # Substack uses Next.js which embeds article content in __NEXT_DATA__ script
             try:
                 next_data_script = soup.find('script', {'id': '__NEXT_DATA__'})
-                if next_data_script and next_data_script.string:
-                    import json
-                    try:
-                        next_data = json.loads(next_data_script.string)
-                        # Navigate to the post content in the JSON structure
-                        # Substack structure: props.pageProps.post.body_html or similar
-                        post = None
-                        if 'props' in next_data and 'pageProps' in next_data['props']:
-                            page_props = next_data['props']['pageProps']
-                            if 'post' in page_props:
-                                post = page_props['post']
-                            elif 'initialPost' in page_props:
-                                post = page_props['initialPost']
+                if not next_data_script:
+                    print(f"       [Fetch] No __NEXT_DATA__ script found")
+                if next_data_script:
+                    script_content = next_data_script.string or next_data_script.get_text()
+                    print(f"       [Fetch] Found __NEXT_DATA__ script: {len(script_content) if script_content else 0} chars")
+                    if script_content:
+                        import json
+                        try:
+                            next_data = json.loads(script_content)
+                            # Navigate to the post content in the JSON structure
+                            # Substack structure: props.pageProps.post.body_html or similar
+                            post = None
+                            if 'props' in next_data and 'pageProps' in next_data['props']:
+                                page_props = next_data['props']['pageProps']
+                                print(f"       [Fetch] pageProps keys: {list(page_props.keys())[:10]}")
+                                if 'post' in page_props:
+                                    post = page_props['post']
+                                elif 'initialPost' in page_props:
+                                    post = page_props['initialPost']
+                            else:
+                                print(f"       [Fetch] No props.pageProps in JSON, top keys: {list(next_data.keys())}")
 
-                        if post:
-                            # Try to get the body HTML
-                            body_html = post.get('body_html', '')
-                            if body_html:
-                                body_soup = BeautifulSoup(body_html, 'html.parser')
-                                text = body_soup.get_text(separator='\n', strip=True)
-                                if len(text) > 200:
-                                    article_text = text
-                                    print(f"       [Fetch] Next.js JSON: found {len(text)} chars from body_html")
+                            if post:
+                                print(f"       [Fetch] Found post object, keys: {list(post.keys())[:10]}")
+                                # Try to get the body HTML
+                                body_html = post.get('body_html', '')
+                                if body_html:
+                                    body_soup = BeautifulSoup(body_html, 'html.parser')
+                                    text = body_soup.get_text(separator='\n', strip=True)
+                                    if len(text) > 200:
+                                        article_text = text
+                                        print(f"       [Fetch] Next.js JSON: found {len(text)} chars from body_html")
 
-                            # Also try truncated_body_text for paywalled content
-                            if not article_text or len(article_text) < 200:
-                                truncated = post.get('truncated_body_text', '')
-                                if truncated and len(truncated) > 200:
-                                    article_text = truncated
-                                    print(f"       [Fetch] Next.js JSON: found {len(truncated)} chars from truncated_body_text")
+                                # Also try truncated_body_text for paywalled content
+                                if not article_text or len(article_text) < 200:
+                                    truncated = post.get('truncated_body_text', '')
+                                    if truncated and len(truncated) > 200:
+                                        article_text = truncated
+                                        print(f"       [Fetch] Next.js JSON: found {len(truncated)} chars from truncated_body_text")
 
-                            # Try subtitle + body combination
-                            if not article_text or len(article_text) < 200:
-                                subtitle = post.get('subtitle', '')
-                                description = post.get('description', '')
-                                combined = f"{subtitle}\n\n{description}".strip()
-                                if len(combined) > 200:
-                                    article_text = combined
-                                    print(f"       [Fetch] Next.js JSON: found {len(combined)} chars from subtitle+description")
+                                # Try subtitle + body combination
+                                if not article_text or len(article_text) < 200:
+                                    subtitle = post.get('subtitle', '')
+                                    description = post.get('description', '')
+                                    combined = f"{subtitle}\n\n{description}".strip()
+                                    if len(combined) > 200:
+                                        article_text = combined
+                                        print(f"       [Fetch] Next.js JSON: found {len(combined)} chars from subtitle+description")
+                                    else:
+                                        print(f"       [Fetch] No body_html/truncated_body_text in post")
+                            else:
+                                print(f"       [Fetch] No post found in pageProps")
 
-                    except json.JSONDecodeError as je:
-                        print(f"       [Fetch] Next.js JSON parse error: {je}")
+                        except json.JSONDecodeError as je:
+                            print(f"       [Fetch] Next.js JSON parse error: {je}")
             except Exception as e:
                 print(f"       [Fetch] Next.js extraction error: {e}")
 
