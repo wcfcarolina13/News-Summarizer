@@ -991,6 +991,24 @@ class AudioBriefingApp(ctk.CTk):
             body_children = len(list(soup.body.children)) if has_body else 0
             print(f"       [Fetch] Soup parsed: body={has_body}, children={body_children}")
 
+            # DEBUG: Check if article content elements exist BEFORE any removal
+            try:
+                debug_selectors = ['div.body.markup', 'div.body-markup', 'article', 'div.available-content']
+                for sel in debug_selectors:
+                    elem = soup.select_one(sel)
+                    if elem:
+                        text_len = len(elem.get_text(strip=True))
+                        print(f"       [Fetch] DEBUG: '{sel}' exists with {text_len} chars")
+                        if text_len > 200:
+                            # We found content! Show preview
+                            preview = elem.get_text(strip=True)[:100].replace('\n', ' ')
+                            print(f"       [Fetch] DEBUG: Preview: {preview}...")
+                            break
+                else:
+                    print(f"       [Fetch] DEBUG: No article selectors found in raw HTML")
+            except Exception as e:
+                print(f"       [Fetch] DEBUG selector check error: {e}")
+
             # Check for paywall or login-required indicators
             try:
                 page_text = soup.get_text().lower()
@@ -1005,11 +1023,77 @@ class AudioBriefingApp(ctk.CTk):
             # Substack uses Next.js which embeds article content in __NEXT_DATA__ script
             try:
                 next_data_script = soup.find('script', {'id': '__NEXT_DATA__'})
+                all_scripts = soup.find_all('script')
+
                 if not next_data_script:
                     # Debug: show what script tags exist
-                    all_scripts = soup.find_all('script')
                     script_ids = [s.get('id', 'no-id') for s in all_scripts[:5]]
                     print(f"       [Fetch] No __NEXT_DATA__, {len(all_scripts)} scripts found, IDs: {script_ids}")
+
+                    # Search through ALL scripts for embedded JSON with article content
+                    print(f"       [Fetch] Searching {len(all_scripts)} scripts for embedded article JSON...")
+                    for i, script in enumerate(all_scripts):
+                        script_text = script.string or ''
+                        if len(script_text) < 500:
+                            continue
+                        # Look for patterns that indicate article content
+                        content_patterns = ['body_html', 'bodyHTML', '"body":', 'content_html',
+                                           'article_body', 'post_body', '"text":', 'full_text']
+                        has_content_pattern = any(p in script_text for p in content_patterns)
+                        if has_content_pattern:
+                            print(f"       [Fetch] Script {i} has content pattern, {len(script_text)} chars")
+                            # Try to extract JSON from the script
+                            try:
+                                # Try parsing as pure JSON first
+                                try:
+                                    data = json.loads(script_text)
+                                except json.JSONDecodeError:
+                                    # Try to find JSON object in script
+                                    import re as regex_module
+                                    json_match = regex_module.search(r'\{[\s\S]*\}', script_text)
+                                    if json_match:
+                                        data = json.loads(json_match.group())
+                                    else:
+                                        continue
+
+                                # Recursively search for body_html or similar in the JSON
+                                def find_body_html(obj, depth=0):
+                                    if depth > 10:  # Prevent infinite recursion
+                                        return None
+                                    if isinstance(obj, dict):
+                                        for key in ['body_html', 'bodyHTML', 'content_html', 'article_body',
+                                                    'post_body', 'full_text', 'html_body']:
+                                            if key in obj and isinstance(obj[key], str) and len(obj[key]) > 200:
+                                                return obj[key]
+                                        # Check for 'body' key that contains HTML
+                                        if 'body' in obj and isinstance(obj['body'], str) and '<' in obj['body'] and len(obj['body']) > 200:
+                                            return obj['body']
+                                        # Recurse into nested objects
+                                        for v in obj.values():
+                                            result = find_body_html(v, depth + 1)
+                                            if result:
+                                                return result
+                                    elif isinstance(obj, list):
+                                        for item in obj:
+                                            result = find_body_html(item, depth + 1)
+                                            if result:
+                                                return result
+                                    return None
+
+                                body_content = find_body_html(data)
+                                if body_content:
+                                    print(f"       [Fetch] Found body_html in script {i}: {len(body_content)} chars")
+                                    # Parse as HTML and extract text
+                                    body_soup = BeautifulSoup(body_content, 'html.parser')
+                                    text = body_soup.get_text(separator='\n', strip=True)
+                                    if len(text) > 200:
+                                        article_text = text
+                                        print(f"       [Fetch] Extracted {len(text)} chars from embedded JSON")
+                                        break
+                            except Exception as script_err:
+                                print(f"       [Fetch] Script {i} JSON parse error: {script_err}")
+                                continue
+
                 if next_data_script:
                     script_content = next_data_script.string or next_data_script.get_text()
                     print(f"       [Fetch] Found __NEXT_DATA__ script: {len(script_content) if script_content else 0} chars")
