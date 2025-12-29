@@ -967,6 +967,10 @@ class AudioBriefingApp(ctk.CTk):
                 return ""
 
             # Try lxml first, fallback to html.parser
+            # Debug: show HTML preview to check if content is valid
+            html_preview = html[:200].replace('\n', ' ')
+            print(f"       [Fetch] HTML preview: {html_preview}...")
+
             soup = None
             try:
                 soup = BeautifulSoup(html, 'lxml')
@@ -1002,7 +1006,10 @@ class AudioBriefingApp(ctk.CTk):
             try:
                 next_data_script = soup.find('script', {'id': '__NEXT_DATA__'})
                 if not next_data_script:
-                    print(f"       [Fetch] No __NEXT_DATA__ script found")
+                    # Debug: show what script tags exist
+                    all_scripts = soup.find_all('script')
+                    script_ids = [s.get('id', 'no-id') for s in all_scripts[:5]]
+                    print(f"       [Fetch] No __NEXT_DATA__, {len(all_scripts)} scripts found, IDs: {script_ids}")
                 if next_data_script:
                     script_content = next_data_script.string or next_data_script.get_text()
                     print(f"       [Fetch] Found __NEXT_DATA__ script: {len(script_content) if script_content else 0} chars")
