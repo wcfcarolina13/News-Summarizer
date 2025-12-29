@@ -1870,19 +1870,20 @@ class AudioBriefingApp(ctk.CTk):
         btn_process.pack(side="left", padx=10)
     
     def enable_buttons(self):
-        """Re-enable all control buttons."""
+        """Re-enable all control buttons and reset status."""
         self.btn_fast.configure(state="normal")
         self.btn_quality.configure(state="normal")
+        self.btn_get_yt_news.configure(state="normal")
+        self.btn_edit_sources.configure(state="normal")
+        self.btn_upload_file.configure(state="normal")
+        self.label_status.configure(text="Ready", text_color="green")
+
     def open_specific_urls_dialog(self):
         api_key = self.gemini_key_entry.get().strip()
         if not api_key:
             self.label_status.configure(text="Error: Gemini API Key is required.", text_color="red")
             return
         self.open_url_input_dialog(api_key)
-
-        self.btn_get_yt_news.configure(state="normal")
-        self.btn_edit_sources.configure(state="normal")
-        self.btn_upload_file.configure(state="normal")
 
     def start_fast_generation(self):
         if self.direct_audio_var.get():
