@@ -943,9 +943,31 @@ class AudioBriefingApp(ctk.CTk):
                 else:
                     html = response.content.decode('utf-8', errors='ignore')
                 print(f"       [Fetch] HTTP {response.status_code}, {len(html)} bytes")
+
+                # Check if HTML looks valid (should start with < or whitespace then <)
+                html_stripped = html.strip()
+                if not html_stripped.startswith('<') and not html_stripped.startswith('<!'):
+                    print(f"       [Fetch] HTML looks malformed, retrying with SSL verify=False...")
+                    html = None  # Force retry
             except Exception as e:
                 fetch_error = str(e)
                 print(f"       [Fetch] requests failed: {e}")
+
+            # Retry with SSL verification disabled if first attempt failed or returned bad HTML
+            if not html:
+                try:
+                    import urllib3
+                    urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
+                    session = requests.Session()
+                    response = session.get(url, headers=headers, timeout=20, allow_redirects=True, verify=False)
+                    response.raise_for_status()
+                    if response.encoding:
+                        html = response.text
+                    else:
+                        html = response.content.decode('utf-8', errors='ignore')
+                    print(f"       [Fetch] SSL-disabled retry: HTTP {response.status_code}, {len(html)} bytes")
+                except Exception as e:
+                    print(f"       [Fetch] SSL-disabled retry failed: {e}")
 
             # Fallback to urllib with SSL context
             if not html:
@@ -996,8 +1018,15 @@ class AudioBriefingApp(ctk.CTk):
             # CRITICAL: Extract article content BEFORE any tag removal
             # Check common article selectors and extract immediately if found
             try:
-                content_selectors = ['div.body.markup', 'div.body-markup', 'div.available-content',
-                                    'div.post-content', 'article.post', 'div.entry-content']
+                content_selectors = [
+                    # Substack
+                    'div.body.markup', 'div.body-markup', 'div.available-content',
+                    # WordPress
+                    'div.entry-content', 'article .entry-content', 'main .entry-content',
+                    'div.post-content', 'article.post', 'main article',
+                    # Generic
+                    'article', 'main', '[role="main"]', '[role="article"]'
+                ]
                 for sel in content_selectors:
                     elem = soup.select_one(sel)
                     if elem:
