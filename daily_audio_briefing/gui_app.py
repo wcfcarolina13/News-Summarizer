@@ -991,23 +991,30 @@ class AudioBriefingApp(ctk.CTk):
             body_children = len(list(soup.body.children)) if has_body else 0
             print(f"       [Fetch] Soup parsed: body={has_body}, children={body_children}")
 
-            # DEBUG: Check if article content elements exist BEFORE any removal
+            article_text = None
+
+            # CRITICAL: Extract article content BEFORE any tag removal
+            # Check common article selectors and extract immediately if found
             try:
-                debug_selectors = ['div.body.markup', 'div.body-markup', 'article', 'div.available-content']
-                for sel in debug_selectors:
+                content_selectors = ['div.body.markup', 'div.body-markup', 'div.available-content',
+                                    'div.post-content', 'article.post', 'div.entry-content']
+                for sel in content_selectors:
                     elem = soup.select_one(sel)
                     if elem:
-                        text_len = len(elem.get_text(strip=True))
-                        print(f"       [Fetch] DEBUG: '{sel}' exists with {text_len} chars")
-                        if text_len > 200:
-                            # We found content! Show preview
-                            preview = elem.get_text(strip=True)[:100].replace('\n', ' ')
-                            print(f"       [Fetch] DEBUG: Preview: {preview}...")
+                        text = elem.get_text(separator='\n', strip=True)
+                        if len(text) > 200:
+                            article_text = text
+                            print(f"       [Fetch] Early extraction: '{sel}' found {len(text)} chars")
+                            preview = text[:100].replace('\n', ' ')
+                            print(f"       [Fetch] Preview: {preview}...")
                             break
-                else:
-                    print(f"       [Fetch] DEBUG: No article selectors found in raw HTML")
+                        else:
+                            print(f"       [Fetch] '{sel}' exists but only {len(text)} chars")
+
+                if not article_text:
+                    print(f"       [Fetch] No content found in early selectors")
             except Exception as e:
-                print(f"       [Fetch] DEBUG selector check error: {e}")
+                print(f"       [Fetch] Early extraction error: {e}")
 
             # Check for paywall or login-required indicators
             try:
@@ -1017,165 +1024,78 @@ class AudioBriefingApp(ctk.CTk):
             except Exception as e:
                 print(f"       [Fetch] Paywall check error: {e}")
 
-            article_text = None
+            # Skip JSON extraction if early extraction already got content
+            if article_text and len(article_text) > 200:
+                print(f"       [Fetch] Skipping JSON extraction - already have {len(article_text)} chars")
+            else:
+                # IMPORTANT: Extract Substack/Next.js content BEFORE removing scripts (if early extraction didn't work)
+                # Substack uses Next.js which embeds article content in __NEXT_DATA__ script
+                try:
+                    next_data_script = soup.find('script', {'id': '__NEXT_DATA__'})
+                    all_scripts = soup.find_all('script')
 
-            # IMPORTANT: Extract Substack/Next.js content BEFORE removing scripts
-            # Substack uses Next.js which embeds article content in __NEXT_DATA__ script
-            try:
-                next_data_script = soup.find('script', {'id': '__NEXT_DATA__'})
-                all_scripts = soup.find_all('script')
+                    if not next_data_script:
+                        # Debug: show what script tags exist
+                        script_ids = [s.get('id', 'no-id') for s in all_scripts[:5]]
+                        print(f"       [Fetch] No __NEXT_DATA__, {len(all_scripts)} scripts found, IDs: {script_ids}")
 
-                if not next_data_script:
-                    # Debug: show what script tags exist
-                    script_ids = [s.get('id', 'no-id') for s in all_scripts[:5]]
-                    print(f"       [Fetch] No __NEXT_DATA__, {len(all_scripts)} scripts found, IDs: {script_ids}")
-
-                    # Search through ALL scripts for embedded JSON with article content
-                    print(f"       [Fetch] Searching {len(all_scripts)} scripts for embedded article JSON...")
-                    for i, script in enumerate(all_scripts):
-                        script_text = script.string or ''
-                        if len(script_text) < 500:
-                            continue
-                        # Look for patterns that indicate article content
-                        content_patterns = ['body_html', 'bodyHTML', '"body":', 'content_html',
-                                           'article_body', 'post_body', '"text":', 'full_text']
-                        has_content_pattern = any(p in script_text for p in content_patterns)
-                        if has_content_pattern:
-                            print(f"       [Fetch] Script {i} has content pattern, {len(script_text)} chars")
-                            # Try to extract JSON from the script
+                    if next_data_script:
+                        script_content = next_data_script.string or next_data_script.get_text()
+                        print(f"       [Fetch] Found __NEXT_DATA__ script: {len(script_content) if script_content else 0} chars")
+                        if script_content:
                             try:
-                                # Try parsing as pure JSON first
-                                try:
-                                    data = json.loads(script_text)
-                                except json.JSONDecodeError:
-                                    # Try to find JSON object in script
-                                    import re as regex_module
-                                    json_match = regex_module.search(r'\{[\s\S]*\}', script_text)
-                                    if json_match:
-                                        data = json.loads(json_match.group())
-                                    else:
-                                        continue
+                                next_data = json.loads(script_content)
+                                post = None
+                                if 'props' in next_data and 'pageProps' in next_data['props']:
+                                    page_props = next_data['props']['pageProps']
+                                    if 'post' in page_props:
+                                        post = page_props['post']
+                                    elif 'initialPost' in page_props:
+                                        post = page_props['initialPost']
 
-                                # Recursively search for body_html or similar in the JSON
-                                def find_body_html(obj, depth=0):
-                                    if depth > 10:  # Prevent infinite recursion
-                                        return None
-                                    if isinstance(obj, dict):
-                                        for key in ['body_html', 'bodyHTML', 'content_html', 'article_body',
-                                                    'post_body', 'full_text', 'html_body']:
-                                            if key in obj and isinstance(obj[key], str) and len(obj[key]) > 200:
-                                                return obj[key]
-                                        # Check for 'body' key that contains HTML
-                                        if 'body' in obj and isinstance(obj['body'], str) and '<' in obj['body'] and len(obj['body']) > 200:
-                                            return obj['body']
-                                        # Recurse into nested objects
-                                        for v in obj.values():
-                                            result = find_body_html(v, depth + 1)
-                                            if result:
-                                                return result
-                                    elif isinstance(obj, list):
-                                        for item in obj:
-                                            result = find_body_html(item, depth + 1)
-                                            if result:
-                                                return result
-                                    return None
+                                if post:
+                                    body_html = post.get('body_html', '')
+                                    if body_html:
+                                        body_soup = BeautifulSoup(body_html, 'html.parser')
+                                        text = body_soup.get_text(separator='\n', strip=True)
+                                        if len(text) > 200:
+                                            article_text = text
+                                            print(f"       [Fetch] Next.js JSON: found {len(text)} chars")
+                            except json.JSONDecodeError as je:
+                                print(f"       [Fetch] Next.js JSON parse error: {je}")
+                except Exception as e:
+                    print(f"       [Fetch] Next.js extraction error: {e}")
 
-                                body_content = find_body_html(data)
-                                if body_content:
-                                    print(f"       [Fetch] Found body_html in script {i}: {len(body_content)} chars")
-                                    # Parse as HTML and extract text
-                                    body_soup = BeautifulSoup(body_content, 'html.parser')
-                                    text = body_soup.get_text(separator='\n', strip=True)
-                                    if len(text) > 200:
-                                        article_text = text
-                                        print(f"       [Fetch] Extracted {len(text)} chars from embedded JSON")
-                                        break
-                            except Exception as script_err:
-                                print(f"       [Fetch] Script {i} JSON parse error: {script_err}")
-                                continue
-
-                if next_data_script:
-                    script_content = next_data_script.string or next_data_script.get_text()
-                    print(f"       [Fetch] Found __NEXT_DATA__ script: {len(script_content) if script_content else 0} chars")
-                    if script_content:
-                        import json
-                        try:
-                            next_data = json.loads(script_content)
-                            # Navigate to the post content in the JSON structure
-                            # Substack structure: props.pageProps.post.body_html or similar
-                            post = None
-                            if 'props' in next_data and 'pageProps' in next_data['props']:
-                                page_props = next_data['props']['pageProps']
-                                print(f"       [Fetch] pageProps keys: {list(page_props.keys())[:10]}")
-                                if 'post' in page_props:
-                                    post = page_props['post']
-                                elif 'initialPost' in page_props:
-                                    post = page_props['initialPost']
-                            else:
-                                print(f"       [Fetch] No props.pageProps in JSON, top keys: {list(next_data.keys())}")
-
-                            if post:
-                                print(f"       [Fetch] Found post object, keys: {list(post.keys())[:10]}")
-                                # Try to get the body HTML
-                                body_html = post.get('body_html', '')
-                                if body_html:
-                                    body_soup = BeautifulSoup(body_html, 'html.parser')
-                                    text = body_soup.get_text(separator='\n', strip=True)
-                                    if len(text) > 200:
-                                        article_text = text
-                                        print(f"       [Fetch] Next.js JSON: found {len(text)} chars from body_html")
-
-                                # Also try truncated_body_text for paywalled content
-                                if not article_text or len(article_text) < 200:
-                                    truncated = post.get('truncated_body_text', '')
-                                    if truncated and len(truncated) > 200:
-                                        article_text = truncated
-                                        print(f"       [Fetch] Next.js JSON: found {len(truncated)} chars from truncated_body_text")
-
-                                # Try subtitle + body combination
-                                if not article_text or len(article_text) < 200:
-                                    subtitle = post.get('subtitle', '')
-                                    description = post.get('description', '')
-                                    combined = f"{subtitle}\n\n{description}".strip()
-                                    if len(combined) > 200:
-                                        article_text = combined
-                                        print(f"       [Fetch] Next.js JSON: found {len(combined)} chars from subtitle+description")
-                                    else:
-                                        print(f"       [Fetch] No body_html/truncated_body_text in post")
-                            else:
-                                print(f"       [Fetch] No post found in pageProps")
-
-                        except json.JSONDecodeError as je:
-                            print(f"       [Fetch] Next.js JSON parse error: {je}")
-            except Exception as e:
-                print(f"       [Fetch] Next.js extraction error: {e}")
-
-            # Remove elements that are definitely not article content
-            try:
-                for tag in soup.find_all(['script', 'style', 'nav', 'footer', 'header',
-                                           'aside', 'iframe', 'noscript', 'form', 'button', 'svg']):
-                    tag.decompose()
-            except Exception as e:
-                print(f"       [Fetch] Tag removal error: {e}")
-
-            # Remove common non-content patterns by class/id
-            try:
-                remove_patterns = [
-                    'subscribe', 'newsletter', 'sidebar', 'comment', 'share',
-                    'social', 'related', 'recommended', 'footer', 'header',
-                    'navigation', 'nav-', 'menu', 'ad-', 'advertisement',
-                    'signup', 'sign-up', 'login', 'paywall', 'premium', 'popup',
-                    'modal', 'cookie', 'banner', 'promo'
-                ]
-                for pattern in remove_patterns:
-                    for tag in soup.find_all(class_=lambda x: x and pattern in str(x).lower()):
+            # Only do tag removal and fallback extraction if we don't already have content
+            if article_text and len(article_text) > 200:
+                print(f"       [Fetch] Already have {len(article_text)} chars, skipping fallback extraction")
+            else:
+                # Remove elements that are definitely not article content
+                try:
+                    for tag in soup.find_all(['script', 'style', 'nav', 'footer', 'header',
+                                               'aside', 'iframe', 'noscript', 'form', 'button', 'svg']):
                         tag.decompose()
-                    for tag in soup.find_all(id=lambda x: x and pattern in str(x).lower()):
-                        tag.decompose()
-            except Exception as e:
-                print(f"       [Fetch] Pattern removal error: {e}")
+                except Exception as e:
+                    print(f"       [Fetch] Tag removal error: {e}")
 
-            # Platform-specific extraction (if JSON extraction didn't work)
+                # Remove common non-content patterns by class/id
+                try:
+                    remove_patterns = [
+                        'subscribe', 'newsletter', 'sidebar', 'comment', 'share',
+                        'social', 'related', 'recommended', 'footer', 'header',
+                        'navigation', 'nav-', 'menu', 'ad-', 'advertisement',
+                        'signup', 'sign-up', 'login', 'paywall', 'premium', 'popup',
+                        'modal', 'cookie', 'banner', 'promo'
+                    ]
+                    for pattern in remove_patterns:
+                        for tag in soup.find_all(class_=lambda x: x and pattern in str(x).lower()):
+                            tag.decompose()
+                        for tag in soup.find_all(id=lambda x: x and pattern in str(x).lower()):
+                            tag.decompose()
+                except Exception as e:
+                    print(f"       [Fetch] Pattern removal error: {e}")
+
+            # Platform-specific extraction (if we still don't have content)
             # Substack (multiple variations) - includes custom domains
             if not article_text or len(article_text) < 200:
                 try:
