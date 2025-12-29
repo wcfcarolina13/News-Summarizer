@@ -1995,7 +1995,37 @@ class AudioBriefingApp(ctk.CTk):
 
             model = genai.GenerativeModel(model_name)
 
-            prompt = """Clean and format this text for audio listening. Your task:
+            # If text contains multiple articles (separated by ---), clean each separately
+            # to avoid hitting Gemini output token limits
+            separator = "\n\n---\n\n"
+            if separator in text:
+                articles = text.split(separator)
+                print(f"[Clean] Found {len(articles)} articles, cleaning each separately...")
+                cleaned_articles = []
+                for i, article in enumerate(articles):
+                    if len(article.strip()) < 100:
+                        continue
+                    print(f"[Clean] Cleaning article {i+1}/{len(articles)} ({len(article)} chars)...")
+                    cleaned = self._clean_single_article(model, article)
+                    if cleaned:
+                        cleaned_articles.append(cleaned)
+                        print(f"[Clean] Article {i+1} cleaned: {len(cleaned)} chars")
+
+                # Join with clear separator for audio
+                result = "\n\n".join(cleaned_articles)
+                print(f"[Clean] Total cleaned text: {len(result)} chars from {len(cleaned_articles)} articles")
+                return result
+            else:
+                # Single article - clean directly
+                return self._clean_single_article(model, text)
+
+        except Exception as e:
+            print(f"Error cleaning text: {e}")
+            return text  # Return original text on error
+
+    def _clean_single_article(self, model, text):
+        """Clean a single article using Gemini."""
+        prompt = """Clean and format this text for audio listening. Your task:
 
 1. EXTRACT only the main article/content body
 2. REMOVE all of the following:
@@ -2024,12 +2054,12 @@ TEXT TO CLEAN:
 \"\"\"
 """.format(text=text)
 
+        try:
             response = model.generate_content(prompt)
             return response.text.strip()
-
         except Exception as e:
-            print(f"Error cleaning text: {e}")
-            return text  # Return original text on error
+            print(f"[Clean] Error cleaning article: {e}")
+            return text  # Return original on error
 
     def generate_audio_filename(self, text, extension="wav"):
         """Generate a smart filename based on date and content topics.
