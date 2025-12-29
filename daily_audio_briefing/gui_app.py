@@ -1018,6 +1018,72 @@ class AudioBriefingApp(ctk.CTk):
             body_children = len(list(soup.body.children)) if has_body else 0
             print(f"       [Fetch] Soup parsed: body={has_body}, children={body_children}")
 
+            # Extract article metadata (title, author, date)
+            article_title = None
+            article_author = None
+            article_date = None
+
+            try:
+                # Title: try multiple sources
+                title_sources = [
+                    soup.find('meta', {'property': 'og:title'}),
+                    soup.find('meta', {'name': 'title'}),
+                    soup.find('h1'),
+                    soup.find('title')
+                ]
+                for src in title_sources:
+                    if src:
+                        title_text = src.get('content') if src.name == 'meta' else src.get_text(strip=True)
+                        if title_text and len(title_text) > 5:
+                            article_title = title_text[:200]  # Limit length
+                            break
+
+                # Author: try multiple sources
+                author_sources = [
+                    soup.find('meta', {'name': 'author'}),
+                    soup.find('meta', {'property': 'article:author'}),
+                    soup.find('a', {'rel': 'author'}),
+                    soup.find(class_=lambda x: x and 'author' in str(x).lower()),
+                    soup.find('span', {'itemprop': 'author'}),
+                ]
+                for src in author_sources:
+                    if src:
+                        author_text = src.get('content') if src.name == 'meta' else src.get_text(strip=True)
+                        if author_text and len(author_text) > 2 and len(author_text) < 100:
+                            article_author = author_text
+                            break
+
+                # Date: try multiple sources
+                date_sources = [
+                    soup.find('meta', {'property': 'article:published_time'}),
+                    soup.find('meta', {'name': 'date'}),
+                    soup.find('time', {'datetime': True}),
+                    soup.find('time'),
+                    soup.find(class_=lambda x: x and 'date' in str(x).lower() and 'update' not in str(x).lower()),
+                ]
+                for src in date_sources:
+                    if src:
+                        if src.name == 'meta':
+                            date_text = src.get('content', '')
+                        elif src.name == 'time':
+                            date_text = src.get('datetime', src.get_text(strip=True))
+                        else:
+                            date_text = src.get_text(strip=True)
+                        if date_text:
+                            # Clean up date format (take first 10-20 chars for date part)
+                            article_date = date_text[:25].strip()
+                            break
+
+                if article_title:
+                    print(f"       [Fetch] Metadata - Title: {article_title[:50]}...")
+                if article_author:
+                    print(f"       [Fetch] Metadata - Author: {article_author}")
+                if article_date:
+                    print(f"       [Fetch] Metadata - Date: {article_date}")
+
+            except Exception as e:
+                print(f"       [Fetch] Metadata extraction error: {e}")
+
             article_text = None
 
             # CRITICAL: Extract article content BEFORE any tag removal
@@ -1322,6 +1388,20 @@ class AudioBriefingApp(ctk.CTk):
                         if alpha_words / len(sample_words) < 0.3:
                             print(f"       [Fetch] Final check failed - content appears to be garbage")
                             return ""
+
+                    # Prepend article metadata header for clear segmentation
+                    header_parts = []
+                    if article_title:
+                        header_parts.append(f"Title: {article_title}")
+                    if article_author:
+                        header_parts.append(f"Author: {article_author}")
+                    if article_date:
+                        header_parts.append(f"Date: {article_date}")
+
+                    if header_parts:
+                        header = "=== ARTICLE ===\n" + "\n".join(header_parts) + "\n\n"
+                        final_text = header + final_text
+
                     return final_text
                 else:
                     print(f"       [Fetch] Text too short after cleanup: {len(final_text)} chars")
