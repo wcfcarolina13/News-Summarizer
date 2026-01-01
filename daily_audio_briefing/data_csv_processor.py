@@ -624,8 +624,15 @@ class CSVManager:
             if write_header:
                 writer.writeheader()
 
+            # Checkbox columns that should default to FALSE
+            checkbox_columns = {'Processed', 'Added'}
+
             for item in items:
                 row = item.to_dict()
+                # Add default FALSE for checkbox columns not in row
+                for col in columns:
+                    if col in checkbox_columns and col not in row:
+                        row[col] = 'FALSE'
                 writer.writerow(row)
 
         print(f"{'Appended' if mode == 'a' else 'Wrote'} {len(items)} items to {output_path}")
@@ -744,12 +751,29 @@ class DataCSVProcessor:
 
     def _fetch_content(self, url: str) -> str:
         """Fetch HTML content from URL with multiple fallback methods."""
-        # Method 1: Try requests first
+        # Browser-like headers to bypass bot detection
+        headers = {
+            'User-Agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+            'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8',
+            'Accept-Language': 'en-US,en;q=0.9',
+            'Accept-Encoding': 'gzip, deflate, br',
+            'DNT': '1',
+            'Connection': 'keep-alive',
+            'Upgrade-Insecure-Requests': '1',
+            'Sec-Fetch-Dest': 'document',
+            'Sec-Fetch-Mode': 'navigate',
+            'Sec-Fetch-Site': 'none',
+            'Sec-Fetch-User': '?1',
+            'Cache-Control': 'max-age=0',
+        }
+
+        # Method 1: Try requests first with full browser headers
         try:
             response = requests.get(
                 url,
-                headers={'User-Agent': self.config.user_agent},
-                timeout=self.config.timeout
+                headers=headers,
+                timeout=self.config.timeout,
+                allow_redirects=True
             )
             response.raise_for_status()
             return response.text
@@ -758,7 +782,7 @@ class DataCSVProcessor:
 
         # Method 2: Try urllib with custom SSL context
         try:
-            req = urllib.request.Request(url, headers={'User-Agent': self.config.user_agent})
+            req = urllib.request.Request(url, headers=headers)
             if SSL_CONTEXT:
                 with urllib.request.urlopen(req, timeout=self.config.timeout, context=SSL_CONTEXT) as response:
                     return response.read().decode('utf-8', errors='ignore')
@@ -768,17 +792,98 @@ class DataCSVProcessor:
         except Exception as e:
             print(f"    [!] urllib failed: {e}")
 
-        # Method 3: Try with no SSL verification (last resort)
+        # Method 3: Try with no SSL verification
         try:
             import ssl
             no_verify_ctx = ssl.create_default_context()
             no_verify_ctx.check_hostname = False
             no_verify_ctx.verify_mode = ssl.CERT_NONE
-            req = urllib.request.Request(url, headers={'User-Agent': self.config.user_agent})
+            req = urllib.request.Request(url, headers=headers)
             with urllib.request.urlopen(req, timeout=self.config.timeout, context=no_verify_ctx) as response:
                 return response.read().decode('utf-8', errors='ignore')
         except Exception as e:
-            print(f"    [!] All fetch methods failed for {url}: {e}")
+            print(f"    [!] SSL bypass failed: {e}")
+
+        # All direct fetch methods failed
+        return ""
+
+    def _web_search_fallback(self, query: str, original_url: str) -> str:
+        """
+        Search for article content via web search when direct fetch fails.
+        Uses DuckDuckGo HTML search (no API key needed).
+        Returns article text if found, empty string otherwise.
+        """
+        try:
+            # Clean up query - use headline without source prefix
+            search_query = query.strip()
+            if len(search_query) < 10:
+                return ""
+
+            print(f"    [*] Searching for article: {search_query[:50]}...")
+
+            # Search DuckDuckGo HTML
+            search_url = f"https://html.duckduckgo.com/html/?q={urllib.parse.quote(search_query + ' crypto news')}"
+            headers = {
+                'User-Agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36',
+                'Accept': 'text/html,application/xhtml+xml',
+            }
+
+            req = urllib.request.Request(search_url, headers=headers)
+            with urllib.request.urlopen(req, timeout=10) as response:
+                search_html = response.read().decode('utf-8', errors='ignore')
+
+            # Parse search results
+            soup = BeautifulSoup(search_html, 'lxml')
+            results = soup.find_all('a', class_='result__a')
+
+            # Try to fetch from alternative sources (skip the original blocked domain)
+            original_domain = urllib.parse.urlparse(original_url).netloc
+            blocked_domains = ['theblock.co', 'thedefiant.io', 'finsmes.com']  # Known to block
+
+            for result in results[:5]:
+                raw_url = result.get('href', '')
+
+                # DuckDuckGo returns redirect URLs like //duckduckgo.com/l/?uddg=https%3A...
+                # Extract the actual URL from the uddg parameter
+                if 'uddg=' in raw_url:
+                    try:
+                        parsed = urllib.parse.urlparse(raw_url)
+                        params = urllib.parse.parse_qs(parsed.query)
+                        if 'uddg' in params:
+                            result_url = urllib.parse.unquote(params['uddg'][0])
+                        else:
+                            continue
+                    except Exception:
+                        continue
+                elif raw_url.startswith('http'):
+                    result_url = raw_url
+                else:
+                    continue
+
+                result_domain = urllib.parse.urlparse(result_url).netloc
+                if result_domain == original_domain or any(bd in result_domain for bd in blocked_domains):
+                    continue
+
+                # Try to fetch this alternative source
+                try:
+                    alt_req = urllib.request.Request(result_url, headers=headers)
+                    with urllib.request.urlopen(alt_req, timeout=10) as alt_response:
+                        alt_html = alt_response.read().decode('utf-8', errors='ignore')
+
+                    # Extract article body
+                    alt_text = self._extract_article_body(alt_html)
+                    if alt_text and len(alt_text) > 200:
+                        print(f"    [*] Found alternative: {result_domain}")
+                        return alt_text
+
+                except Exception:
+                    continue
+
+            print(f"    [!] No accessible alternative sources found")
+            return ""
+
+        except Exception as e:
+            print(f"    [!] Web search failed: {e}")
             return ""
 
     def _get_extractor(self, url: str) -> BaseExtractor:
@@ -936,7 +1041,7 @@ class DataCSVProcessor:
         """
         return self.csv_manager.write_items(items, output_path, custom_columns)
 
-    def enrich_with_grid(self, items: List[ExtractedItem], api_key: str = None) -> List[ExtractedItem]:
+    def enrich_with_grid(self, items: List[ExtractedItem], api_key: str = None, debug: bool = False) -> List[ExtractedItem]:
         """
         Enrich extracted items with The Grid API data.
 
@@ -952,6 +1057,7 @@ class DataCSVProcessor:
         Args:
             items: List of ExtractedItem objects
             api_key: Optional Grid API key
+            debug: If True, print detailed matching info
 
         Returns:
             Items with Grid data added to custom_fields
@@ -967,6 +1073,17 @@ class DataCSVProcessor:
         matcher = GridEntityMatcher(api_key=api_key)
 
         for i, item in enumerate(items):
+            # Combine title + description for matching
+            full_text = f"{item.title} {item.description}"
+
+            if debug:
+                print(f"\n  [{i+1}] DEBUG:")
+                print(f"       Title: {item.title[:60]}...")
+                print(f"       Description: {item.description[:60]}..." if item.description else "       Description: (empty)")
+                # Show extracted keywords
+                keywords = matcher.extract_keywords(full_text)
+                print(f"       Keywords: {keywords}")
+
             match = matcher.match_entity(item.title, item.url, item.description)
 
             # Add Grid data to custom_fields
@@ -975,14 +1092,315 @@ class DataCSVProcessor:
                 item.custom_fields[key] = value
 
             if match.matched:
-                print(f"  [{i+1}] ✓ {item.title[:40]}... → {match.entity_name}")
+                # Show all matched subjects
+                subjects = ", ".join(m.name for m in match.matches[:3])  # Show top 3
+                extra = f" (+{len(match.matches)-3} more)" if len(match.matches) > 3 else ""
+                conf = match.primary.confidence if match.primary else 0
+                print(f"  [{i+1}] ✓ {item.title[:40]}... → {subjects}{extra} (conf: {conf:.2f})")
             else:
-                print(f"  [{i+1}] ✗ {item.title[:40]}...")
+                # Show why it didn't match
+                if debug:
+                    print(f"       No match found (no keywords or low confidence)")
+                else:
+                    print(f"  [{i+1}] ✗ {item.title[:40]}...")
 
         matched_count = sum(1 for item in items if item.custom_fields.get("grid_matched"))
         print(f"\n[*] Matched {matched_count}/{len(items)} items to Grid entities")
 
         return items
+
+    def research_articles(self, items: List[ExtractedItem],
+                          categories: List[str] = None,
+                          search_terms: List[str] = None,
+                          only_unmatched: bool = True,
+                          all_items: bool = False,
+                          api_key: str = None) -> List[ExtractedItem]:
+        """
+        Research article content for blockchain/ecosystem mentions.
+
+        For items in specified categories (e.g., 'Venture Capital', 'Launches'),
+        fetches the article content and searches for mentions of specified terms.
+        Results are added to item.custom_fields['comments'].
+
+        Args:
+            items: List of ExtractedItem objects
+            categories: Categories to research (default: ['Venture Capital', 'Launches'])
+            search_terms: Terms to search for (default: ['Solana', 'Starknet', 'Tether'])
+            only_unmatched: Only research items that didn't get a Grid match
+            all_items: If True, research ALL items regardless of category
+            api_key: Gemini API key for LLM analysis (optional)
+
+        Returns:
+            Items with 'comments' field populated for researched articles
+        """
+        if categories is None:
+            categories = ['Venture Capital', 'Launches']
+        if search_terms is None:
+            # Only search for priority ecosystems - others are covered by Grid matches
+            search_terms = ['Solana', 'Starknet', 'Tether', 'USDT', 'SOL']
+
+        # Categories to exclude from research
+        exclude_categories = [
+            'extra reads', 'extra read',
+            'regulatory', 'regulation',
+            'cybersecurity', 'security', 'hacks',
+            'legal', 'enforcement'
+        ]
+
+        # Normalize categories for comparison
+        categories_lower = [c.lower() for c in categories]
+
+        # Build regex pattern for efficient searching
+        pattern = re.compile(
+            r'\b(' + '|'.join(re.escape(term) for term in search_terms) + r')\b',
+            re.IGNORECASE
+        )
+
+        # Filter items to research
+        items_to_research = []
+        for item in items:
+            item_cat = item.category.lower() if item.category else ''
+
+            # Skip excluded categories (even when all_items is True)
+            if any(exc in item_cat for exc in exclude_categories):
+                continue
+
+            # Check if category matches (skip if all_items is True)
+            if not all_items:
+                cat_match = any(cat in item_cat for cat in categories_lower)
+                if not cat_match:
+                    continue
+
+            # Check if we should skip matched items
+            if only_unmatched and item.custom_fields.get('grid_matched'):
+                continue
+
+            # Check if we have a valid URL
+            if not item.url or not item.url.startswith('http'):
+                continue
+
+            items_to_research.append(item)
+
+        if not items_to_research:
+            scope = "all categories" if all_items else f"categories: {categories}"
+            print(f"\n[*] No items to research ({scope})")
+            return items
+
+        scope_msg = "all items" if all_items else f"categories: {', '.join(categories)}"
+        print(f"\n[*] Researching {len(items_to_research)} articles ({scope_msg}) for mentions of: {', '.join(search_terms)}")
+
+        # Import Grid matcher once
+        try:
+            from grid_api import GridEntityMatcher
+            grid_available = True
+        except ImportError:
+            grid_available = False
+
+        for i, item in enumerate(items_to_research):
+            try:
+                print(f"  [{i+1}/{len(items_to_research)}] Fetching: {item.url[:60]}...")
+
+                # Fetch article content
+                html = self._fetch_content(item.url)
+                article_text = ""
+
+                if html:
+                    # Extract ONLY the main article body (avoid related articles, sidebars, etc.)
+                    article_text = self._extract_article_body(html)
+
+                # If direct fetch failed or extracted nothing, try web search fallback
+                if not article_text or len(article_text) < 100:
+                    # Use the item description as search query
+                    search_query = item.description if item.description else item.title
+                    article_text = self._web_search_fallback(search_query, item.url)
+
+                if not article_text or len(article_text) < 100:
+                    item.custom_fields['comments'] = "Could not fetch article"
+                    continue
+
+                comments = []
+                found_ecosystem_terms = []
+
+                # 1. Search for priority ecosystem mentions
+                try:
+                    mentions = pattern.findall(article_text)
+                    if mentions:
+                        term_counts = {}
+                        for term in mentions:
+                            # Handle both string and tuple results from regex
+                            if isinstance(term, tuple):
+                                term = term[0] if len(term) > 0 else ''
+                            if term and isinstance(term, str):
+                                term_title = term.strip().title()
+                                if term_title:
+                                    term_counts[term_title] = term_counts.get(term_title, 0) + 1
+                                    found_ecosystem_terms.append(term_title)
+
+                        if term_counts:
+                            # Safely unpack term counts
+                            sorted_terms = sorted(term_counts.items(), key=lambda x: x[1] if len(x) > 1 else 0, reverse=True)
+                            comment_parts = []
+                            for term_tuple in sorted_terms:
+                                if isinstance(term_tuple, tuple) and len(term_tuple) >= 2:
+                                    t, c = term_tuple[0], term_tuple[1]
+                                    comment_parts.append(f"{t} ({c}x)")
+                            if comment_parts:
+                                comments.append(f"Mentions: {', '.join(comment_parts)}")
+                except Exception as regex_err:
+                    print(f"    [!] Regex error: {regex_err}")
+
+                # 2. Try Grid matching - first on ecosystem terms found, then on keywords
+                if grid_available:
+                    article_matcher = GridEntityMatcher()
+                    best_match = None
+
+                    # Priority: Match ecosystem terms directly (Solana, Tether, Starknet)
+                    for eco_term in set(found_ecosystem_terms):
+                        match = article_matcher.match_entity(eco_term, item.url, article_text[:200])
+                        if match.matched and match.primary and match.primary.confidence >= 0.7:
+                            best_match = match
+                            break
+
+                    # Fallback: Try article body keywords
+                    if not best_match:
+                        article_keywords = article_matcher.extract_keywords(article_text[:500])
+                        for kw in article_keywords[:3]:
+                            match = article_matcher.match_entity(kw, item.url, article_text[:200])
+                            if match.matched and match.primary and match.primary.confidence >= 0.8:
+                                best_match = match
+                                break
+
+                    # Update Grid fields if we found a match
+                    if best_match and best_match.matched:
+                        for key, value in best_match.to_dict().items():
+                            item.custom_fields[key] = value
+                        # Show all matched subjects
+                        subjects = ", ".join(m.name for m in best_match.matches[:2])
+                        comments.append(f"Grid: {subjects}")
+
+                        # LLM analysis for Grid profile suggestions
+                        try:
+                            from grid_api import analyze_grid_profile_with_llm
+                            primary_match = best_match.primary
+                            print(f"       [LLM Debug] primary={primary_match is not None}, text={len(article_text) if article_text else 0}, key={'set' if api_key else 'None'}")
+                            if primary_match and article_text and api_key:
+                                entity_name = primary_match.name
+                                print(f"       [LLM] Analyzing: {entity_name}")
+                                # Try to get profile details (works for profiles, may be empty for assets)
+                                profile_details = article_matcher.client.get_profile_details(entity_name)
+                                # If no profile found, create minimal context from the match
+                                if not profile_details.get("profile"):
+                                    profile_details = {
+                                        "profile": {
+                                            "name": entity_name,
+                                            "descriptionShort": primary_match.description or f"{primary_match.grid_type}: {entity_name}"
+                                        },
+                                        "products": [],
+                                        "assets": []
+                                    }
+                                suggestion = analyze_grid_profile_with_llm(article_text, profile_details, api_key=api_key)
+                                if suggestion:
+                                    comments.append(f"Suggest: {suggestion}")
+                                else:
+                                    print(f"       [LLM] No suggestion returned")
+                            elif not api_key:
+                                print(f"       [LLM] Skipped - no API key")
+                        except Exception as llm_err:
+                            print(f"       [!] LLM error: {llm_err}")
+                            pass  # LLM analysis is optional
+
+                # Combine comments
+                if comments:
+                    item.custom_fields['comments'] = ' | '.join(comments)
+                    print(f"       → {item.custom_fields['comments']}")
+                else:
+                    item.custom_fields['comments'] = "No relevant mentions"
+                    print(f"       → No relevant mentions")
+
+            except Exception as e:
+                item.custom_fields['comments'] = f"Research error: {str(e)[:50]}"
+                print(f"       → Error: {str(e)[:50]}")
+
+        researched_count = sum(1 for item in items_to_research if 'comments' in item.custom_fields)
+        print(f"\n[*] Researched {researched_count}/{len(items_to_research)} articles")
+
+        return items
+
+    def _extract_article_body(self, html: str) -> str:
+        """
+        Extract only the main article body content, avoiding:
+        - Related articles
+        - Sidebars
+        - Navigation
+        - Comments sections
+        - Infinite scroll content
+        - Footer content
+        """
+        soup = BeautifulSoup(html, 'lxml')
+
+        # Remove elements that are definitely not article content
+        for tag in soup.find_all(['script', 'style', 'nav', 'footer', 'header',
+                                   'aside', 'iframe', 'noscript', 'form']):
+            tag.decompose()
+
+        # Remove common "related articles" patterns
+        related_patterns = [
+            'related', 'recommended', 'more-stories', 'more-articles',
+            'also-read', 'you-may-like', 'trending', 'popular',
+            'sidebar', 'widget', 'advertisement', 'ad-container',
+            'social-share', 'comments', 'newsletter', 'subscribe'
+        ]
+
+        for pattern in related_patterns:
+            # Remove by class
+            for tag in soup.find_all(class_=lambda x: x and pattern in x.lower()):
+                tag.decompose()
+            # Remove by id
+            for tag in soup.find_all(id=lambda x: x and pattern in x.lower()):
+                tag.decompose()
+
+        # Try to find the main article content using semantic tags
+        article_content = None
+
+        # Priority 1: <article> tag
+        article_tag = soup.find('article')
+        if article_tag:
+            article_content = article_tag
+
+        # Priority 2: Common content class names
+        if not article_content:
+            content_classes = ['article-content', 'article-body', 'post-content',
+                              'entry-content', 'story-body', 'article__body',
+                              'content-body', 'main-content', 'article-text']
+            for cls in content_classes:
+                found = soup.find(class_=lambda x: x and cls in str(x).lower())
+                if found:
+                    article_content = found
+                    break
+
+        # Priority 3: <main> tag
+        if not article_content:
+            main_tag = soup.find('main')
+            if main_tag:
+                article_content = main_tag
+
+        # Priority 4: Largest <div> with significant text (heuristic)
+        if not article_content:
+            article_content = soup.body if soup.body else soup
+
+        # Extract text from the identified content
+        if article_content:
+            # Get text with proper spacing
+            text = article_content.get_text(separator=' ', strip=True)
+
+            # Clean up excessive whitespace
+            text = ' '.join(text.split())
+
+            # Limit to reasonable article length (avoid infinite scroll content)
+            # Most articles are under 10000 characters
+            return text[:10000]
+
+        return ""
 
     def deduplicate_csv(self, csv_path: str, key_column: str = 'url') -> int:
         """Remove duplicates from CSV file."""

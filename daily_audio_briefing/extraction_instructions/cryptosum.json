@@ -63,9 +63,15 @@
 
   "exclude_categories": [
     "Regulatory",
+    "Regulation",
     "Legal",
     "Enforcement",
-    "Legal & Enforcement"
+    "Legal & Enforcement",
+    "Cybersecurity",
+    "Security",
+    "Hacks",
+    "Extra Reads",
+    "Extra Read"
   ],
 
   "allowed_domains": [],
@@ -91,7 +97,10 @@
     "url",
     "description",
     "source_name",
-    "date_published"
+    "date_published",
+    "comments",
+    "Processed",
+    "Added"
   ],
 
   "notes": "Extracts market/trading news from CryptoSum. Filters out: prediction markets (ads), regulatory news, hacks/exploits, legal/enforcement, sponsored 'here's why' articles, landing pages, and ad partners."
