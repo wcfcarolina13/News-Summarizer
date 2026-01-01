@@ -1021,8 +1021,8 @@ HTML_TEMPLATE = '''
                     <button class="btn btn-success" onclick="downloadExtractedCSV()">
                         Download CSV
                     </button>
-                    <button class="btn btn-secondary" onclick="copyExtractedText()">
-                        Copy Text
+                    <button class="btn btn-secondary" onclick="copyExtractedCSV()">
+                        Copy CSV
                     </button>
                 </div>
                 <div id="extractList" style="margin-top: 12px;"></div>
@@ -1402,8 +1402,8 @@ HTML_TEMPLATE = '''
         function downloadExtractedCSV() {
             if (!extractedItems.length) return;
 
-            // Base headers
-            let headers = ['title', 'url', 'category', 'source_name', 'date_published'];
+            // Base headers (include comments for research results)
+            let headers = ['title', 'url', 'category', 'source_name', 'date_published', 'comments'];
 
             // Add Grid headers if any item has grid data
             const hasGridData = extractedItems.some(i => i.grid_matched !== undefined);
@@ -1425,22 +1425,25 @@ HTML_TEMPLATE = '''
             URL.revokeObjectURL(url);
         }
 
-        function copyExtractedText() {
+        function copyExtractedCSV() {
             if (!extractedItems.length) return;
 
-            const text = extractedItems.map(item => {
-                let line = `[${item.category}] ${item.title}\n${item.url}`;
-                if (item.grid_matched) {
-                    line += `\n→ Grid: ${item.grid_entity_name} (${item.grid_entity_type})`;
-                }
-                if (item.tgs_recommendation) {
-                    line += `\n→ TGS: ${item.tgs_recommendation}`;
-                }
-                return line;
-            }).join('\\n\\n');
+            // Build CSV with same headers as download
+            let headers = ['title', 'url', 'category', 'source_name', 'date_published', 'comments'];
 
-            navigator.clipboard.writeText(text).then(() => {
-                showStatus('Copied to clipboard!', 'success');
+            // Add Grid headers if any item has grid data
+            const hasGridData = extractedItems.some(i => i.grid_matched !== undefined);
+            if (hasGridData) {
+                headers = [...headers, 'grid_matched', 'grid_entity_name', 'grid_entity_type', 'grid_category', 'tgs_recommendation'];
+            }
+
+            const rows = extractedItems.map(item =>
+                headers.map(h => '"' + String(item[h] || '').replace(/"/g, '""') + '"').join(',')
+            );
+            const csv = [headers.join(','), ...rows].join('\\n');
+
+            navigator.clipboard.writeText(csv).then(() => {
+                showStatus('CSV copied to clipboard!', 'success');
                 setTimeout(hideStatus, 2000);
             });
         }

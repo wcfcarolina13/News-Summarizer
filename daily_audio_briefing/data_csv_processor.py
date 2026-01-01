@@ -238,7 +238,7 @@ class BeehiivExtractor(BaseExtractor):
 
         # Get newsletter metadata
         source_name = self._extract_source_name(soup, url)
-        pub_date = self._extract_date(soup)
+        pub_date = self._extract_date(soup, url)
 
         # Get the main content area
         content_area = soup.find('div', class_='post-content') or soup.find('article') or soup.body
@@ -333,19 +333,86 @@ class BeehiivExtractor(BaseExtractor):
         parsed = urlparse(url)
         return parsed.netloc.split('.')[0].title()
 
-    def _extract_date(self, soup: BeautifulSoup) -> str:
-        """Extract publication date."""
-        # Try meta tags
+    def _extract_date(self, soup: BeautifulSoup, url: str = None) -> str:
+        """Extract publication date from newsletter."""
+        # Try meta tags first (most reliable)
         date_meta = soup.find('meta', property='article:published_time')
         if date_meta:
-            return date_meta.get('content', '')[:10]
+            content = date_meta.get('content', '')
+            if content and len(content) >= 10:
+                return content[:10]
 
-        # Try time elements
+        # Try og:published_time
+        og_date = soup.find('meta', property='og:published_time')
+        if og_date:
+            content = og_date.get('content', '')
+            if content and len(content) >= 10:
+                return content[:10]
+
+        # Try time elements with datetime attribute
+        time_elem = soup.find('time', datetime=True)
+        if time_elem:
+            dt = time_elem.get('datetime', '')
+            if dt and len(dt) >= 10:
+                return dt[:10]
+
+        # Try any time element text
         time_elem = soup.find('time')
         if time_elem:
-            return time_elem.get('datetime', time_elem.get_text(strip=True))[:10]
+            text = time_elem.get_text(strip=True)
+            # Try to parse common date formats
+            date_match = re.search(r'(\d{4}[-/]\d{1,2}[-/]\d{1,2})', text)
+            if date_match:
+                return date_match.group(1).replace('/', '-')
 
-        return datetime.now().strftime('%Y-%m-%d')
+        # Try to extract date from URL (beehiiv often has /p/YYYY-MM-DD-slug format)
+        if url:
+            url_date_match = re.search(r'/p/(\d{4}-\d{2}-\d{2})', url)
+            if url_date_match:
+                return url_date_match.group(1)
+
+        # Try schema.org datePublished
+        script_tags = soup.find_all('script', type='application/ld+json')
+        for script in script_tags:
+            try:
+                import json
+                data = json.loads(script.string)
+                if isinstance(data, dict):
+                    date_pub = data.get('datePublished', '')
+                    if date_pub and len(date_pub) >= 10:
+                        return date_pub[:10]
+            except:
+                pass
+
+        # Look for date in common page elements
+        date_patterns = [
+            r'(\d{4}[-/]\d{1,2}[-/]\d{1,2})',  # 2024-01-15 or 2024/01/15
+            r'((?:Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)[a-z]* \d{1,2},? \d{4})',  # January 15, 2024
+        ]
+
+        # Check common date container classes
+        for selector in ['.date', '.post-date', '.published', '.meta-date', '[class*="date"]']:
+            date_elem = soup.select_one(selector)
+            if date_elem:
+                text = date_elem.get_text(strip=True)
+                for pattern in date_patterns:
+                    match = re.search(pattern, text, re.IGNORECASE)
+                    if match:
+                        date_str = match.group(1)
+                        # Normalize format
+                        if '-' in date_str or '/' in date_str:
+                            return date_str.replace('/', '-')[:10]
+                        # Try parsing text dates like "January 15, 2024"
+                        try:
+                            from dateutil import parser
+                            parsed = parser.parse(date_str)
+                            return parsed.strftime('%Y-%m-%d')
+                        except:
+                            pass
+
+        # Fallback: return empty string to indicate no date found
+        # This is better than returning current date which is misleading
+        return ""
 
     def _is_internal_link(self, href: str, source_url: str) -> bool:
         """Check if link is internal to the newsletter platform."""
@@ -1215,11 +1282,17 @@ class DataCSVProcessor:
                     article_text = self._web_search_fallback(search_query, item.url)
 
                 if not article_text or len(article_text) < 100:
-                    item.custom_fields['comments'] = "Could not fetch article"
+                    # Provide more detail about fetch failure
+                    if not html:
+                        item.custom_fields['comments'] = f"Fetch failed: Could not retrieve {item.url[:40]}..."
+                    else:
+                        item.custom_fields['comments'] = f"Parse failed: No article body extracted (got {len(article_text) if article_text else 0} chars)"
+                    print(f"       → {item.custom_fields['comments']}")
                     continue
 
                 comments = []
                 found_ecosystem_terms = []
+                entities_mentioned = []  # Track all entities for user verification
 
                 # 1. Search for priority ecosystem mentions
                 try:
@@ -1249,7 +1322,38 @@ class DataCSVProcessor:
                 except Exception as regex_err:
                     print(f"    [!] Regex error: {regex_err}")
 
-                # 2. Try Grid matching - first on ecosystem terms found, then on keywords
+                # 2. Extract entities mentioned in article for user verification
+                # This helps users verify if fuzzy matches are correct
+                try:
+                    entity_patterns = [
+                        # Company/project names (capitalized words, often with common suffixes)
+                        r'\b([A-Z][a-z]+(?:\s+[A-Z][a-z]+){0,2})\s+(?:Labs?|Protocol|Network|Finance|Capital|Ventures|Fund|Foundation|Exchange|Wallet|DAO)\b',
+                        # Crypto project names (often all caps or CamelCase)
+                        r'\b([A-Z]{2,}[a-z]*(?:[A-Z][a-z]*)*)\b',
+                        # Common startup naming patterns
+                        r'\b([A-Z][a-z]+(?:Fi|Swap|Dex|Pay|Lend|Stake|Mint|Chain|Layer|Bridge|Vault))\b',
+                    ]
+
+                    found_entities = set()
+                    for ep in entity_patterns:
+                        matches = re.findall(ep, article_text[:2000])
+                        for m in matches:
+                            if isinstance(m, tuple):
+                                m = m[0]
+                            # Filter out common words and short strings
+                            if m and len(m) > 2 and m.lower() not in ['the', 'and', 'for', 'with', 'from', 'that', 'this', 'has', 'have', 'will', 'can', 'are', 'was', 'were', 'been', 'being']:
+                                found_entities.add(m)
+
+                    # Filter to meaningful entities (skip very common words)
+                    common_words = {'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday', 'Sunday',
+                                   'January', 'February', 'March', 'April', 'May', 'June', 'July', 'August',
+                                   'September', 'October', 'November', 'December', 'CEO', 'CTO', 'CFO', 'COO'}
+                    entities_mentioned = [e for e in found_entities if e not in common_words][:8]  # Limit to 8
+                except Exception as ent_err:
+                    print(f"    [!] Entity extraction error: {ent_err}")
+                    entities_mentioned = []
+
+                # 3. Try Grid matching - first on ecosystem terms found, then on keywords
                 if grid_available:
                     article_matcher = GridEntityMatcher()
                     best_match = None
@@ -1309,6 +1413,32 @@ class DataCSVProcessor:
                             print(f"       [!] LLM error: {llm_err}")
                             pass  # LLM analysis is optional
 
+                # 4. ALWAYS check for USDT/Solana/Starknet support (even with fuzzy matches)
+                # This helps determine if entities need to be added to admin
+                support_check_terms = ['USDT', 'Tether', 'Solana', 'SOL', 'Starknet', 'StarkNet', 'STRK']
+                support_pattern = re.compile(
+                    r'\b(' + '|'.join(re.escape(t) for t in support_check_terms) + r')\b',
+                    re.IGNORECASE
+                )
+                support_mentions = support_pattern.findall(article_text)
+                if support_mentions:
+                    # Normalize and deduplicate
+                    normalized_support = set()
+                    for s in support_mentions:
+                        s_lower = s.lower()
+                        if s_lower in ['usdt', 'tether']:
+                            normalized_support.add('USDT')
+                        elif s_lower in ['solana', 'sol']:
+                            normalized_support.add('Solana')
+                        elif s_lower in ['starknet', 'strk']:
+                            normalized_support.add('Starknet')
+                    if normalized_support:
+                        comments.append(f"Check support: {', '.join(sorted(normalized_support))}")
+
+                # 5. Add entities mentioned section for verification
+                if entities_mentioned:
+                    comments.append(f"Entities: {', '.join(entities_mentioned[:6])}")
+
                 # Combine comments
                 if comments:
                     item.custom_fields['comments'] = ' | '.join(comments)
@@ -1318,8 +1448,21 @@ class DataCSVProcessor:
                     print(f"       → No relevant mentions")
 
             except Exception as e:
-                item.custom_fields['comments'] = f"Research error: {str(e)[:50]}"
-                print(f"       → Error: {str(e)[:50]}")
+                import traceback
+                tb = traceback.format_exc()
+                # Include more context in error message
+                error_detail = str(e)
+                if 'timeout' in error_detail.lower():
+                    item.custom_fields['comments'] = f"Timeout: {item.url[:30]}... took too long"
+                elif 'connection' in error_detail.lower() or 'refused' in error_detail.lower():
+                    item.custom_fields['comments'] = f"Connection error: Could not reach {item.url[:30]}..."
+                elif '403' in error_detail or '401' in error_detail:
+                    item.custom_fields['comments'] = f"Access denied: {item.url[:30]}... requires auth"
+                elif '404' in error_detail:
+                    item.custom_fields['comments'] = f"Not found: {item.url[:30]}... may be deleted"
+                else:
+                    item.custom_fields['comments'] = f"Research error: {error_detail[:80]}"
+                print(f"       → {item.custom_fields['comments']}")
 
         researched_count = sum(1 for item in items_to_research if 'comments' in item.custom_fields)
         print(f"\n[*] Researched {researched_count}/{len(items_to_research)} articles")
