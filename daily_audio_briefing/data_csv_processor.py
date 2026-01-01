@@ -78,6 +78,11 @@ class ExtractionConfig:
     max_workers: int = 5
     user_agent: str = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"
 
+    # Fetch limiting
+    fetch_limit: int = 0  # 0 = no limit
+    start_date: str = ""  # YYYY-MM-DD format, empty = no filter
+    end_date: str = ""    # YYYY-MM-DD format, empty = no filter
+
     # CSV output settings
     csv_columns: List[str] = field(default_factory=lambda: [
         'title', 'url', 'source_name', 'category', 'description',
@@ -214,6 +219,10 @@ class BaseExtractor:
         """Check if this extractor can handle the given URL."""
         parsed = urlparse(url)
         return any(domain in parsed.netloc for domain in self.supported_domains)
+
+    def preprocess_url(self, url: str) -> str:
+        """Preprocess URL before fetching. Override in subclasses if needed."""
+        return url
 
     def extract(self, url: str, html: str, custom_instructions: Dict = None) -> List[ExtractedItem]:
         """Extract items from the source. Override in subclasses."""
@@ -564,6 +573,135 @@ class RSSExtractor(BaseExtractor):
         return items
 
 
+class TelegramExtractor(BaseExtractor):
+    """Extractor for Telegram channel preview pages."""
+
+    name = "telegram"
+    supported_domains = ["t.me"]
+
+    def can_handle(self, url: str) -> bool:
+        """Check if URL is a Telegram channel."""
+        parsed = urlparse(url)
+        # Match t.me/channelname or t.me/s/channelname
+        return parsed.netloc == "t.me"
+
+    def preprocess_url(self, url: str) -> str:
+        """Convert t.me/channel to t.me/s/channel preview format."""
+        parsed = urlparse(url)
+        if parsed.netloc == "t.me" and "/s/" not in parsed.path:
+            # Convert t.me/channelname to t.me/s/channelname
+            channel = parsed.path.strip('/')
+            return f"https://t.me/s/{channel}"
+        return url
+
+    def _is_article_url(self, url: str) -> bool:
+        """Check if URL looks like an article (not a homepage)."""
+        parsed = urlparse(url)
+        path = parsed.path.strip('/')
+        # Article URLs typically have meaningful paths
+        return bool(path) and '/' in path or len(path) > 20
+
+    def _select_best_link(self, links: list) -> str:
+        """Select the best link from a list (prefer article URLs over homepages)."""
+        article_links = [l for l in links if self._is_article_url(l)]
+        if article_links:
+            return article_links[-1]  # Last link is often the source
+        return links[-1] if links else None
+
+    def extract(self, url: str, html: str, custom_instructions: Dict = None) -> List[ExtractedItem]:
+        """Extract items from Telegram channel preview page."""
+        soup = self._get_soup(html)
+        items = []
+        seen_urls = set()
+
+        # Get channel name from page
+        channel_title = soup.find('div', class_='tgme_channel_info_header_title')
+        source_name = channel_title.get_text(strip=True) if channel_title else "Telegram Channel"
+
+        # Find all message containers
+        messages = soup.find_all('div', class_='tgme_widget_message_wrap')
+
+        for msg in messages:
+            # Get message text
+            text_div = msg.find('div', class_='tgme_widget_message_text')
+            if not text_div:
+                continue
+
+            message_text = text_div.get_text(strip=True)
+            if not message_text:
+                continue
+
+            # Get date
+            time_elem = msg.find('time')
+            date_published = time_elem.get('datetime', '') if time_elem else ""
+
+            # Get external links from the message
+            links = text_div.find_all('a', href=True)
+            external_links = []
+            for link in links:
+                href = link.get('href', '')
+                # Skip internal Telegram links
+                if href and href.startswith('http') and 't.me' not in href:
+                    external_links.append(href)
+
+            # If there are external links, pick the best one per message
+            if external_links:
+                # Select the best link (prefer article URLs)
+                best_link = self._select_best_link(external_links)
+                if best_link:
+                    cleaned_url, original_url = self.url_processor.process_url(best_link)
+
+                    # Skip if we've already seen this URL
+                    if cleaned_url in seen_urls:
+                        continue
+                    seen_urls.add(cleaned_url)
+
+                    # Use first ~100 chars of message as title
+                    title = message_text[:100]
+                    if len(message_text) > 100:
+                        title = title.rsplit(' ', 1)[0] + "..."
+
+                    item = ExtractedItem(
+                        title=title,
+                        url=cleaned_url,
+                        original_url=original_url,
+                        source_name=source_name,
+                        source_url=url,
+                        category="Telegram",
+                        description=message_text[:500] if len(message_text) > 100 else "",
+                        date_published=date_published,
+                    )
+                    items.append(item)
+            else:
+                # No external links, still capture the message content
+                # Use message permalink as URL
+                msg_link = msg.find('a', class_='tgme_widget_message_date')
+                msg_url = msg_link.get('href', url) if msg_link else url
+
+                # Skip if we've already seen this URL
+                if msg_url in seen_urls:
+                    continue
+                seen_urls.add(msg_url)
+
+                title = message_text[:100]
+                if len(message_text) > 100:
+                    title = title.rsplit(' ', 1)[0] + "..."
+
+                item = ExtractedItem(
+                    title=title,
+                    url=msg_url,
+                    original_url=msg_url,
+                    source_name=source_name,
+                    source_url=url,
+                    category="Telegram",
+                    description=message_text[:500] if len(message_text) > 100 else "",
+                    date_published=date_published,
+                )
+                items.append(item)
+
+        return items
+
+
 # =============================================================================
 # CSV MANAGER
 # =============================================================================
@@ -715,6 +853,7 @@ class DataCSVProcessor:
         # Register extractors (order matters - specific before generic)
         self.extractors: List[BaseExtractor] = [
             BeehiivExtractor(self.url_processor, self.config),
+            TelegramExtractor(self.url_processor, self.config),
             RSSExtractor(self.url_processor, self.config),
             GenericWebExtractor(self.url_processor, self.config),
         ]
@@ -893,6 +1032,167 @@ class DataCSVProcessor:
                 return extractor
         return self.extractors[-1]  # Generic fallback
 
+    def _filter_by_date(self, items: List[ExtractedItem]) -> List[ExtractedItem]:
+        """Filter items by date range if configured."""
+        if not self.config.start_date and not self.config.end_date:
+            return items
+
+        filtered = []
+        for item in items:
+            if not item.date_published:
+                # Keep items without dates (can't filter them)
+                filtered.append(item)
+                continue
+
+            try:
+                # Parse item date (handle various formats)
+                date_str = item.date_published
+                item_date = None
+
+                # Try ISO format first (2025-12-30T00:01:32+00:00)
+                if 'T' in date_str:
+                    item_date = datetime.fromisoformat(date_str.replace('Z', '+00:00'))
+                else:
+                    # Try simple date format
+                    for fmt in ['%Y-%m-%d', '%d/%m/%Y', '%m/%d/%Y', '%B %d, %Y']:
+                        try:
+                            item_date = datetime.strptime(date_str, fmt)
+                            break
+                        except ValueError:
+                            continue
+
+                if not item_date:
+                    # Can't parse date, keep the item
+                    filtered.append(item)
+                    continue
+
+                # Check date range
+                if self.config.start_date:
+                    start = datetime.strptime(self.config.start_date, '%Y-%m-%d')
+                    if item_date.replace(tzinfo=None) < start:
+                        continue
+
+                if self.config.end_date:
+                    end = datetime.strptime(self.config.end_date, '%Y-%m-%d')
+                    # Include the end date (add 1 day)
+                    end = end.replace(hour=23, minute=59, second=59)
+                    if item_date.replace(tzinfo=None) > end:
+                        continue
+
+                filtered.append(item)
+
+            except Exception:
+                # On any error, keep the item
+                filtered.append(item)
+
+        return filtered
+
+    def _apply_fetch_limit(self, items: List[ExtractedItem]) -> List[ExtractedItem]:
+        """Apply fetch limit if configured."""
+        if self.config.fetch_limit > 0 and len(items) > self.config.fetch_limit:
+            return items[:self.config.fetch_limit]
+        return items
+
+    def _process_telegram_with_pagination(self, url: str, extractor, instructions: Dict, max_pages: int = 25) -> List[ExtractedItem]:
+        """
+        Process Telegram channel with pagination to fetch historical messages.
+
+        Args:
+            url: Base Telegram URL (t.me/s/channelname format)
+            extractor: TelegramExtractor instance
+            instructions: Custom extraction instructions
+            max_pages: Maximum number of pages to fetch (each page ~20 messages)
+
+        Returns:
+            List of ExtractedItem objects
+        """
+        from bs4 import BeautifulSoup
+
+        all_items = []
+        seen_urls = set()
+        oldest_id = None
+        pages_fetched = 0
+
+        # Determine if we need to paginate based on date range
+        need_older = bool(self.config.start_date)
+        target_start = None
+        if self.config.start_date:
+            target_start = datetime.strptime(self.config.start_date, '%Y-%m-%d')
+
+        while pages_fetched < max_pages:
+            # Build URL with pagination
+            fetch_url = url
+            if oldest_id:
+                fetch_url = f"{url}?before={oldest_id}"
+
+            # Fetch page
+            html = self._fetch_content(fetch_url)
+            if not html:
+                break
+
+            # Extract items from this page
+            page_items = extractor.extract(fetch_url, html, instructions)
+            if not page_items:
+                break
+
+            # Track seen URLs to avoid duplicates
+            new_items = []
+            for item in page_items:
+                if item.url not in seen_urls:
+                    seen_urls.add(item.url)
+                    new_items.append(item)
+
+            all_items.extend(new_items)
+            pages_fetched += 1
+
+            # Find oldest message ID for pagination
+            soup = BeautifulSoup(html, 'html.parser')
+            msg_ids = []
+            for msg in soup.find_all('div', class_='tgme_widget_message_wrap'):
+                msg_link = msg.find('a', class_='tgme_widget_message_date')
+                if msg_link:
+                    href = msg_link.get('href', '')
+                    if '/' in href:
+                        try:
+                            msg_ids.append(int(href.split('/')[-1]))
+                        except ValueError:
+                            pass
+
+            if not msg_ids:
+                break
+
+            new_oldest = min(msg_ids)
+            if oldest_id and new_oldest >= oldest_id:
+                break  # No more older messages
+            oldest_id = new_oldest
+
+            # Check if we've reached the target start date
+            if target_start and new_items:
+                # Find the oldest date in this batch
+                oldest_item_date = None
+                for item in new_items:
+                    if item.date_published:
+                        try:
+                            if 'T' in item.date_published:
+                                item_date = datetime.fromisoformat(item.date_published.replace('Z', '+00:00'))
+                                item_date_naive = item_date.replace(tzinfo=None)
+                                if oldest_item_date is None or item_date_naive < oldest_item_date:
+                                    oldest_item_date = item_date_naive
+                        except Exception:
+                            pass
+
+                if oldest_item_date and oldest_item_date < target_start:
+                    print(f"    Reached target date range at page {pages_fetched}")
+                    break
+
+            # If no date filtering needed, just get first page
+            if not need_older:
+                break
+
+            print(f"    Page {pages_fetched}: {len(new_items)} new items (total: {len(all_items)})")
+
+        return all_items
+
     def process_url(self, url: str, custom_instructions: Dict = None) -> List[ExtractedItem]:
         """
         Process a single URL and extract items.
@@ -906,21 +1206,44 @@ class DataCSVProcessor:
         """
         print(f"\n[*] Processing: {url[:80]}...")
 
-        # Fetch content
-        html = self._fetch_content(url)
-        if not html:
-            return []
-
         # Get appropriate extractor
         extractor = self._get_extractor(url)
         print(f"    Using extractor: {extractor.name}")
 
+        # Allow extractor to preprocess URL (e.g., Telegram t.me/x -> t.me/s/x)
+        fetch_url = extractor.preprocess_url(url)
+        if fetch_url != url:
+            print(f"    Normalized URL: {fetch_url[:60]}...")
+
         # Get combined instructions
         instructions = self._get_instructions_for_url(url, custom_instructions)
 
-        # Extract items
-        items = extractor.extract(url, html, instructions)
-        print(f"    Extracted {len(items)} items")
+        # Special handling for Telegram with date range - use pagination
+        if extractor.name == "telegram" and self.config.start_date:
+            print(f"    Fetching historical messages (date range specified)...")
+            items = self._process_telegram_with_pagination(fetch_url, extractor, instructions)
+            print(f"    Total extracted: {len(items)} items")
+        else:
+            # Standard single-page extraction
+            html = self._fetch_content(fetch_url)
+            if not html:
+                return []
+            items = extractor.extract(fetch_url, html, instructions)
+            print(f"    Extracted {len(items)} items")
+
+        # Apply date filtering
+        if self.config.start_date or self.config.end_date:
+            original_count = len(items)
+            items = self._filter_by_date(items)
+            if len(items) != original_count:
+                print(f"    Date filtered: {len(items)} items (from {original_count})")
+
+        # Apply fetch limit
+        if self.config.fetch_limit > 0:
+            original_count = len(items)
+            items = self._apply_fetch_limit(items)
+            if len(items) != original_count:
+                print(f"    Limited to: {len(items)} items")
 
         # Resolve redirects in parallel for speed
         if self.config.resolve_redirects and items:

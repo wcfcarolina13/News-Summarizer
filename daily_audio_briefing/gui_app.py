@@ -371,13 +371,44 @@ class AudioBriefingApp(ctk.CTk):
         self.chk_research_articles = ctk.CTkCheckBox(options_frame, text="Research Articles", variable=self.research_articles_var)
         self.chk_research_articles.pack(side="left", padx=(15, 0))
 
+        # Fetch options row (limit and date range) - similar to YouTube section
+        fetch_opts_frame = ctk.CTkFrame(self.extract_content, fg_color="transparent")
+        fetch_opts_frame.grid(row=3, column=0, sticky="ew", pady=5)
+
+        ctk.CTkLabel(fetch_opts_frame, text="Fetch:", font=ctk.CTkFont(weight="bold")).pack(side="left", padx=(0, 10))
+
+        self.extract_limit_entry = ctk.CTkEntry(fetch_opts_frame, width=50, placeholder_text="All")
+        self.extract_limit_entry.pack(side="left", padx=(0, 5))
+
+        ctk.CTkLabel(fetch_opts_frame, text="items").pack(side="left", padx=(0, 15))
+
+        # Date range controls
+        self.extract_range_var = ctk.BooleanVar(value=False)
+        self.chk_extract_range = ctk.CTkCheckBox(fetch_opts_frame, text="Date range", variable=self.extract_range_var, command=self.on_toggle_extract_range)
+        self.chk_extract_range.pack(side="left", padx=(0, 10))
+
+        self.extract_start_date = ctk.CTkEntry(fetch_opts_frame, width=100, placeholder_text="Start YYYY-MM-DD")
+        self.extract_start_date.pack(side="left", padx=(0, 2))
+
+        self.btn_extract_start_cal = ctk.CTkButton(fetch_opts_frame, width=28, text="📅", command=self.open_extract_start_calendar)
+        self.btn_extract_start_cal.pack(side="left", padx=(0, 10))
+
+        self.extract_end_date = ctk.CTkEntry(fetch_opts_frame, width=100, placeholder_text="End YYYY-MM-DD")
+        self.extract_end_date.pack(side="left", padx=(0, 2))
+
+        self.btn_extract_end_cal = ctk.CTkButton(fetch_opts_frame, width=28, text="📅", command=self.open_extract_end_calendar)
+        self.btn_extract_end_cal.pack(side="left")
+
+        # Initialize date range state
+        self.on_toggle_extract_range()
+
         # Extract button
         self.btn_extract = ctk.CTkButton(self.extract_content, text="Extract Links", command=self.start_extraction, fg_color="green")
-        self.btn_extract.grid(row=3, column=0, sticky="ew", pady=(10, 5))
+        self.btn_extract.grid(row=4, column=0, sticky="ew", pady=(10, 5))
 
         # Results section (hidden until extraction)
         self.extract_results_frame = ctk.CTkFrame(self.extract_content)
-        self.extract_results_frame.grid(row=4, column=0, sticky="ew", pady=5)
+        self.extract_results_frame.grid(row=5, column=0, sticky="ew", pady=5)
         self.extract_results_frame.grid_columnconfigure(0, weight=1)
         self.extract_results_frame.grid_remove()
 
@@ -534,7 +565,27 @@ class AudioBriefingApp(ctk.CTk):
         self.load_current_summary()
         self.load_api_key()
 
-    def _open_calendar_for(self, target_entry):
+    def on_toggle_extract_range(self):
+        """Toggle date range fields for data extraction."""
+        use_range = bool(self.extract_range_var.get())
+        state = "normal" if use_range else "disabled"
+        try:
+            self.extract_start_date.configure(state=state)
+            self.extract_end_date.configure(state=state)
+            self.btn_extract_start_cal.configure(state=state)
+            self.btn_extract_end_cal.configure(state=state)
+        except Exception:
+            pass
+
+    def open_extract_start_calendar(self):
+        """Open calendar for extraction start date."""
+        self._open_calendar_for(self.extract_start_date, is_extract=True)
+
+    def open_extract_end_calendar(self):
+        """Open calendar for extraction end date."""
+        self._open_calendar_for(self.extract_end_date, is_extract=True)
+
+    def _open_calendar_for(self, target_entry, is_extract=False):
         import calendar as _cal
         dlg = ctk.CTkToplevel(self)
         dlg.title("Select Date")
@@ -558,15 +609,49 @@ class AudioBriefingApp(ctk.CTk):
                 if d == 0: return
                 sel[0] = datetime.date(y,m,d)
                 target_entry.delete(0, "end"); target_entry.insert(0, sel[0].isoformat())
-                self.range_var.set(True); self.on_toggle_range(); dlg.destroy()
+                # Enable the appropriate date range checkbox
+                if is_extract:
+                    self.extract_range_var.set(True)
+                    self.on_toggle_extract_range()
+                else:
+                    self.range_var.set(True)
+                    self.on_toggle_range()
+                dlg.destroy()
             for r,row in enumerate(cal, start=1):
                 for c,d in enumerate(row):
                     txt = "" if d==0 else str(d)
                     ctk.CTkButton(grid, text=txt or " ", width=36, command=(lambda dd=d: click_day(dd))).grid(row=r, column=c, padx=2, pady=2)
         render()
         bar = ctk.CTkFrame(body); bar.pack(fill="x", pady=6)
-        ctk.CTkButton(bar, text="Prev", command=lambda: (ent_m.delete(0,"end"), ent_m.insert(0,str((int(ent_m.get())-2)%12+1)), render())).pack(side="left", padx=4)
-        ctk.CTkButton(bar, text="Next", command=lambda: (ent_m.delete(0,"end"), ent_m.insert(0,str((int(ent_m.get())%12)+1)), render())).pack(side="left", padx=4)
+
+        def go_prev():
+            try:
+                y, m = int(ent_y.get()), int(ent_m.get())
+                m -= 1
+                if m < 1:
+                    m = 12
+                    y -= 1
+                ent_y.delete(0, "end"); ent_y.insert(0, str(y))
+                ent_m.delete(0, "end"); ent_m.insert(0, str(m))
+                render()
+            except ValueError:
+                pass
+
+        def go_next():
+            try:
+                y, m = int(ent_y.get()), int(ent_m.get())
+                m += 1
+                if m > 12:
+                    m = 1
+                    y += 1
+                ent_y.delete(0, "end"); ent_y.insert(0, str(y))
+                ent_m.delete(0, "end"); ent_m.insert(0, str(m))
+                render()
+            except ValueError:
+                pass
+
+        ctk.CTkButton(bar, text="Prev", command=go_prev).pack(side="left", padx=4)
+        ctk.CTkButton(bar, text="Next", command=go_next).pack(side="left", padx=4)
         ctk.CTkButton(bar, text="Close", fg_color="gray", command=dlg.destroy).pack(side="right", padx=6)
 
     def open_start_calendar(self):
@@ -574,11 +659,6 @@ class AudioBriefingApp(ctk.CTk):
 
     def open_end_calendar(self):
         self._open_calendar_for(self.end_date_entry)
-
-
-        # Google Sign-In (disabled)
-        # self.btn_google_signin = ctk.CTkButton(self.frame_audio_controls, text="Sign in to Google", fg_color="#4285F4", command=self.sign_in_google)
-        # self.btn_google_signin.grid(row=5, column=0, columnspan=2, padx=10, pady=10, sticky="ew")
 
     def load_current_summary(self):
         """Load current summary from file into textbox."""
@@ -3281,6 +3361,19 @@ Click the '? Tutorial' button next to the status bar!""",
         else:
             self.extract_content.grid()
             self.extract_toggle_btn.configure(text="Collapse")
+            # Refresh config list when expanding
+            self._refresh_extraction_configs()
+
+    def _refresh_extraction_configs(self):
+        """Refresh the extraction config dropdown with current files."""
+        configs = self._get_extraction_configs()
+        current = self.extract_config_var.get()
+        self.extract_config_combo.configure(values=configs)
+        # Keep current selection if still valid
+        if current in configs:
+            self.extract_config_var.set(current)
+        else:
+            self.extract_config_var.set("Default")
 
     def set_extract_mode(self, mode):
         """Switch between URL and HTML extraction modes."""
@@ -3296,14 +3389,17 @@ Click the '? Tutorial' button next to the status bar!""",
             self.url_input_frame.grid_remove()
             self.html_input_frame.grid()
 
-    def _get_data_processor(self):
-        """Get or create the data processor (lazy initialization)."""
-        if self.data_processor is None:
-            config = ExtractionConfig(
-                resolve_redirects=False,  # Speed up by disabling redirect resolution
-                strip_tracking_params=True
-            )
-            self.data_processor = DataCSVProcessor(config)
+    def _get_data_processor(self, fetch_limit=0, start_date="", end_date=""):
+        """Get or create the data processor with updated config."""
+        config = ExtractionConfig(
+            resolve_redirects=False,  # Speed up by disabling redirect resolution
+            strip_tracking_params=True,
+            fetch_limit=fetch_limit,
+            start_date=start_date,
+            end_date=end_date
+        )
+        # Always create a new processor with the current config
+        self.data_processor = DataCSVProcessor(config)
         return self.data_processor
 
     def start_extraction(self):
@@ -3329,13 +3425,26 @@ Click the '? Tutorial' button next to the status bar!""",
         research_articles = self.research_articles_var.get()
         api_key = self.gemini_key_entry.get().strip()  # For LLM analysis
 
+        # Get fetch limit
+        try:
+            fetch_limit = int(self.extract_limit_entry.get().strip() or "0")
+        except ValueError:
+            fetch_limit = 0
+
+        # Get date range if enabled
+        start_date = ""
+        end_date = ""
+        if self.extract_range_var.get():
+            start_date = self.extract_start_date.get().strip()
+            end_date = self.extract_end_date.get().strip()
+
         # Disable button during extraction
         self.btn_extract.configure(state="disabled", text="Extracting...")
         self.label_status.configure(text="Extracting links...", text_color="orange")
 
         def extract_thread():
             try:
-                processor = self._get_data_processor()
+                processor = self._get_data_processor(fetch_limit, start_date, end_date)
 
                 # Load custom instructions if not default
                 custom_instructions = None
@@ -3456,25 +3565,34 @@ Click the '? Tutorial' button next to the status bar!""",
             self.label_status.configure(text="No items to copy.", text_color="orange")
             return
 
+        # Check if using RWA config for hyperlink format
+        config_name = self.extract_config_var.get()
+        use_hyperlink = config_name.lower() == "rwa"
+
         # Format as text
         lines = []
         for item in self.extracted_items:
-            line = f"{item.title}"
-            if item.category:
-                line += f" [{item.category}]"
-            line += f"\n  {item.url}"
-            if item.custom_fields.get("grid_matched"):
-                grid_name = item.custom_fields.get("grid_entity_name", "")
-                line += f"\n  Grid: {grid_name}"
-            lines.append(line)
+            if use_hyperlink:
+                # Hyperlink format for Google Docs: [Title](URL)
+                lines.append(f"[{item.title}]({item.url})")
+            else:
+                line = f"{item.title}"
+                if item.category:
+                    line += f" [{item.category}]"
+                line += f"\n  {item.url}"
+                if item.custom_fields.get("grid_matched"):
+                    grid_name = item.custom_fields.get("grid_entity_name", "")
+                    line += f"\n  Grid: {grid_name}"
+                lines.append(line)
 
-        text = "\n\n".join(lines)
+        text = "\n\n".join(lines) if not use_hyperlink else "\n".join(lines)
 
         # Copy to clipboard
         self.clipboard_clear()
         self.clipboard_append(text)
 
-        self.label_status.configure(text=f"Copied {len(self.extracted_items)} items to clipboard.", text_color="green")
+        format_note = " (hyperlink format)" if use_hyperlink else ""
+        self.label_status.configure(text=f"Copied {len(self.extracted_items)} items to clipboard{format_note}.", text_color="green")
 
 if __name__ == "__main__":
     app = AudioBriefingApp()
