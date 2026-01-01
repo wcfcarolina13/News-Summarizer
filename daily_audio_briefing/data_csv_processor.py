@@ -1414,26 +1414,52 @@ class DataCSVProcessor:
                             pass  # LLM analysis is optional
 
                 # 4. ALWAYS check for USDT/Solana/Starknet support (even with fuzzy matches)
-                # This helps determine if entities need to be added to admin
-                support_check_terms = ['USDT', 'Tether', 'Solana', 'SOL', 'Starknet', 'StarkNet', 'STRK']
-                support_pattern = re.compile(
-                    r'\b(' + '|'.join(re.escape(t) for t in support_check_terms) + r')\b',
-                    re.IGNORECASE
-                )
-                support_mentions = support_pattern.findall(article_text)
-                if support_mentions:
-                    # Normalize and deduplicate
-                    normalized_support = set()
-                    for s in support_mentions:
-                        s_lower = s.lower()
-                        if s_lower in ['usdt', 'tether']:
-                            normalized_support.add('USDT')
-                        elif s_lower in ['solana', 'sol']:
-                            normalized_support.add('Solana')
-                        elif s_lower in ['starknet', 'strk']:
-                            normalized_support.add('Starknet')
-                    if normalized_support:
-                        comments.append(f"Check support: {', '.join(sorted(normalized_support))}")
+                # Extract context to confirm actual support vs just mentions
+                support_findings = []
+                support_ecosystems = {
+                    'Solana': ['solana', 'sol'],
+                    'Starknet': ['starknet', 'strk'],
+                    'USDT': ['usdt', 'tether']
+                }
+
+                # Positive support indicators
+                support_indicators = [
+                    r'(?:launch|deploy|build|integrate|support|add|enable|live|available|expand)\w*\s+(?:on|to|for|with)',
+                    r'(?:on|to|for|with)\s+\w*\s*(?:launch|deploy|integration|support)',
+                    r'(?:native|built|powered)\s+(?:on|by)',
+                    r'(?:chain|network|blockchain|ecosystem)',
+                    r'(?:wallet|swap|bridge|dex|defi|nft)',
+                ]
+                support_pattern_str = '|'.join(support_indicators)
+
+                for ecosystem, terms in support_ecosystems.items():
+                    term_pattern = '|'.join(re.escape(t) for t in terms)
+                    # Find mentions with surrounding context (100 chars before/after)
+                    context_pattern = re.compile(
+                        r'.{0,100}\b(' + term_pattern + r')\b.{0,100}',
+                        re.IGNORECASE | re.DOTALL
+                    )
+
+                    matches = context_pattern.findall(article_text)
+                    if matches:
+                        # Check if any context suggests actual support
+                        full_contexts = context_pattern.finditer(article_text)
+                        for ctx_match in full_contexts:
+                            context = ctx_match.group(0).strip()
+                            # Check for support indicators in context
+                            if re.search(support_pattern_str, context, re.IGNORECASE):
+                                # Clean up the context for display
+                                context_clean = ' '.join(context.split())[:150]
+                                support_findings.append(f"{ecosystem}: \"{context_clean}...\"")
+                                break
+                        else:
+                            # No strong support indicator, but term was mentioned
+                            support_findings.append(f"{ecosystem}: mentioned (verify manually)")
+
+                if support_findings:
+                    # Include source URL for reference
+                    support_summary = "; ".join(support_findings[:3])  # Limit to 3 ecosystems
+                    comments.append(f"Support check [{item.url}]: {support_summary}")
 
                 # 5. Add entities mentioned section for verification
                 if entities_mentioned:
