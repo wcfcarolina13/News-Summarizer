@@ -565,8 +565,30 @@ class AudioBriefingApp(ctk.CTk):
                     ctk.CTkButton(grid, text=txt or " ", width=36, command=(lambda dd=d: click_day(dd))).grid(row=r, column=c, padx=2, pady=2)
         render()
         bar = ctk.CTkFrame(body); bar.pack(fill="x", pady=6)
-        ctk.CTkButton(bar, text="Prev", command=lambda: (ent_m.delete(0,"end"), ent_m.insert(0,str((int(ent_m.get())-2)%12+1)), render())).pack(side="left", padx=4)
-        ctk.CTkButton(bar, text="Next", command=lambda: (ent_m.delete(0,"end"), ent_m.insert(0,str((int(ent_m.get())%12)+1)), render())).pack(side="left", padx=4)
+        def go_prev():
+            m = int(ent_m.get())
+            y = int(ent_y.get())
+            if m == 1:
+                m = 12
+                y -= 1
+            else:
+                m -= 1
+            ent_m.delete(0, "end"); ent_m.insert(0, str(m))
+            ent_y.delete(0, "end"); ent_y.insert(0, str(y))
+            render()
+        def go_next():
+            m = int(ent_m.get())
+            y = int(ent_y.get())
+            if m == 12:
+                m = 1
+                y += 1
+            else:
+                m += 1
+            ent_m.delete(0, "end"); ent_m.insert(0, str(m))
+            ent_y.delete(0, "end"); ent_y.insert(0, str(y))
+            render()
+        ctk.CTkButton(bar, text="Prev", command=go_prev).pack(side="left", padx=4)
+        ctk.CTkButton(bar, text="Next", command=go_next).pack(side="left", padx=4)
         ctk.CTkButton(bar, text="Close", fg_color="gray", command=dlg.destroy).pack(side="right", padx=6)
 
     def open_start_calendar(self):
