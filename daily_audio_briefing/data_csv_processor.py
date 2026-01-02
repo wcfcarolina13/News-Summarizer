@@ -658,46 +658,43 @@ class CSVManager:
             print("No items to write.")
             return output_path
 
-        columns = list(custom_columns or self.config.csv_columns)
-
-        # Define the canonical Grid column order to match the user's sheet
-        grid_column_order = [
+        # Define the CANONICAL column order matching the user's sheet EXACTLY
+        # This order must be used regardless of append mode or existing files
+        canonical_columns = [
+            'title', 'url', 'source_name', 'category', 'description', 'author',
+            'date_published', 'date_extracted',
             'grid_asset_id', 'grid_matched', 'grid_profile_id', 'grid_confidence',
             'grid_entity_name', 'grid_match_count', 'grid_product_id', 'grid_profile_name',
             'grid_product_name', 'grid_entity_id', 'grid_asset_name', 'grid_subjects',
             'comments', 'grid_asset_ticker'
         ]
 
-        # Collect all custom fields from items
-        all_custom_fields = set()
+        # Start with canonical columns
+        columns = list(canonical_columns)
+
+        # Collect any extra custom fields from items (not in canonical list)
+        extra_fields = set()
         for item in items:
-            all_custom_fields.update(item.custom_fields.keys())
+            for key in item.custom_fields.keys():
+                if key not in columns:
+                    extra_fields.add(key)
 
-        # Add Grid columns in the correct order, then any remaining custom fields
-        for field in grid_column_order:
-            if field in all_custom_fields and field not in columns:
-                columns.append(field)
-                all_custom_fields.discard(field)
-
-        # Add any remaining custom fields not in the Grid order
-        for field in sorted(all_custom_fields):
-            if field not in columns:
-                columns.append(field)
+        # Add extra fields at the end (sorted for consistency)
+        columns.extend(sorted(extra_fields))
 
         # Check if file exists for append mode
         file_exists = os.path.exists(output_path)
         mode = 'a' if (self.config.append_mode and file_exists) else 'w'
         write_header = not (self.config.append_mode and file_exists)
 
-        # If appending, read existing columns to maintain consistency
+        # When appending, we STILL use canonical order but add any new columns from existing file
         if self.config.append_mode and file_exists:
             existing_columns = self._read_existing_columns(output_path)
             if existing_columns:
-                # Merge columns, keeping existing order and adding new ones
-                for col in columns:
-                    if col not in existing_columns:
-                        existing_columns.append(col)
-                columns = existing_columns
+                # Add any columns from existing file that aren't in our canonical list
+                for col in existing_columns:
+                    if col not in columns:
+                        columns.append(col)
 
         with open(output_path, mode, newline='', encoding='utf-8') as f:
             writer = csv.DictWriter(f, fieldnames=columns, extrasaction='ignore')
@@ -1428,51 +1425,54 @@ class DataCSVProcessor:
 
                 # 4. ALWAYS check for USDT/Solana/Starknet support (even with fuzzy matches)
                 # Extract context to confirm actual support vs just mentions
-                support_findings = []
-                support_ecosystems = {
-                    'Solana': ['solana', 'sol'],
-                    'Starknet': ['starknet', 'strk'],
-                    'USDT': ['usdt', 'tether']
-                }
+                try:
+                    support_findings = []
+                    support_ecosystems = {
+                        'Solana': ['solana', 'sol'],
+                        'Starknet': ['starknet', 'strk'],
+                        'USDT': ['usdt', 'tether']
+                    }
 
-                # Positive support indicators
-                support_indicators = [
-                    r'(?:launch|deploy|build|integrate|support|add|enable|live|available|expand)\w*\s+(?:on|to|for|with)',
-                    r'(?:on|to|for|with)\s+\w*\s*(?:launch|deploy|integration|support)',
-                    r'(?:native|built|powered)\s+(?:on|by)',
-                    r'(?:chain|network|blockchain|ecosystem)',
-                    r'(?:wallet|swap|bridge|dex|defi|nft)',
-                ]
-                support_pattern_str = '|'.join(support_indicators)
+                    # Positive support indicators
+                    support_indicators = [
+                        r'(?:launch|deploy|build|integrate|support|add|enable|live|available|expand)\w*\s+(?:on|to|for|with)',
+                        r'(?:on|to|for|with)\s+\w*\s*(?:launch|deploy|integration|support)',
+                        r'(?:native|built|powered)\s+(?:on|by)',
+                        r'(?:chain|network|blockchain|ecosystem)',
+                        r'(?:wallet|swap|bridge|dex|defi|nft)',
+                    ]
+                    support_pattern_str = '|'.join(support_indicators)
 
-                for ecosystem, terms in support_ecosystems.items():
-                    term_pattern = '|'.join(re.escape(t) for t in terms)
-                    # Find mentions with surrounding context (100 chars before/after)
-                    context_pattern = re.compile(
-                        r'.{0,100}\b(' + term_pattern + r')\b.{0,100}',
-                        re.IGNORECASE | re.DOTALL
-                    )
+                    for ecosystem, terms in support_ecosystems.items():
+                        term_pattern = '|'.join(re.escape(t) for t in terms)
+                        # Find mentions with surrounding context (100 chars before/after)
+                        context_pattern = re.compile(
+                            r'.{0,100}\b(' + term_pattern + r')\b.{0,100}',
+                            re.IGNORECASE | re.DOTALL
+                        )
 
-                    matches = context_pattern.findall(article_text)
-                    if matches:
-                        # Check if any context suggests actual support
-                        full_contexts = context_pattern.finditer(article_text)
-                        for ctx_match in full_contexts:
-                            context = ctx_match.group(0).strip()
-                            # Check for support indicators in context
-                            if re.search(support_pattern_str, context, re.IGNORECASE):
-                                # Clean up the context for display
-                                context_clean = ' '.join(context.split())[:150]
-                                support_findings.append(f"{ecosystem}: \"{context_clean}...\"")
-                                break
-                        else:
-                            # No strong support indicator, but term was mentioned
-                            support_findings.append(f"{ecosystem}: mentioned (verify manually)")
+                        context_matches = context_pattern.findall(article_text)
+                        if context_matches:
+                            # Check if any context suggests actual support
+                            full_contexts = context_pattern.finditer(article_text)
+                            for ctx_match in full_contexts:
+                                context = ctx_match.group(0).strip()
+                                # Check for support indicators in context
+                                if re.search(support_pattern_str, context, re.IGNORECASE):
+                                    # Clean up the context for display
+                                    context_clean = ' '.join(context.split())[:150]
+                                    support_findings.append(f"{ecosystem}: \"{context_clean}...\"")
+                                    break
+                            else:
+                                # No strong support indicator, but term was mentioned
+                                support_findings.append(f"{ecosystem}: mentioned (verify manually)")
 
-                if support_findings:
-                    # Include source URL for reference
-                    support_summary = "; ".join(support_findings[:3])  # Limit to 3 ecosystems
-                    comments.append(f"Support check [{item.url}]: {support_summary}")
+                    if support_findings:
+                        # Include source URL for reference
+                        support_summary = "; ".join(support_findings[:3])  # Limit to 3 ecosystems
+                        comments.append(f"Support check [{item.url}]: {support_summary}")
+                except Exception as support_err:
+                    print(f"    [!] Support check error: {support_err}")
 
                 # 5. Add entities mentioned section for verification
                 if entities_mentioned:
