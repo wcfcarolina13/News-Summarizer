@@ -658,15 +658,29 @@ class CSVManager:
             print("No items to write.")
             return output_path
 
-        columns = custom_columns or self.config.csv_columns
+        columns = list(custom_columns or self.config.csv_columns)
 
-        # Check for custom fields and add them to columns
+        # Define the canonical Grid column order to match the user's sheet
+        grid_column_order = [
+            'grid_asset_id', 'grid_matched', 'grid_profile_id', 'grid_confidence',
+            'grid_entity_name', 'grid_match_count', 'grid_product_id', 'grid_profile_name',
+            'grid_product_name', 'grid_entity_id', 'grid_asset_name', 'grid_subjects',
+            'comments', 'grid_asset_ticker'
+        ]
+
+        # Collect all custom fields from items
         all_custom_fields = set()
         for item in items:
             all_custom_fields.update(item.custom_fields.keys())
 
-        # Add custom fields to columns if not already present
-        for field in all_custom_fields:
+        # Add Grid columns in the correct order, then any remaining custom fields
+        for field in grid_column_order:
+            if field in all_custom_fields and field not in columns:
+                columns.append(field)
+                all_custom_fields.discard(field)
+
+        # Add any remaining custom fields not in the Grid order
+        for field in sorted(all_custom_fields):
             if field not in columns:
                 columns.append(field)
 
