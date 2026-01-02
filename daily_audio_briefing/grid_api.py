@@ -112,60 +112,37 @@ class GridMultiMatch:
         return [m for m in self.matches if m.grid_type == "entity"]
 
     def to_dict(self) -> Dict[str, Any]:
-        """Return Grid match data with all matched subjects."""
-        result = {
-            "grid_matched": self.matched,
-            "grid_match_count": len(self.matches),
-        }
-
-        # Add all matched subjects as comma-separated list
-        if self.matches:
-            result["grid_subjects"] = ", ".join(m.name for m in self.matches)
-        else:
-            result["grid_subjects"] = ""
-
-        # Profile fields (first match or empty)
+        """Return Grid match data in the exact column order matching the sheet."""
+        # Get values
         profiles = self.profiles
-        if profiles:
-            result["grid_profile_id"] = profiles[0].grid_id
-            result["grid_profile_name"] = profiles[0].name
-        else:
-            result["grid_profile_id"] = ""
-            result["grid_profile_name"] = ""
-
-        # Product fields
         products = self.products
-        if products:
-            result["grid_product_id"] = products[0].grid_id
-            result["grid_product_name"] = products[0].name
-        else:
-            result["grid_product_id"] = ""
-            result["grid_product_name"] = ""
-
-        # Asset fields
         assets = self.assets
-        if assets:
-            result["grid_asset_id"] = assets[0].grid_id
-            result["grid_asset_name"] = assets[0].name
-            result["grid_asset_ticker"] = assets[0].ticker
-        else:
-            result["grid_asset_id"] = ""
-            result["grid_asset_name"] = ""
-            result["grid_asset_ticker"] = ""
-
-        # Entity fields (legal structures)
         entities = self.entities
-        if entities:
-            result["grid_entity_id"] = entities[0].grid_id
-            result["grid_entity_name"] = entities[0].name
-        else:
-            result["grid_entity_id"] = ""
-            result["grid_entity_name"] = ""
 
-        # Primary match confidence
-        result["grid_confidence"] = round(self.primary.confidence, 2) if self.primary else 0
+        # Build result in EXACT order matching the sheet:
+        # grid_asset_id, grid_matched, grid_profile_id, grid_confidence,
+        # grid_entity_name, grid_match_count, grid_product_id, grid_profile_name,
+        # grid_product_name, grid_entity_id, grid_asset_name, grid_subjects,
+        # comments (added elsewhere), grid_asset_ticker
+        from collections import OrderedDict
+        result = OrderedDict([
+            ("grid_asset_id", assets[0].grid_id if assets else ""),
+            ("grid_matched", self.matched),
+            ("grid_profile_id", profiles[0].grid_id if profiles else ""),
+            ("grid_confidence", round(self.primary.confidence, 2) if self.primary else 0),
+            ("grid_entity_name", entities[0].name if entities else ""),
+            ("grid_match_count", len(self.matches)),
+            ("grid_product_id", products[0].grid_id if products else ""),
+            ("grid_profile_name", profiles[0].name if profiles else ""),
+            ("grid_product_name", products[0].name if products else ""),
+            ("grid_entity_id", entities[0].grid_id if entities else ""),
+            ("grid_asset_name", assets[0].name if assets else ""),
+            ("grid_subjects", ", ".join(m.name for m in self.matches) if self.matches else ""),
+            # comments is added separately in data_csv_processor
+            ("grid_asset_ticker", assets[0].ticker if assets else ""),
+        ])
 
-        return result
+        return dict(result)
 
 
 # =============================================================================
