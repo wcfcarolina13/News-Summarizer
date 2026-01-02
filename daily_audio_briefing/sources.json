@@ -103,6 +103,10 @@
     {
       "url": "https://www.youtube.com/@TheJayMartinShow/videos",
       "enabled": true
+    },
+    {
+      "url": "https://www.youtube.com/@RealLifeLore",
+      "enabled": true
     }
   ]
 }

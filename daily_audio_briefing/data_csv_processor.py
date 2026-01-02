@@ -466,7 +466,11 @@ class BeehiivExtractor(BaseExtractor):
     def _get_link_context(self, link, parent_element) -> str:
         """Get the text context around a link."""
         if parent_element and parent_element != link:
-            return parent_element.get_text(strip=True)[:200]
+            # Use separator=' ' to preserve word boundaries between elements
+            text = parent_element.get_text(separator=' ', strip=True)
+            # Normalize multiple spaces to single space
+            text = ' '.join(text.split())
+            return text[:200]
         return ""
 
     def _extract_title_from_url(self, url: str) -> str:
@@ -1644,27 +1648,50 @@ class DataCSVProcessor:
                                     found_ecosystem_terms.append(term_title)
 
                         if term_counts:
-                            # Format term counts for display
-                            comment_parts = []
-                            for term_name, count in term_counts.items():
-                                comment_parts.append(f"{term_name} ({count}x)")
-                            # Sort by count descending
-                            comment_parts.sort(key=lambda x: int(x.split('(')[1].rstrip('x)')), reverse=True)
+                            # Sort by count descending and format for display
+                            sorted_terms = sorted(term_counts.items(), key=lambda x: x[1], reverse=True)
+                            comment_parts = [f"{name} ({count}x)" for name, count in sorted_terms]
                             if comment_parts:
                                 comments.append(f"Mentions: {', '.join(comment_parts)}")
                 except Exception as regex_err:
                     print(f"    [!] Regex error: {regex_err}")
 
-                # 2. Extract entities mentioned in article for user verification
-                # This helps users verify if fuzzy matches are correct
+                # 2. Extract the MAIN SUBJECT of the article (company/project being discussed)
+                # This is critical for articles about entities NOT in Grid
+                main_subject = None
+                try:
+                    # Look for the main subject in common article patterns
+                    subject_patterns = [
+                        # "X raises/secures/closes $Y" pattern (very common for funding news)
+                        r'\b([A-Z][a-z]+(?:[A-Z][a-z]*)*)\s+(?:raises?|secures?|closes?|announces?|launches?|unveils?)\b',
+                        # "startup X" or "company X" pattern
+                        r'\b(?:startup|company|protocol|platform|exchange|wallet|project)\s+([A-Z][a-z]+(?:[A-Z][a-z]*)*)\b',
+                        # "X, a/the startup/company" pattern
+                        r'\b([A-Z][a-z]+(?:[A-Z][a-z]*)*),?\s+(?:a|the)\s+(?:startup|company|protocol|platform)\b',
+                    ]
+
+                    for sp in subject_patterns:
+                        subject_match = re.search(sp, article_text[:500], re.IGNORECASE)
+                        if subject_match:
+                            candidate = subject_match.group(1)
+                            # Verify it's not a common word
+                            if candidate and len(candidate) > 2 and candidate.lower() not in ['the', 'this', 'that', 'which', 'their']:
+                                main_subject = candidate
+                                break
+                except Exception:
+                    pass
+
+                # 3. Extract other entities mentioned in article for user verification
                 try:
                     entity_patterns = [
-                        # Company/project names (capitalized words, often with common suffixes)
+                        # Company/project names with suffixes
                         r'\b([A-Z][a-z]+(?:\s+[A-Z][a-z]+){0,2})\s+(?:Labs?|Protocol|Network|Finance|Capital|Ventures|Fund|Foundation|Exchange|Wallet|DAO)\b',
-                        # Crypto project names (often all caps or CamelCase)
-                        r'\b([A-Z]{2,}[a-z]*(?:[A-Z][a-z]*)*)\b',
-                        # Common startup naming patterns
-                        r'\b([A-Z][a-z]+(?:Fi|Swap|Dex|Pay|Lend|Stake|Mint|Chain|Layer|Bridge|Vault))\b',
+                        # CamelCase names (like DeFi projects)
+                        r'\b([A-Z][a-z]+[A-Z][a-z]+(?:[A-Z][a-z]*)*)\b',
+                        # Names with crypto suffixes
+                        r'\b([A-Z][a-z]+(?:Fi|Swap|Dex|Pay|Lend|Stake|Mint|Chain|Layer|Bridge|Vault|Coin|Token))\b',
+                        # Simple capitalized names (4+ chars to avoid noise)
+                        r'\b([A-Z][a-z]{3,})\b',
                     ]
 
                     found_entities = set()
@@ -1673,20 +1700,38 @@ class DataCSVProcessor:
                         for m in matches:
                             if isinstance(m, tuple):
                                 m = m[0]
-                            # Filter out common words and short strings
-                            if m and len(m) > 2 and m.lower() not in ['the', 'and', 'for', 'with', 'from', 'that', 'this', 'has', 'have', 'will', 'can', 'are', 'was', 'were', 'been', 'being']:
+                            if m and len(m) > 3:
                                 found_entities.add(m)
 
-                    # Filter to meaningful entities (skip very common words)
-                    common_words = {'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday', 'Sunday',
-                                   'January', 'February', 'March', 'April', 'May', 'June', 'July', 'August',
-                                   'September', 'October', 'November', 'December', 'CEO', 'CTO', 'CFO', 'COO'}
-                    entities_mentioned = [e for e in found_entities if e not in common_words][:8]  # Limit to 8
+                    # Filter out common words
+                    common_words = {
+                        'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday', 'Sunday',
+                        'January', 'February', 'March', 'April', 'May', 'June', 'July', 'August',
+                        'September', 'October', 'November', 'December', 'CEO', 'CTO', 'CFO', 'COO',
+                        'The', 'This', 'That', 'They', 'Their', 'There', 'These', 'Those',
+                        'With', 'From', 'Into', 'About', 'After', 'Before', 'During', 'Through',
+                        'However', 'According', 'While', 'Although', 'Because', 'Since', 'Until',
+                        'Read', 'More', 'Also', 'Other', 'Some', 'Most', 'Many', 'Much', 'Such',
+                        'New', 'First', 'Last', 'Next', 'Year', 'Years', 'Month', 'Week', 'Day'
+                    }
+                    entities_mentioned = [e for e in found_entities if e not in common_words]
+
+                    # Add main subject at the beginning if found
+                    if main_subject and main_subject not in entities_mentioned:
+                        entities_mentioned.insert(0, main_subject)
+                    elif main_subject:
+                        # Move main subject to front
+                        entities_mentioned.remove(main_subject)
+                        entities_mentioned.insert(0, main_subject)
+
+                    entities_mentioned = entities_mentioned[:8]  # Limit to 8
                 except Exception as ent_err:
                     print(f"    [!] Entity extraction error: {ent_err}")
                     entities_mentioned = []
+                    if main_subject:
+                        entities_mentioned = [main_subject]
 
-                # 3. Try Grid matching - first on ecosystem terms found, then on keywords
+                # 4. Try Grid matching - first on ecosystem terms found, then on keywords
                 if grid_available:
                     article_matcher = GridEntityMatcher()
                     best_match = None
@@ -1746,7 +1791,7 @@ class DataCSVProcessor:
                             print(f"       [!] LLM error: {llm_err}")
                             pass  # LLM analysis is optional
 
-                # 4. ALWAYS check for USDT/Solana/Starknet support (even with fuzzy matches)
+                # 5. ALWAYS check for USDT/Solana/Starknet support (even with fuzzy matches)
                 # Extract context to confirm actual support vs just mentions
                 try:
                     support_findings = []
@@ -1797,7 +1842,7 @@ class DataCSVProcessor:
                 except Exception as support_err:
                     print(f"    [!] Support check error: {support_err}")
 
-                # 5. Add entities mentioned section for verification
+                # 6. Add entities mentioned section for verification
                 if entities_mentioned:
                     comments.append(f"Entities: {', '.join(entities_mentioned[:6])}")
 
