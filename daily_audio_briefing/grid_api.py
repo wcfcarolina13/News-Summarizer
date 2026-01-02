@@ -112,60 +112,37 @@ class GridMultiMatch:
         return [m for m in self.matches if m.grid_type == "entity"]
 
     def to_dict(self) -> Dict[str, Any]:
-        """Return Grid match data with all matched subjects."""
-        result = {
-            "grid_matched": self.matched,
-            "grid_match_count": len(self.matches),
-        }
-
-        # Add all matched subjects as comma-separated list
-        if self.matches:
-            result["grid_subjects"] = ", ".join(m.name for m in self.matches)
-        else:
-            result["grid_subjects"] = ""
-
-        # Profile fields (first match or empty)
+        """Return Grid match data in the exact column order matching the sheet."""
+        # Get values
         profiles = self.profiles
-        if profiles:
-            result["grid_profile_id"] = profiles[0].grid_id
-            result["grid_profile_name"] = profiles[0].name
-        else:
-            result["grid_profile_id"] = ""
-            result["grid_profile_name"] = ""
-
-        # Product fields
         products = self.products
-        if products:
-            result["grid_product_id"] = products[0].grid_id
-            result["grid_product_name"] = products[0].name
-        else:
-            result["grid_product_id"] = ""
-            result["grid_product_name"] = ""
-
-        # Asset fields
         assets = self.assets
-        if assets:
-            result["grid_asset_id"] = assets[0].grid_id
-            result["grid_asset_name"] = assets[0].name
-            result["grid_asset_ticker"] = assets[0].ticker
-        else:
-            result["grid_asset_id"] = ""
-            result["grid_asset_name"] = ""
-            result["grid_asset_ticker"] = ""
-
-        # Entity fields (legal structures)
         entities = self.entities
-        if entities:
-            result["grid_entity_id"] = entities[0].grid_id
-            result["grid_entity_name"] = entities[0].name
-        else:
-            result["grid_entity_id"] = ""
-            result["grid_entity_name"] = ""
 
-        # Primary match confidence
-        result["grid_confidence"] = round(self.primary.confidence, 2) if self.primary else 0
+        # Build result in EXACT order matching the sheet:
+        # grid_asset_id, grid_matched, grid_profile_id, grid_confidence,
+        # grid_entity_name, grid_match_count, grid_product_id, grid_profile_name,
+        # grid_product_name, grid_entity_id, grid_asset_name, grid_subjects,
+        # comments (added elsewhere), grid_asset_ticker
+        from collections import OrderedDict
+        result = OrderedDict([
+            ("grid_asset_id", assets[0].grid_id if assets else ""),
+            ("grid_matched", self.matched),
+            ("grid_profile_id", profiles[0].grid_id if profiles else ""),
+            ("grid_confidence", round(self.primary.confidence, 2) if self.primary else 0),
+            ("grid_entity_name", entities[0].name if entities else ""),
+            ("grid_match_count", len(self.matches)),
+            ("grid_product_id", products[0].grid_id if products else ""),
+            ("grid_profile_name", profiles[0].name if profiles else ""),
+            ("grid_product_name", products[0].name if products else ""),
+            ("grid_entity_id", entities[0].grid_id if entities else ""),
+            ("grid_asset_name", assets[0].name if assets else ""),
+            ("grid_subjects", ", ".join(m.name for m in self.matches) if self.matches else ""),
+            # comments is added separately in data_csv_processor
+            ("grid_asset_ticker", assets[0].ticker if assets else ""),
+        ])
 
-        return result
+        return dict(result)
 
 
 # =============================================================================
@@ -845,7 +822,7 @@ Existing Assets ({len(assets)}):
 {chr(10).join([f"- {a.get('name', '?')} ({a.get('ticker', '?')})" for a in assets[:5]]) or '- None listed'}
 """
 
-        prompt = f"""Analyze this news article about a blockchain project and compare it to the project's existing Grid profile data.
+        prompt = f"""Analyze this news article and determine if it contains information that should update The Grid's factual database.
 
 ARTICLE:
 {article_text[:2000]}
@@ -853,17 +830,45 @@ ARTICLE:
 CURRENT GRID PROFILE:
 {profile_context}
 
-Based on the article, suggest ONE of the following in 15 words or less:
-1. A description update if the article reveals new info about the project
-2. A new product to add if a new product/feature is announced
-3. A new asset to add if a new token is announced
-4. "No updates needed" if the Grid data is already accurate
+The Grid maintains OBJECTIVE, FACTUAL data about what projects ARE and DO - not news events.
 
-Respond with just the suggestion, no explanation. Format: [UPDATE TYPE]: suggestion
+SUGGEST AN UPDATE ONLY IF the article reveals:
+
+1. DESCRIPTION - A change to the project's core purpose, product, or service:
+   - What problem it solves and how (e.g., "DEX implementing smart order routing for optimal price execution")
+   - Technical capabilities (e.g., "Non-custodial wallet supporting SPL token standards")
+   - Target audience and use cases
+   Format: Objective, third-person, present tense, no marketing language. Max 200 chars.
+
+2. PRODUCT - A NEW product/service being launched (not updates to existing):
+   - Name + what it does and who it's for
+   Format: "[Product Name]: [concise objective description]"
+
+3. ASSET - A NEW token being created:
+   - Name, ticker, and technical function
+   Format: "[Token Name] ([TICKER]): [token type] for [protocol], enabling [function]"
+
+4. CHAIN_SUPPORT - Project now deploys on or integrates with a new blockchain:
+   - Only for actual deployment/integration, not just mentions
+   Format: "Added [Chain] support" or "Now deployed on [Chain]"
+
+DO NOT SUGGEST UPDATES FOR:
+- Lawsuits, legal issues, regulatory actions
+- Hacks, exploits, security incidents
+- Funding rounds, investments, valuations
+- Personnel changes, hirings, departures
+- Price movements, trading volume
+- Partnerships, collaborations (unless adding new chain support)
+- Temporary events, promotions, campaigns
+
+These are NEWS EVENTS, not changes to what the project fundamentally is or does.
+
+Respond with ONLY the suggestion or "No updates needed". Format: [TYPE]: suggestion
 Examples:
-- DESCRIPTION: Now supports cross-chain bridging and DeFi integrations
-- PRODUCT: Mobile App for iOS and Android
-- ASSET: Governance token XYZ
+- DESCRIPTION: Serum helps traders buy and sell digital assets using Solana's blockchain with exact price orders and trading rewards.
+- PRODUCT: Jupiter Mobile: iOS and Android app for swapping tokens with hardware wallet support.
+- ASSET: MNGO (MNGO): Protocol governance token implementing stake-weighted voting and fee distribution.
+- CHAIN_SUPPORT: Added Starknet deployment
 - No updates needed"""
 
         response = model.generate_content(prompt)
