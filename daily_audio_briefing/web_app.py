@@ -1402,14 +1402,16 @@ HTML_TEMPLATE = '''
         function downloadExtractedCSV() {
             if (!extractedItems.length) return;
 
-            // Base headers (include comments for research results)
-            let headers = ['title', 'url', 'category', 'source_name', 'date_published', 'comments'];
-
-            // Add Grid headers if any item has grid data
-            const hasGridData = extractedItems.some(i => i.grid_matched !== undefined);
-            if (hasGridData) {
-                headers = [...headers, 'grid_matched', 'grid_entity_name', 'grid_entity_type', 'grid_category', 'tgs_recommendation'];
-            }
+            // Headers matching the user's sheet column order
+            // Base columns + Grid columns in the exact order of the sheet
+            const headers = [
+                'title', 'url', 'source_name', 'category', 'description', 'author',
+                'date_published', 'date_extracted',
+                'grid_asset_id', 'grid_matched', 'grid_profile_id', 'grid_confidence',
+                'grid_entity_name', 'grid_match_count', 'grid_product_id', 'grid_profile_name',
+                'grid_product_name', 'grid_entity_id', 'grid_asset_name', 'grid_subjects',
+                'comments', 'grid_asset_ticker'
+            ];
 
             const rows = extractedItems.map(item =>
                 headers.map(h => '"' + String(item[h] || '').replace(/"/g, '""') + '"').join(',')
@@ -1428,14 +1430,15 @@ HTML_TEMPLATE = '''
         function copyExtractedCSV() {
             if (!extractedItems.length) return;
 
-            // Build CSV with same headers as download
-            let headers = ['title', 'url', 'category', 'source_name', 'date_published', 'comments'];
-
-            // Add Grid headers if any item has grid data
-            const hasGridData = extractedItems.some(i => i.grid_matched !== undefined);
-            if (hasGridData) {
-                headers = [...headers, 'grid_matched', 'grid_entity_name', 'grid_entity_type', 'grid_category', 'tgs_recommendation'];
-            }
+            // Headers matching the user's sheet column order
+            const headers = [
+                'title', 'url', 'source_name', 'category', 'description', 'author',
+                'date_published', 'date_extracted',
+                'grid_asset_id', 'grid_matched', 'grid_profile_id', 'grid_confidence',
+                'grid_entity_name', 'grid_match_count', 'grid_product_id', 'grid_profile_name',
+                'grid_product_name', 'grid_entity_id', 'grid_asset_name', 'grid_subjects',
+                'comments', 'grid_asset_ticker'
+            ];
 
             const rows = extractedItems.map(item =>
                 headers.map(h => '"' + String(item[h] || '').replace(/"/g, '""') + '"').join(',')
@@ -1820,15 +1823,18 @@ def api_extract():
         if enrich_grid and items:
             items = processor.enrich_with_grid(items)
 
-        # Convert to JSON
+        # Convert to JSON - include all fields matching sheet columns
         result_items = []
         for item in items:
             item_dict = {
                 'title': item.title,
                 'url': item.url,
-                'category': item.category,
                 'source_name': item.source_name,
-                'date_published': item.date_published
+                'category': item.category,
+                'description': item.description,
+                'author': item.author,
+                'date_published': item.date_published,
+                'date_extracted': item.date_extracted
             }
             # Add Grid fields if enriched
             if item.custom_fields:

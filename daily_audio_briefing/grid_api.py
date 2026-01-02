@@ -853,17 +853,27 @@ ARTICLE:
 CURRENT GRID PROFILE:
 {profile_context}
 
-Based on the article, suggest ONE of the following in 15 words or less:
-1. A description update if the article reveals new info about the project
-2. A new product to add if a new product/feature is announced
-3. A new asset to add if a new token is announced
-4. "No updates needed" if the Grid data is already accurate
+The Grid is a factual database. Suggest ONE update if the article reveals:
+1. DESCRIPTION update - ONLY for changes to what the project fundamentally IS or DOES:
+   - Core functionality changes (e.g., "DEX that now supports perpetual futures")
+   - New blockchain/ecosystem support (e.g., "Now deployed on Solana and Starknet")
+   - Technical capabilities (e.g., "Cross-chain bridge with atomic swaps")
+   DO NOT suggest description updates for: lawsuits, hacks, funding news, personnel changes, price movements, or temporary events
 
-Respond with just the suggestion, no explanation. Format: [UPDATE TYPE]: suggestion
+2. PRODUCT - A new product/service being launched (name + brief description)
+
+3. ASSET - A new token being created (name + ticker if known)
+
+4. ECOSYSTEM - If the project now supports a new chain (Solana, Starknet, etc.) or asset (USDT)
+
+5. "No updates needed" - If the news is about events (lawsuits, hacks, partnerships, funding) rather than fundamental changes
+
+Respond with just the suggestion, no explanation. Format: [TYPE]: suggestion
 Examples:
-- DESCRIPTION: Now supports cross-chain bridging and DeFi integrations
-- PRODUCT: Mobile App for iOS and Android
-- ASSET: Governance token XYZ
+- DESCRIPTION: Cross-chain DEX with support for Solana, Ethereum, and Starknet
+- PRODUCT: Mobile Wallet App with hardware wallet integration
+- ASSET: Governance token GOV
+- ECOSYSTEM: Added Starknet support
 - No updates needed"""
 
         response = model.generate_content(prompt)

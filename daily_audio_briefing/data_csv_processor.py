@@ -1310,13 +1310,12 @@ class DataCSVProcessor:
                                     found_ecosystem_terms.append(term_title)
 
                         if term_counts:
-                            # Safely unpack term counts
-                            sorted_terms = sorted(term_counts.items(), key=lambda x: x[1] if len(x) > 1 else 0, reverse=True)
+                            # Format term counts for display
                             comment_parts = []
-                            for term_tuple in sorted_terms:
-                                if isinstance(term_tuple, tuple) and len(term_tuple) >= 2:
-                                    t, c = term_tuple[0], term_tuple[1]
-                                    comment_parts.append(f"{t} ({c}x)")
+                            for term_name, count in term_counts.items():
+                                comment_parts.append(f"{term_name} ({count}x)")
+                            # Sort by count descending
+                            comment_parts.sort(key=lambda x: int(x.split('(')[1].rstrip('x)')), reverse=True)
                             if comment_parts:
                                 comments.append(f"Mentions: {', '.join(comment_parts)}")
                 except Exception as regex_err:
@@ -1486,6 +1485,10 @@ class DataCSVProcessor:
                     item.custom_fields['comments'] = f"Access denied: {item.url[:30]}... requires auth"
                 elif '404' in error_detail:
                     item.custom_fields['comments'] = f"Not found: {item.url[:30]}... may be deleted"
+                elif 'unpack' in error_detail.lower():
+                    # Log full traceback for debugging tuple unpacking errors
+                    print(f"       [DEBUG] Tuple unpack error at: {tb[-500:]}")
+                    item.custom_fields['comments'] = f"Parse error: Data format issue in article text"
                 else:
                     item.custom_fields['comments'] = f"Research error: {error_detail[:80]}"
                 print(f"       → {item.custom_fields['comments']}")
