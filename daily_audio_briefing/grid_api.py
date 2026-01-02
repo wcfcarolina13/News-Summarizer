@@ -845,7 +845,7 @@ Existing Assets ({len(assets)}):
 {chr(10).join([f"- {a.get('name', '?')} ({a.get('ticker', '?')})" for a in assets[:5]]) or '- None listed'}
 """
 
-        prompt = f"""Analyze this news article about a blockchain project and compare it to the project's existing Grid profile data.
+        prompt = f"""Analyze this news article and determine if it contains information that should update The Grid's factual database.
 
 ARTICLE:
 {article_text[:2000]}
@@ -853,27 +853,45 @@ ARTICLE:
 CURRENT GRID PROFILE:
 {profile_context}
 
-The Grid is a factual database. Suggest ONE update if the article reveals:
-1. DESCRIPTION update - ONLY for changes to what the project fundamentally IS or DOES:
-   - Core functionality changes (e.g., "DEX that now supports perpetual futures")
-   - New blockchain/ecosystem support (e.g., "Now deployed on Solana and Starknet")
-   - Technical capabilities (e.g., "Cross-chain bridge with atomic swaps")
-   DO NOT suggest description updates for: lawsuits, hacks, funding news, personnel changes, price movements, or temporary events
+The Grid maintains OBJECTIVE, FACTUAL data about what projects ARE and DO - not news events.
 
-2. PRODUCT - A new product/service being launched (name + brief description)
+SUGGEST AN UPDATE ONLY IF the article reveals:
 
-3. ASSET - A new token being created (name + ticker if known)
+1. DESCRIPTION - A change to the project's core purpose, product, or service:
+   - What problem it solves and how (e.g., "DEX implementing smart order routing for optimal price execution")
+   - Technical capabilities (e.g., "Non-custodial wallet supporting SPL token standards")
+   - Target audience and use cases
+   Format: Objective, third-person, present tense, no marketing language. Max 200 chars.
 
-4. ECOSYSTEM - If the project now supports a new chain (Solana, Starknet, etc.) or asset (USDT)
+2. PRODUCT - A NEW product/service being launched (not updates to existing):
+   - Name + what it does and who it's for
+   Format: "[Product Name]: [concise objective description]"
 
-5. "No updates needed" - If the news is about events (lawsuits, hacks, partnerships, funding) rather than fundamental changes
+3. ASSET - A NEW token being created:
+   - Name, ticker, and technical function
+   Format: "[Token Name] ([TICKER]): [token type] for [protocol], enabling [function]"
 
-Respond with just the suggestion, no explanation. Format: [TYPE]: suggestion
+4. CHAIN_SUPPORT - Project now deploys on or integrates with a new blockchain:
+   - Only for actual deployment/integration, not just mentions
+   Format: "Added [Chain] support" or "Now deployed on [Chain]"
+
+DO NOT SUGGEST UPDATES FOR:
+- Lawsuits, legal issues, regulatory actions
+- Hacks, exploits, security incidents
+- Funding rounds, investments, valuations
+- Personnel changes, hirings, departures
+- Price movements, trading volume
+- Partnerships, collaborations (unless adding new chain support)
+- Temporary events, promotions, campaigns
+
+These are NEWS EVENTS, not changes to what the project fundamentally is or does.
+
+Respond with ONLY the suggestion or "No updates needed". Format: [TYPE]: suggestion
 Examples:
-- DESCRIPTION: Cross-chain DEX with support for Solana, Ethereum, and Starknet
-- PRODUCT: Mobile Wallet App with hardware wallet integration
-- ASSET: Governance token GOV
-- ECOSYSTEM: Added Starknet support
+- DESCRIPTION: Serum helps traders buy and sell digital assets using Solana's blockchain with exact price orders and trading rewards.
+- PRODUCT: Jupiter Mobile: iOS and Android app for swapping tokens with hardware wallet support.
+- ASSET: MNGO (MNGO): Protocol governance token implementing stake-weighted voting and fee distribution.
+- CHAIN_SUPPORT: Added Starknet deployment
 - No updates needed"""
 
         response = model.generate_content(prompt)
