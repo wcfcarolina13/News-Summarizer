@@ -3160,66 +3160,122 @@ Click the '? Tutorial' button next to the status bar!""",
             i += 1
 
     def select_dates_to_audio(self):
+        """Show dialog to select dates for audio conversion with archive options."""
         script_dir = os.path.dirname(__file__)
-        
-        # Find all summary files in Week_* folders
+        archive_dir = os.path.join(script_dir, "Archive")
+
+        # Find all summary files in Week_* folders (excluding Archive)
         files = []
         for week_folder in sorted(glob.glob(os.path.join(script_dir, "Week_*"))):
             if os.path.isdir(week_folder):
                 week_summaries = sorted([
-                    os.path.join(week_folder, f) 
-                    for f in os.listdir(week_folder) 
+                    os.path.join(week_folder, f)
+                    for f in os.listdir(week_folder)
                     if f.startswith("summary_") and f.endswith(".txt")
                 ])
                 files.extend(week_summaries)
-        
+
         if not files:
             self.label_status.configure(text="No per-date summaries found in Week folders.", text_color="orange")
             return
-            
+
         dlg = ctk.CTkToplevel(self)
         dlg.title("Select Dates to Convert")
-        dlg.geometry("500x500")
-        frame = ctk.CTkScrollableFrame(dlg, width=460, height=380)
+        dlg.geometry("550x550")
+
+        # Main scrollable frame for checkboxes
+        frame = ctk.CTkScrollableFrame(dlg, width=510, height=380)
         frame.pack(padx=10, pady=10, fill="both", expand=True)
+
         checks = []
         for i, filepath in enumerate(files):
             filename = os.path.basename(filepath)
             date_label = filename.replace("summary_", "").replace(".txt", "")
-            var = ctk.BooleanVar(value=True)
-            ctk.CTkCheckBox(frame, text=date_label, variable=var).grid(row=i, column=0, sticky="w", padx=8, pady=4)
+            week_folder_name = os.path.basename(os.path.dirname(filepath))
+            var = ctk.BooleanVar(value=False)  # Default to unchecked for safety
+            ctk.CTkCheckBox(frame, text=f"{date_label} ({week_folder_name})", variable=var).grid(row=i, column=0, sticky="w", padx=8, pady=4)
             checks.append((filepath, var))
-            
-        btn_frame = ctk.CTkFrame(dlg)
-        btn_frame.pack(pady=10)
-        
+
+        # Selection buttons frame
+        select_btn_frame = ctk.CTkFrame(dlg)
+        select_btn_frame.pack(pady=5)
+
         def select_all():
             for filepath, var in checks:
                 var.set(True)
-        
+
         def deselect_all():
             for filepath, var in checks:
                 var.set(False)
-        
-        ctk.CTkButton(btn_frame, text="Select All", command=select_all, fg_color="green", width=100).pack(side="left", padx=5)
-        ctk.CTkButton(btn_frame, text="Deselect All", command=deselect_all, fg_color="gray", width=100).pack(side="left", padx=5)
-        
+
+        ctk.CTkButton(select_btn_frame, text="Select All", command=select_all, fg_color="green", width=100).pack(side="left", padx=5)
+        ctk.CTkButton(select_btn_frame, text="Deselect All", command=deselect_all, fg_color="gray", width=100).pack(side="left", padx=5)
+
+        # Action buttons frame
+        action_btn_frame = ctk.CTkFrame(dlg)
+        action_btn_frame.pack(pady=10)
+
+        def do_archive():
+            selected = [filepath for filepath, v in checks if v.get()]
+            if not selected:
+                return
+
+            # Confirmation dialog
+            confirm = ctk.CTkToplevel(dlg)
+            confirm.title("Confirm Archive")
+            confirm.geometry("400x150")
+            confirm.transient(dlg)
+            confirm.grab_set()
+
+            ctk.CTkLabel(confirm, text=f"Are you sure you want to archive {len(selected)} folder(s)?",
+                        font=ctk.CTkFont(size=14)).pack(pady=20)
+            ctk.CTkLabel(confirm, text="Archived folders can be restored from the Archive.",
+                        font=ctk.CTkFont(size=12), text_color="gray").pack()
+
+            btn_confirm_frame = ctk.CTkFrame(confirm)
+            btn_confirm_frame.pack(pady=20)
+
+            def confirm_archive():
+                confirm.destroy()
+                # Create archive directory if needed
+                os.makedirs(archive_dir, exist_ok=True)
+
+                archived_count = 0
+                for filepath in selected:
+                    try:
+                        week_folder = os.path.dirname(filepath)
+                        week_folder_name = os.path.basename(week_folder)
+                        dest_folder = os.path.join(archive_dir, week_folder_name)
+
+                        # Move entire week folder to archive
+                        if os.path.exists(week_folder) and not os.path.exists(dest_folder):
+                            shutil.move(week_folder, dest_folder)
+                            archived_count += 1
+                    except Exception as e:
+                        print(f"Error archiving {filepath}: {e}")
+
+                dlg.destroy()
+                self.label_status.configure(text=f"Archived {archived_count} folder(s).", text_color="green")
+
+            ctk.CTkButton(btn_confirm_frame, text="Yes, Archive", command=confirm_archive, fg_color="orange", width=120).pack(side="left", padx=10)
+            ctk.CTkButton(btn_confirm_frame, text="Cancel", command=confirm.destroy, fg_color="gray", width=100).pack(side="left", padx=10)
+
         def do_convert():
             selected = [filepath for filepath, v in checks if v.get()]
             if not selected:
                 dlg.destroy()
                 return
             dlg.destroy()
-            
+
             # Convert each selected file in SEQUENTIAL queue (one at a time to avoid CPU overload)
             voice = self.voice_var.get()
-            
+
             def task():
                 import time
                 script_dir = os.path.dirname(__file__)
                 python_exe = sys.executable
                 log_path = os.path.join(script_dir, "gui_log.txt")
-                
+
                 total = len(selected)
                 for idx, filepath in enumerate(selected, 1):
                     try:
@@ -3227,14 +3283,14 @@ Click the '? Tutorial' button next to the status bar!""",
                         date_str = filename.replace("summary_", "").replace(".txt", "")
                         week_folder = os.path.dirname(filepath)
                         output_file = os.path.join(week_folder, f"audio_quality_{date_str}.wav")
-                        
+
                         # Update GUI frequently
                         self.after(0, lambda d=date_str, i=idx, t=total: self.label_status.configure(
                             text=f"Converting {i}/{t}: {d}...", text_color=("gray10", "#DCE4EE")))
-                        
-                        cmd = [python_exe, os.path.join(script_dir, "make_audio_quality.py"), 
+
+                        cmd = [python_exe, os.path.join(script_dir, "make_audio_quality.py"),
                                "--input", filepath, "--voice", voice, "--output", output_file]
-                        
+
                         # Enhanced logging for debugging
                         with open(log_path, "a", encoding="utf-8") as log:
                             log.write(f"\n{'='*60}\n")
@@ -3243,11 +3299,11 @@ Click the '? Tutorial' button next to the status bar!""",
                             log.write(f"Output: {output_file}\n")
                             log.write(f"Command: {' '.join(cmd)}\n")
                             log.flush()
-                        
+
                         start_time = time.time()
                         result = subprocess.run(cmd, capture_output=True, text=True, cwd=script_dir, timeout=3600)
                         elapsed = time.time() - start_time
-                        
+
                         # Log result details
                         with open(log_path, "a", encoding="utf-8") as log:
                             log.write(f"Return code: {result.returncode}\n")
@@ -3260,7 +3316,7 @@ Click the '? Tutorial' button next to the status bar!""",
                             if os.path.exists(output_file):
                                 log.write(f"Output file size: {os.path.getsize(output_file)} bytes\n")
                             log.flush()
-                        
+
                         if result.returncode != 0:
                             error_msg = f"Error converting {date_str}: {result.stderr[:100]}"
                             self.after(0, lambda m=error_msg: self.label_status.configure(
@@ -3268,11 +3324,11 @@ Click the '? Tutorial' button next to the status bar!""",
                             with open(log_path, "a", encoding="utf-8") as log:
                                 log.write(f"ERROR: Conversion failed\n")
                             continue  # Continue with next file instead of stopping
-                        
+
                         # Success message
                         with open(log_path, "a", encoding="utf-8") as log:
                             log.write(f"SUCCESS: {date_str} converted in {elapsed:.1f}s\n")
-                    
+
                     except subprocess.TimeoutExpired:
                         # Check if file was actually created despite timeout
                         if os.path.exists(output_file) and os.path.getsize(output_file) > 0:
@@ -3295,16 +3351,122 @@ Click the '? Tutorial' button next to the status bar!""",
                         with open(log_path, "a", encoding="utf-8") as log:
                             log.write(f"EXCEPTION: {e}\n")
                         continue  # Move to next file
-                
+
                 # All conversions completed
                 self.after(0, lambda t=total: self.label_status.configure(
                     text=f"✓ Converted {t} audio files! Check Week folders.", text_color="green"))
-            
+
             threading.Thread(target=task, daemon=True).start()
 
-                
-        ctk.CTkButton(btn_frame, text="Convert", command=do_convert, width=100).pack(side="left", padx=5)
-        ctk.CTkButton(btn_frame, text="Cancel", fg_color="gray", command=dlg.destroy, width=100).pack(side="left", padx=5)
+        ctk.CTkButton(action_btn_frame, text="Convert", command=do_convert, width=100).pack(side="left", padx=5)
+        ctk.CTkButton(action_btn_frame, text="Archive Selected", command=do_archive, fg_color="orange", width=120).pack(side="left", padx=5)
+        ctk.CTkButton(action_btn_frame, text="View Archive", command=lambda: self.view_archive(dlg), fg_color="#5a5a5a", width=100).pack(side="left", padx=5)
+        ctk.CTkButton(action_btn_frame, text="Cancel", fg_color="gray", command=dlg.destroy, width=100).pack(side="left", padx=5)
+
+    def view_archive(self, parent_dlg=None):
+        """Show dialog to view and unarchive folders from the Archive."""
+        script_dir = os.path.dirname(__file__)
+        archive_dir = os.path.join(script_dir, "Archive")
+
+        if not os.path.exists(archive_dir):
+            os.makedirs(archive_dir, exist_ok=True)
+
+        # Find all Week_* folders in Archive
+        archived_folders = sorted([
+            os.path.join(archive_dir, f)
+            for f in os.listdir(archive_dir)
+            if f.startswith("Week_") and os.path.isdir(os.path.join(archive_dir, f))
+        ])
+
+        dlg = ctk.CTkToplevel(self)
+        dlg.title("Archive")
+        dlg.geometry("500x450")
+        if parent_dlg:
+            dlg.transient(parent_dlg)
+
+        if not archived_folders:
+            ctk.CTkLabel(dlg, text="Archive is empty.", font=ctk.CTkFont(size=14)).pack(pady=50)
+            ctk.CTkButton(dlg, text="Close", command=dlg.destroy, width=100).pack(pady=20)
+            return
+
+        ctk.CTkLabel(dlg, text="Archived Folders", font=ctk.CTkFont(size=16, weight="bold")).pack(pady=10)
+
+        frame = ctk.CTkScrollableFrame(dlg, width=460, height=280)
+        frame.pack(padx=10, pady=10, fill="both", expand=True)
+
+        checks = []
+        for i, folder_path in enumerate(archived_folders):
+            folder_name = os.path.basename(folder_path)
+            # Count files in folder
+            file_count = len([f for f in os.listdir(folder_path) if os.path.isfile(os.path.join(folder_path, f))])
+            var = ctk.BooleanVar(value=False)
+            ctk.CTkCheckBox(frame, text=f"{folder_name} ({file_count} files)", variable=var).grid(row=i, column=0, sticky="w", padx=8, pady=4)
+            checks.append((folder_path, var))
+
+        # Selection buttons
+        select_btn_frame = ctk.CTkFrame(dlg)
+        select_btn_frame.pack(pady=5)
+
+        def select_all():
+            for path, var in checks:
+                var.set(True)
+
+        def deselect_all():
+            for path, var in checks:
+                var.set(False)
+
+        ctk.CTkButton(select_btn_frame, text="Select All", command=select_all, fg_color="green", width=100).pack(side="left", padx=5)
+        ctk.CTkButton(select_btn_frame, text="Deselect All", command=deselect_all, fg_color="gray", width=100).pack(side="left", padx=5)
+
+        # Action buttons
+        action_btn_frame = ctk.CTkFrame(dlg)
+        action_btn_frame.pack(pady=10)
+
+        def do_unarchive():
+            selected = [path for path, v in checks if v.get()]
+            if not selected:
+                return
+
+            # Confirmation dialog
+            confirm = ctk.CTkToplevel(dlg)
+            confirm.title("Confirm Unarchive")
+            confirm.geometry("400x150")
+            confirm.transient(dlg)
+            confirm.grab_set()
+
+            ctk.CTkLabel(confirm, text=f"Are you sure you want to restore {len(selected)} folder(s)?",
+                        font=ctk.CTkFont(size=14)).pack(pady=20)
+            ctk.CTkLabel(confirm, text="Folders will be moved back to the main directory.",
+                        font=ctk.CTkFont(size=12), text_color="gray").pack()
+
+            btn_confirm_frame = ctk.CTkFrame(confirm)
+            btn_confirm_frame.pack(pady=20)
+
+            def confirm_unarchive():
+                confirm.destroy()
+                restored_count = 0
+                for folder_path in selected:
+                    try:
+                        folder_name = os.path.basename(folder_path)
+                        dest_folder = os.path.join(script_dir, folder_name)
+
+                        # Move folder back to main directory
+                        if os.path.exists(folder_path) and not os.path.exists(dest_folder):
+                            shutil.move(folder_path, dest_folder)
+                            restored_count += 1
+                    except Exception as e:
+                        print(f"Error restoring {folder_path}: {e}")
+
+                dlg.destroy()
+                if parent_dlg:
+                    parent_dlg.destroy()
+                self.label_status.configure(text=f"Restored {restored_count} folder(s) from archive.", text_color="green")
+
+            ctk.CTkButton(btn_confirm_frame, text="Yes, Restore", command=confirm_unarchive, fg_color="green", width=120).pack(side="left", padx=10)
+            ctk.CTkButton(btn_confirm_frame, text="Cancel", command=confirm.destroy, fg_color="gray", width=100).pack(side="left", padx=10)
+
+        ctk.CTkButton(action_btn_frame, text="Restore Selected", command=do_unarchive, fg_color="green", width=120).pack(side="left", padx=5)
+        ctk.CTkButton(action_btn_frame, text="Close", command=dlg.destroy, fg_color="gray", width=100).pack(side="left", padx=5)
     def convert_summaries_to_audio(self, files):
         voice = self.voice_var.get()
         def task():
