@@ -1053,8 +1053,11 @@ class DataCSVProcessor:
             with urllib.request.urlopen(req, timeout=10) as response:
                 search_html = response.read().decode('utf-8', errors='ignore')
 
-            # Parse search results
-            soup = BeautifulSoup(search_html, 'lxml')
+            # Parse search results (try lxml, fall back to html.parser)
+            try:
+                soup = BeautifulSoup(search_html, 'lxml')
+            except Exception:
+                soup = BeautifulSoup(search_html, 'html.parser')
             results = soup.find_all('a', class_='result__a')
 
             # Try to fetch from alternative sources (skip the original blocked domain)
@@ -1890,7 +1893,11 @@ class DataCSVProcessor:
         - Infinite scroll content
         - Footer content
         """
-        soup = BeautifulSoup(html, 'lxml')
+        # Try lxml first (faster), fall back to html.parser if lxml fails on malformed HTML
+        try:
+            soup = BeautifulSoup(html, 'lxml')
+        except Exception:
+            soup = BeautifulSoup(html, 'html.parser')
 
         # Remove elements that are definitely not article content
         for tag in soup.find_all(['script', 'style', 'nav', 'footer', 'header',
