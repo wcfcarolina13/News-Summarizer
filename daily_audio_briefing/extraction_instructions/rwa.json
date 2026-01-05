@@ -1,0 +1,39 @@
+{
+  "name": "RWA News",
+  "description": "Extraction config for RWA (Real World Assets) news from Telegram channels like RWAxyzNewswire",
+
+  "include_patterns": [],
+
+  "exclude_patterns": [
+    "subscribe",
+    "unsubscribe",
+    "join us",
+    "follow us",
+    "sponsored",
+    "advertisement",
+    "ad:",
+    "promo"
+  ],
+
+  "allowed_domains": [],
+
+  "blocked_domains": [
+    "twitter.com",
+    "x.com",
+    "facebook.com",
+    "linkedin.com",
+    "instagram.com",
+    "tiktok.com",
+    "t.me"
+  ],
+
+  "csv_columns": [
+    "title",
+    "url",
+    "date_published"
+  ],
+
+  "output_format": "hyperlink",
+
+  "notes": "Designed for Telegram RSS feeds. Outputs hyperlinked headlines suitable for Google Docs. The output_format: hyperlink will format as [Title](URL) for easy copy-paste."
+}
