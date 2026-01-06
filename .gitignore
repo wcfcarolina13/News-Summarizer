@@ -19,3 +19,4 @@ __pycache__/
 # Specific video lists - temporary files
 daily_audio_briefing/Specific Video Lists/
 daily_audio_briefing/Transcriptions/
+daily_audio_briefing/settings.json
