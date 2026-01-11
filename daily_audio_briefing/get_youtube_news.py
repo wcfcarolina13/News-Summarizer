@@ -187,28 +187,44 @@ def process_channel(channel_url, model, shared_context, cutoff_date, cutoff_time
 
         video_id = video["videoId"]
         title = video["title"]["runs"][0]["text"]
-        
+
         date_info = video.get("publishedTimeText", {}).get("simpleText")
-        
+
         pub_date = None
         if date_info:
-            pub_date = dateparser.parse(date_info)
-        
+            # Clean up YouTube-specific prefixes that dateparser can't handle
+            clean_date = date_info
+            for prefix in ["Streamed ", "Premiered ", "Scheduled for "]:
+                if clean_date.startswith(prefix):
+                    clean_date = clean_date[len(prefix):]
+                    break
+            pub_date = dateparser.parse(clean_date)
+
+            # Log parsing details for debugging
+            if not pub_date:
+                log(f"  [DATE] Failed to parse: '{date_info}' (cleaned: '{clean_date}')")
+
         if cutoff_time is not None:
             # Hours mode: filter by timestamp
-            if not pub_date: continue
+            if not pub_date:
+                log(f"  [SKIP] No parseable date for: {title[:50]}... ({date_info})")
+                continue
             if pub_date < cutoff_time:
+                log(f"  [SKIP] Too old: {title[:50]}... (pub: {pub_date}, cutoff: {cutoff_time})")
                 continue
             videos_on_target_date += 1
         elif cutoff_date is not None:
             # Days mode: filter by date
-            if not pub_date: continue
+            if not pub_date:
+                log(f"  [SKIP] No parseable date for: {title[:50]}... ({date_info})")
+                continue
             # only keep videos published on the target day
             if pub_date.date() != cutoff_date.date():
+                log(f"  [SKIP] Wrong date: {title[:50]}... (pub: {pub_date.date()}, want: {cutoff_date.date()})")
                 continue
             videos_on_target_date += 1
 
-        log(f"DEBUG: Video matches filter: {title} ({date_info})")
+        log(f"  [MATCH] {title[:50]}... ({date_info} -> {pub_date})")
         transcript = get_transcript_text(video_id)
         if not transcript:
             log("  -> SKIPPING: No transcript found.")
