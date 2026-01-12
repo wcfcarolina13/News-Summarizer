@@ -35,5 +35,13 @@
 
   "output_format": "hyperlink",
 
+  "google_sheets": {
+    "enabled": true,
+    "spreadsheet_id": "",
+    "sheet_name": "Sheet1",
+    "columns": ["title", "url", "date_published"],
+    "notes": "Set spreadsheet_id to your Google Sheet ID. Share the sheet with the service account email."
+  },
+
   "notes": "Designed for Telegram RSS feeds. Outputs hyperlinked headlines suitable for Google Docs. The output_format: hyperlink will format as [Title](URL) for easy copy-paste."
 }

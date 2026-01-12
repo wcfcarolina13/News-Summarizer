@@ -395,6 +395,9 @@ class AudioBriefingApp(ctk.CTk):
         self.btn_export_csv = ctk.CTkButton(export_btns, text="Save CSV", width=80, command=self.export_extracted_csv)
         self.btn_export_csv.pack(side="left", padx=(0, 5))
 
+        self.btn_export_sheets = ctk.CTkButton(export_btns, text="To Sheets", width=80, fg_color="#0F9D58", command=self.export_to_google_sheets)
+        self.btn_export_sheets.pack(side="left", padx=(0, 5))
+
         self.btn_copy_text = ctk.CTkButton(export_btns, text="Copy", width=60, fg_color="gray", command=self.copy_extracted_text)
         self.btn_copy_text.pack(side="left")
 
@@ -3739,6 +3742,148 @@ Click the '? Tutorial' button next to the status bar!""",
         self.clipboard_append(text)
 
         self.label_status.configure(text=f"Copied {len(self.extracted_items)} items to clipboard.", text_color="green")
+
+    def export_to_google_sheets(self):
+        """Export extracted items to Google Sheets."""
+        if not self.extracted_items:
+            self.label_status.configure(text="No items to export.", text_color="orange")
+            return
+
+        # Check if sheets integration is available
+        try:
+            from sheets_manager import is_sheets_available, get_missing_requirements, export_items_to_sheet, extract_sheet_id
+        except ImportError:
+            self.label_status.configure(text="Sheets module not found.", text_color="red")
+            return
+
+        if not is_sheets_available():
+            missing = get_missing_requirements()
+            # Show setup dialog
+            self._show_sheets_setup_dialog(missing)
+            return
+
+        # Get sheet config from current extractor config
+        config = self._get_current_extraction_config()
+        sheets_config = config.get("google_sheets", {}) if config else {}
+
+        spreadsheet_id = sheets_config.get("spreadsheet_id", "")
+        sheet_name = sheets_config.get("sheet_name", "Sheet1")
+        columns = sheets_config.get("columns", None)
+
+        if not spreadsheet_id:
+            # Ask user for sheet URL/ID
+            self._show_sheet_id_dialog(sheet_name, columns)
+            return
+
+        # Export to sheet
+        self._do_sheets_export(spreadsheet_id, sheet_name, columns)
+
+    def _show_sheets_setup_dialog(self, missing_info: str):
+        """Show dialog explaining how to set up Google Sheets integration."""
+        dlg = ctk.CTkToplevel(self)
+        dlg.title("Google Sheets Setup Required")
+        dlg.geometry("500x350")
+        dlg.minsize(450, 300)
+
+        ctk.CTkLabel(dlg, text="Google Sheets Setup", font=ctk.CTkFont(size=16, weight="bold")).pack(pady=(20, 10))
+
+        info_text = """To use Google Sheets export:
+
+1. Go to Google Cloud Console
+2. Create a project and enable Google Sheets API
+3. Create a Service Account (IAM & Admin > Service Accounts)
+4. Download the JSON key file
+5. Save it as 'google_credentials.json' in the app folder
+6. Share your Google Sheet with the service account email
+
+Missing requirements:
+""" + missing_info
+
+        text_frame = ctk.CTkFrame(dlg)
+        text_frame.pack(padx=20, pady=10, fill="both", expand=True)
+
+        text_box = ctk.CTkTextbox(text_frame, wrap="word")
+        text_box.pack(fill="both", expand=True)
+        text_box.insert("1.0", info_text)
+        text_box.configure(state="disabled")
+
+        ctk.CTkButton(dlg, text="Close", command=dlg.destroy, width=100).pack(pady=15)
+
+    def _show_sheet_id_dialog(self, default_sheet_name: str, columns: list):
+        """Show dialog to enter Google Sheet ID/URL."""
+        dlg = ctk.CTkToplevel(self)
+        dlg.title("Export to Google Sheets")
+        dlg.geometry("500x200")
+        dlg.minsize(450, 180)
+
+        ctk.CTkLabel(dlg, text="Enter Google Sheet URL or ID:", font=ctk.CTkFont(size=14)).pack(pady=(20, 5))
+
+        entry_frame = ctk.CTkFrame(dlg, fg_color="transparent")
+        entry_frame.pack(fill="x", padx=20, pady=10)
+
+        sheet_entry = ctk.CTkEntry(entry_frame, width=400, placeholder_text="https://docs.google.com/spreadsheets/d/... or sheet ID")
+        sheet_entry.pack(fill="x")
+
+        ctk.CTkLabel(dlg, text=f"Sheet tab name: {default_sheet_name}", font=ctk.CTkFont(size=12), text_color="gray").pack()
+
+        btn_frame = ctk.CTkFrame(dlg, fg_color="transparent")
+        btn_frame.pack(pady=20)
+
+        def do_export():
+            sheet_input = sheet_entry.get().strip()
+            if not sheet_input:
+                self.label_status.configure(text="Please enter a Sheet URL or ID.", text_color="orange")
+                return
+            dlg.destroy()
+            from sheets_manager import extract_sheet_id
+            spreadsheet_id = extract_sheet_id(sheet_input)
+            self._do_sheets_export(spreadsheet_id, default_sheet_name, columns)
+
+        ctk.CTkButton(btn_frame, text="Export", command=do_export, fg_color="#0F9D58", width=100).pack(side="left", padx=5)
+        ctk.CTkButton(btn_frame, text="Cancel", command=dlg.destroy, fg_color="gray", width=100).pack(side="left", padx=5)
+
+    def _do_sheets_export(self, spreadsheet_id: str, sheet_name: str, columns: list):
+        """Perform the actual export to Google Sheets."""
+        self.label_status.configure(text="Exporting to Google Sheets...", text_color=("gray10", "#DCE4EE"))
+        self.update()
+
+        def export_task():
+            try:
+                from sheets_manager import export_items_to_sheet
+                result = export_items_to_sheet(
+                    items=self.extracted_items,
+                    spreadsheet_id=spreadsheet_id,
+                    sheet_name=sheet_name,
+                    columns=columns
+                )
+                updated_rows = result.get('updates', {}).get('updatedRows', len(self.extracted_items))
+                self.after(0, lambda: self.label_status.configure(
+                    text=f"Exported {updated_rows} rows to Google Sheets!", text_color="green"))
+            except Exception as e:
+                error_msg = str(e)
+                if "403" in error_msg:
+                    error_msg = "Permission denied. Share the sheet with the service account email."
+                elif "404" in error_msg:
+                    error_msg = "Sheet not found. Check the spreadsheet ID."
+                self.after(0, lambda: self.label_status.configure(
+                    text=f"Sheets error: {error_msg[:80]}", text_color="red"))
+
+        threading.Thread(target=export_task, daemon=True).start()
+
+    def _get_current_extraction_config(self) -> dict:
+        """Get the current extraction config based on selected extractor."""
+        try:
+            extractor_name = self.extractor_var.get() if hasattr(self, 'extractor_var') else None
+            if not extractor_name or extractor_name == "Auto-detect":
+                return {}
+
+            config_path = os.path.join(os.path.dirname(__file__), "extraction_instructions", f"{extractor_name}.json")
+            if os.path.exists(config_path):
+                with open(config_path, 'r') as f:
+                    return json.load(f)
+        except Exception:
+            pass
+        return {}
 
 if __name__ == "__main__":
     app = AudioBriefingApp()
