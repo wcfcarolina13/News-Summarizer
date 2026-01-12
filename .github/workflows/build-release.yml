@@ -1,0 +1,134 @@
+name: Build and Release
+
+# Trigger on version tags (e.g., v1.0.0, v1.2.3)
+on:
+  push:
+    tags:
+      - 'v*'
+
+jobs:
+  # Build macOS app and DMG
+  build-macos:
+    runs-on: macos-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Install dependencies
+        run: |
+          cd daily_audio_briefing
+          pip install --upgrade pip
+          pip install -r requirements-desktop.txt
+
+      - name: Install create-dmg
+        run: brew install create-dmg
+
+      - name: Build app with PyInstaller
+        run: |
+          cd daily_audio_briefing
+          python build_app.py
+
+      - name: Create DMG
+        run: |
+          cd daily_audio_briefing
+          ./create_dmg.sh
+
+      - name: Get version from tag
+        id: version
+        run: echo "VERSION=${GITHUB_REF#refs/tags/v}" >> $GITHUB_OUTPUT
+
+      - name: Rename DMG with version
+        run: |
+          cd daily_audio_briefing/dist
+          mv DailyAudioBriefing-1.0.0-macOS.dmg DailyAudioBriefing-${{ steps.version.outputs.VERSION }}-macOS.dmg
+
+      - name: Upload macOS DMG
+        uses: actions/upload-artifact@v4
+        with:
+          name: macos-dmg
+          path: daily_audio_briefing/dist/*.dmg
+
+  # Build Windows installer
+  build-windows:
+    runs-on: windows-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Install dependencies
+        run: |
+          cd daily_audio_briefing
+          pip install --upgrade pip
+          pip install -r requirements-desktop.txt
+
+      - name: Build app with PyInstaller
+        run: |
+          cd daily_audio_briefing
+          python -m PyInstaller DailyAudioBriefing.spec --noconfirm
+
+      - name: Install NSIS
+        run: choco install nsis -y
+
+      - name: Build installer with NSIS
+        run: |
+          cd daily_audio_briefing
+          makensis installer.nsi
+
+      - name: Get version from tag
+        id: version
+        shell: bash
+        run: echo "VERSION=${GITHUB_REF#refs/tags/v}" >> $GITHUB_OUTPUT
+
+      - name: Rename installer with version
+        shell: bash
+        run: |
+          cd daily_audio_briefing/dist
+          mv DailyAudioBriefing-1.0.0-Windows-Setup.exe DailyAudioBriefing-${{ steps.version.outputs.VERSION }}-Windows-Setup.exe
+
+      - name: Upload Windows installer
+        uses: actions/upload-artifact@v4
+        with:
+          name: windows-installer
+          path: daily_audio_briefing/dist/*-Setup.exe
+
+  # Create GitHub Release with both installers
+  release:
+    needs: [build-macos, build-windows]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - name: Download macOS artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: macos-dmg
+          path: ./artifacts
+
+      - name: Download Windows artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: windows-installer
+          path: ./artifacts
+
+      - name: List artifacts
+        run: ls -la ./artifacts
+
+      - name: Create Release
+        uses: softprops/action-gh-release@v1
+        with:
+          files: ./artifacts/*
+          generate_release_notes: true
+          draft: false
+          prerelease: false
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

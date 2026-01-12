@@ -12,7 +12,7 @@ set -e
 
 APP_NAME="Daily Audio Briefing"
 DMG_NAME="DailyAudioBriefing"
-VERSION="1.0.0"
+VERSION="${1:-1.0.0}"  # Accept version as argument, default to 1.0.0
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 DIST_DIR="$SCRIPT_DIR/dist"
 APP_PATH="$DIST_DIR/$APP_NAME.app"
