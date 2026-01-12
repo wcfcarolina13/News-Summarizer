@@ -126,7 +126,7 @@ a = Analysis(
     hiddenimports=hiddenimports,
     hookspath=[],
     hooksconfig={},
-    runtime_hooks=[],
+    runtime_hooks=[os.path.join(spec_dir, 'hook-tk-fix.py')],
     excludes=[
         # Exclude heavy optional dependencies
         'faster_whisper',  # Large transcription library
@@ -157,7 +157,7 @@ if sys.platform == 'darwin':
         upx=True,
         console=False,  # No terminal window
         disable_windowed_traceback=False,
-        argv_emulation=True,  # Better macOS behavior
+        argv_emulation=False,  # Disabled - causes Tk menu crashes on macOS
         target_arch=None,
         codesign_identity=None,
         entitlements_file=None,
