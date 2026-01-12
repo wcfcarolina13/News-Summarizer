@@ -20,3 +20,8 @@ __pycache__/
 daily_audio_briefing/Specific Video Lists/
 daily_audio_briefing/Transcriptions/
 daily_audio_briefing/settings.json
+
+# Build artifacts
+daily_audio_briefing/build/
+daily_audio_briefing/dist/
+*.spec.bak
