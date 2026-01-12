@@ -20,15 +20,17 @@ from convert_to_mp3 import check_ffmpeg
 # Data extraction imports
 from data_csv_processor import DataCSVProcessor, ExtractionConfig, load_custom_instructions
 
-# Helper functions for transcription dependency checks
-def check_faster_whisper_installed():
-    try:
-        import faster_whisper
-        return True
-    except ImportError:
-        return False
+# Transcription service (handles local and future cloud backends)
+from transcription_service import (
+    get_transcription_service,
+    get_transcription_status,
+    is_transcription_available,
+    transcribe_audio as service_transcribe_audio,
+    get_license_manager,
+    TranscriptionBackend
+)
 
-# Re-use check_ffmpeg from transcriber.py for consistency
+# Legacy check functions for compression (ffmpeg)
 from transcriber import check_ffmpeg
 try:
     from tkcalendar import DateEntry
@@ -447,29 +449,10 @@ class AudioBriefingApp(ctk.CTk):
         )
         self.label_compression.grid(row=7, column=0, padx=20, pady=(0, 10))
         self.label_compression.bind("<Button-1>", lambda e: self.show_compression_guide())
-        # Transcription Status Indicator
-        self.transcription_ffmpeg_enabled = check_ffmpeg()
-        self.transcription_whisper_installed = check_faster_whisper_installed()
-
-        transcription_text = ""
-        transcription_color = ""
-        cursor_type = "arrow"
-
-        if self.transcription_ffmpeg_enabled and self.transcription_whisper_installed:
-            transcription_text = "✓ Transcription ready"
-            transcription_color = "green"
-        elif not self.transcription_ffmpeg_enabled and not self.transcription_whisper_installed:
-            transcription_text = "⚠ Transcription disabled - Install ffmpeg & faster-whisper"
-            transcription_color = "orange"
-            cursor_type = "hand2"
-        elif not self.transcription_ffmpeg_enabled:
-            transcription_text = "⚠ Transcription disabled - Install ffmpeg"
-            transcription_color = "orange"
-            cursor_type = "hand2"
-        elif not self.transcription_whisper_installed:
-            transcription_text = "⚠ Transcription disabled - Install faster-whisper"
-            transcription_color = "orange"
-            cursor_type = "hand2"
+        # Transcription Status Indicator (uses transcription_service for detection)
+        self.transcription_service = get_transcription_service()
+        transcription_text, transcription_color = get_transcription_status()
+        cursor_type = "hand2" if transcription_color != "green" else "arrow"
 
         self.label_transcription = ctk.CTkLabel(
             self.main_scroll,
@@ -479,10 +462,7 @@ class AudioBriefingApp(ctk.CTk):
             cursor=cursor_type
         )
         self.label_transcription.grid(row=8, column=0, padx=20, pady=(0, 10))
-        self.label_transcription.bind("<Button-1>", lambda e: self.show_transcription_guide(
-            missing_ffmpeg=not self.transcription_ffmpeg_enabled,
-            missing_whisper=not self.transcription_whisper_installed
-        ))
+        self.label_transcription.bind("<Button-1>", lambda e: self.show_transcription_guide())
         # Open Folder Button
         self.btn_open = ctk.CTkButton(self.main_scroll, text="Open Output Folder", fg_color="transparent", border_width=2, text_color=("gray10", "#DCE4EE"), command=self.open_output_folder)
         self.btn_open.grid(row=9, column=0, padx=20, pady=(0, 20)) # Row 9
@@ -1661,15 +1641,12 @@ class AudioBriefingApp(ctk.CTk):
             self.label_status.configure(text="No files selected.", text_color="orange")
             return
 
-        # Check dependencies once
+        # Check if transcription service is available
         has_audio = any(os.path.splitext(fp)[1].lower() in {".mp3", ".wav", ".m4a"} for fp in self.selected_file_paths)
         if has_audio:
-            if not self.transcription_ffmpeg_enabled or not self.transcription_whisper_installed:
-                self.label_status.configure(text="Transcription dependencies missing.", text_color="red")
-                self.show_transcription_guide(
-                    missing_ffmpeg=not self.transcription_ffmpeg_enabled,
-                    missing_whisper=not self.transcription_whisper_installed
-                )
+            if not self.transcription_service.is_available():
+                self.label_status.configure(text="Transcription not available.", text_color="red")
+                self.show_transcription_guide()
                 return
 
         self.btn_transcribe.configure(state="disabled")
@@ -1702,8 +1679,8 @@ class AudioBriefingApp(ctk.CTk):
                     
                     elif ext in {".mp3", ".wav", ".m4a"}:
                         self.after(0, lambda f=filename: self.label_status.configure(text=f"[{i}/{total}] Transcribing: {f}...", text_color="orange"))
-                        from transcriber import transcribe_audio
-                        transcript = transcribe_audio(file_path, model_size="base")
+                        # Use transcription service (supports local and future cloud backends)
+                        transcript = self.transcription_service.transcribe(file_path, model_size="base")
                         if transcript:
                             result_text = transcript
                         else:
@@ -1731,31 +1708,62 @@ class AudioBriefingApp(ctk.CTk):
             self.after(0, finish)
 
         threading.Thread(target=process_thread, daemon=True).start()
-    def show_transcription_guide(self, missing_ffmpeg=False, missing_whisper=False):
+    def show_transcription_guide(self):
+        """Show transcription setup guide based on current service status."""
+        from transcription_service import check_ffmpeg, check_system_whisper
+
         dlg = ctk.CTkToplevel(self)
         dlg.title("Transcription Setup Guide")
-        dlg.geometry("600x420")
-        dlg.minsize(600, 420)
+        dlg.geometry("600x480")
+        dlg.minsize(600, 480)
         frame = ctk.CTkScrollableFrame(dlg)
         frame.pack(fill="both", expand=True, padx=12, pady=12)
-        title = ctk.CTkLabel(frame, text="Enable Local Transcription (Whisper)", font=ctk.CTkFont(size=18, weight="bold"))
+        title = ctk.CTkLabel(frame, text="Enable Transcription", font=ctk.CTkFont(size=18, weight="bold"))
         title.pack(anchor="w", pady=(0,8))
+
+        # Check current status
+        has_ffmpeg = check_ffmpeg()
+        has_whisper, _ = check_system_whisper()
+        is_frozen = getattr(sys, 'frozen', False)
+
         info = []
-        info.append("This app uses faster-whisper (OpenAI Whisper) for offline speech-to-text.")
-        if missing_whisper:
-            info.append("• Python package missing: faster-whisper")
-        if missing_ffmpeg:
-            info.append("• System dependency missing: ffmpeg")
+        info.append("This app uses faster-whisper (OpenAI Whisper) for speech-to-text.")
         info.append("")
-        info.append("Install steps:")
-        info.append("1) Python deps: pip install faster-whisper")
-        info.append("2) ffmpeg:")
-        info.append("   • macOS: brew install ffmpeg")
-        info.append("   • Windows: choco install ffmpeg (or download from ffmpeg.org)")
-        info.append("   • Linux: sudo apt install ffmpeg")
-        info.append("")
-        info.append("After installation, restart the app and try Upload File again.")
-        text = ctk.CTkTextbox(frame, width=560, height=300)
+
+        if self.transcription_service.is_available():
+            backend = self.transcription_service.get_backend()
+            info.append(f"✓ Transcription is ready! (Backend: {backend.value})")
+        else:
+            info.append("Current status:")
+            if not has_ffmpeg:
+                info.append("  ✗ ffmpeg: NOT FOUND")
+            else:
+                info.append("  ✓ ffmpeg: installed")
+
+            if not has_whisper:
+                info.append("  ✗ faster-whisper: NOT FOUND")
+            else:
+                info.append("  ✓ faster-whisper: installed")
+
+            info.append("")
+            info.append("Install steps:")
+            info.append("")
+            info.append("1) Install ffmpeg:")
+            info.append("   • macOS: brew install ffmpeg")
+            info.append("   • Windows: choco install ffmpeg (or ffmpeg.org)")
+            info.append("   • Linux: sudo apt install ffmpeg")
+            info.append("")
+            info.append("2) Install faster-whisper:")
+            info.append("   pip install faster-whisper")
+
+            if is_frozen:
+                info.append("")
+                info.append("Note: This is a packaged app. faster-whisper must be")
+                info.append("installed in your SYSTEM Python, not a virtual env.")
+                info.append("")
+                info.append("After installing, restart the app to detect it.")
+
+        text = ctk.CTkTextbox(frame, width=560, height=320)
         text.pack(fill="both", expand=True)
         text.insert("0.0", "\n".join(info))
         text.configure(state="disabled")
