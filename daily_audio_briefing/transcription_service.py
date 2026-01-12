@@ -170,11 +170,14 @@ def get_license_manager() -> LicenseManager:
 
 def _find_system_python() -> Optional[str]:
     """Find the system Python executable."""
-    # Common Python paths
+    # Common Python paths - order matters, check framework Python first (where pip installs packages)
     python_paths = [
-        '/usr/bin/python3',
-        '/usr/local/bin/python3',
+        '/Library/Frameworks/Python.framework/Versions/3.12/bin/python3',  # Python.org installer
+        '/Library/Frameworks/Python.framework/Versions/3.11/bin/python3',
+        '/Library/Frameworks/Python.framework/Versions/3.10/bin/python3',
         '/opt/homebrew/bin/python3',  # Apple Silicon Homebrew
+        '/usr/local/bin/python3',     # Intel Homebrew / MacPorts
+        '/usr/bin/python3',           # System Python (often has restrictions)
         'python3',  # Rely on PATH
         'python',
     ]

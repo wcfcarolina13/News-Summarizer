@@ -53,6 +53,9 @@ datas += pillow_datas
 
 # Hidden imports that PyInstaller might miss
 hiddenimports = [
+    # Local modules
+    'transcription_service',
+
     # Core modules
     'customtkinter',
     'PIL',
