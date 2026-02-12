@@ -1254,6 +1254,7 @@ HTML_TEMPLATE = '''
 
                         <label title="Which tab in the spreadsheet to write data to">Sheet Tab Name</label>
                         <input type="text" id="taskSheetName" value="Sheet1" placeholder="Sheet1" title="Must match an existing tab name exactly (case-sensitive)">
+                        <div id="sheetTabStatus" style="display:none;font-size:0.82rem;margin:-4px 0 8px 0;padding:6px 10px;border-radius:6px;"></div>
 
                         <div style="display:flex;align-items:center;gap:8px;margin-bottom:12px;">
                             <input type="checkbox" id="taskIncludeHeaders" style="width:18px;height:18px;margin:0;" title="Add column headers as the first row — enable for brand new sheets">
@@ -2118,6 +2119,9 @@ HTML_TEMPLATE = '''
             updateScheduleFields();
             toggleSheetsFields();
             toggleColumnOverride();
+            // Reset tab validation state
+            document.getElementById('sheetTabStatus').style.display = 'none';
+            _tabValidationDone = {};
         }
 
         function editTask(taskId) {
@@ -2146,6 +2150,94 @@ HTML_TEMPLATE = '''
             var useDefaults = document.getElementById('taskUseConfigColumns').checked;
             document.getElementById('columnOverrideSection').style.display = useDefaults ? 'none' : 'block';
         }
+
+        var _tabValidationDone = {};  // Track which tab names we&#39;ve already offered to create
+        async function validateSheetTab() {
+            var spreadsheetId = document.getElementById('taskSpreadsheetId').value.trim();
+            var tabName = document.getElementById('taskSheetName').value.trim();
+            var statusEl = document.getElementById('sheetTabStatus');
+
+            if (!spreadsheetId || !tabName) {
+                statusEl.style.display = 'none';
+                return;
+            }
+
+            statusEl.style.display = 'block';
+            statusEl.style.background = 'var(--surface)';
+            statusEl.style.color = 'var(--text-muted)';
+            statusEl.innerHTML = 'Checking tab&#8230;';
+
+            try {
+                var data = await api('/api/sheets/validate-tab', {
+                    spreadsheet_id: spreadsheetId,
+                    tab_name: tabName
+                });
+
+                if (data.exists) {
+                    statusEl.style.background = 'rgba(76,175,80,0.12)';
+                    statusEl.style.color = '#66bb6a';
+                    statusEl.innerHTML = '&#x2714; Tab &#34;' + tabName + '&#34; found';
+                } else {
+                    statusEl.style.background = 'rgba(255,152,0,0.12)';
+                    statusEl.style.color = '#ffa726';
+                    var tabList = (data.available_tabs || []).join(', ');
+                    var msg = '&#x26A0; Tab &#34;' + tabName + '&#34; not found. ';
+                    if (tabList) {
+                        msg += 'Existing tabs: ' + tabList + '. ';
+                    }
+                    // Only show Create button once per tab name
+                    var createKey = spreadsheetId + '::' + tabName;
+                    if (!_tabValidationDone[createKey]) {
+                        msg += '<button onclick="createSheetTab()" style="margin-left:6px;padding:2px 10px;border-radius:4px;border:1px solid #ffa726;background:transparent;color:#ffa726;cursor:pointer;font-size:0.8rem;">Create Tab</button>';
+                    }
+                    statusEl.innerHTML = msg;
+                }
+            } catch (e) {
+                statusEl.style.background = 'rgba(244,67,54,0.12)';
+                statusEl.style.color = '#ef5350';
+                statusEl.innerHTML = 'Could not validate: ' + (e.message || e);
+            }
+        }
+
+        async function createSheetTab() {
+            var spreadsheetId = document.getElementById('taskSpreadsheetId').value.trim();
+            var tabName = document.getElementById('taskSheetName').value.trim();
+            var statusEl = document.getElementById('sheetTabStatus');
+            var createKey = spreadsheetId + '::' + tabName;
+
+            statusEl.innerHTML = 'Creating tab&#8230;';
+            statusEl.style.background = 'var(--surface)';
+            statusEl.style.color = 'var(--text-muted)';
+
+            try {
+                var data = await api('/api/sheets/create-tab', {
+                    spreadsheet_id: spreadsheetId,
+                    tab_name: tabName
+                });
+
+                if (data.created) {
+                    _tabValidationDone[createKey] = true;
+                    statusEl.style.background = 'rgba(76,175,80,0.12)';
+                    statusEl.style.color = '#66bb6a';
+                    statusEl.innerHTML = '&#x2714; Tab &#34;' + tabName + '&#34; created';
+                } else {
+                    statusEl.style.background = 'rgba(244,67,54,0.12)';
+                    statusEl.style.color = '#ef5350';
+                    statusEl.innerHTML = 'Failed to create tab: ' + (data.error || 'Unknown error');
+                }
+            } catch (e) {
+                statusEl.style.background = 'rgba(244,67,54,0.12)';
+                statusEl.style.color = '#ef5350';
+                statusEl.innerHTML = 'Error: ' + (e.message || e);
+            }
+        }
+
+        // Wire up validation on blur and reset on spreadsheet ID change
+        document.getElementById('taskSheetName').addEventListener('blur', validateSheetTab);
+        document.getElementById('taskSpreadsheetId').addEventListener('change', function() {
+            document.getElementById('sheetTabStatus').style.display = 'none';
+            _tabValidationDone = {};
+        });
 
         async function refreshPreview() {
             var configName = document.getElementById('taskConfig').value;
@@ -2730,6 +2822,64 @@ def api_sheets_deduplicate():
         sid = extract_sheet_id(spreadsheet_id)
         result = deduplicate_sheet(sid, sheet_name, dedup_column)
         return jsonify(result)
+    except Exception as e:
+        return jsonify({'error': str(e)}), 500
+
+
+@app.route('/api/sheets/validate-tab', methods=['POST'])
+def api_sheets_validate_tab():
+    """Check if a sheet tab exists. Returns existing tabs and match status."""
+    data = request.json
+    spreadsheet_id = data.get('spreadsheet_id', '')
+    tab_name = data.get('tab_name', '')
+
+    if not spreadsheet_id or not tab_name:
+        return jsonify({'error': 'spreadsheet_id and tab_name required'}), 400
+
+    try:
+        from sheets_manager import (
+            get_sheet_tab_names, extract_sheet_id, is_sheets_available
+        )
+        if not is_sheets_available():
+            return jsonify({'error': 'Google Sheets not configured'}), 400
+
+        sid = extract_sheet_id(spreadsheet_id)
+        tabs = get_sheet_tab_names(sid)
+        exists = tab_name in tabs
+
+        return jsonify({
+            'exists': exists,
+            'tab_name': tab_name,
+            'available_tabs': tabs
+        })
+    except Exception as e:
+        return jsonify({'error': str(e)}), 500
+
+
+@app.route('/api/sheets/create-tab', methods=['POST'])
+def api_sheets_create_tab():
+    """Create a new tab in a Google Spreadsheet."""
+    data = request.json
+    spreadsheet_id = data.get('spreadsheet_id', '')
+    tab_name = data.get('tab_name', '')
+
+    if not spreadsheet_id or not tab_name:
+        return jsonify({'error': 'spreadsheet_id and tab_name required'}), 400
+
+    try:
+        from sheets_manager import (
+            create_sheet_tab, extract_sheet_id, is_sheets_available
+        )
+        if not is_sheets_available():
+            return jsonify({'error': 'Google Sheets not configured'}), 400
+
+        sid = extract_sheet_id(spreadsheet_id)
+        success = create_sheet_tab(sid, tab_name)
+
+        if success:
+            return jsonify({'created': True, 'tab_name': tab_name})
+        else:
+            return jsonify({'error': f'Failed to create tab: {tab_name}'}), 500
     except Exception as e:
         return jsonify({'error': str(e)}), 500
 

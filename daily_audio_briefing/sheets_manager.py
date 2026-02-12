@@ -183,6 +183,30 @@ def resolve_sheet_name(spreadsheet_id: str, configured_name: str) -> Optional[st
         return None
 
 
+def create_sheet_tab(spreadsheet_id: str, tab_name: str) -> bool:
+    """
+    Create a new tab (sheet) in a Google Spreadsheet.
+
+    Args:
+        spreadsheet_id: The Google Sheet ID
+        tab_name: Name for the new tab
+
+    Returns:
+        True if created successfully, False otherwise
+    """
+    try:
+        service = get_sheets_service()
+        service.spreadsheets().batchUpdate(
+            spreadsheetId=spreadsheet_id,
+            body={'requests': [{'addSheet': {'properties': {'title': tab_name}}}]}
+        ).execute()
+        print(f"[sheets_manager] Created new tab: '{tab_name}'")
+        return True
+    except HttpError as e:
+        print(f"[sheets_manager] Error creating tab '{tab_name}': {e}")
+        return False
+
+
 def get_sheet_headers(spreadsheet_id: str, sheet_name: str = 'Sheet1') -> List[str]:
     """Get the header row from a sheet."""
     values = read_sheet(spreadsheet_id, f'{sheet_name}!1:1')
