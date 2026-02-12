@@ -132,6 +132,57 @@ def read_sheet(
     return result.get('values', [])
 
 
+def get_sheet_tab_names(spreadsheet_id: str) -> List[str]:
+    """
+    Get all tab (sheet) names from a Google Spreadsheet.
+
+    Returns:
+        List of sheet tab names, e.g. ['Sheet1', 'local-Daemon', 'Archive']
+    """
+    service = get_sheets_service()
+    metadata = service.spreadsheets().get(
+        spreadsheetId=spreadsheet_id,
+        fields='sheets.properties.title'
+    ).execute()
+    return [s['properties']['title'] for s in metadata.get('sheets', [])]
+
+
+def resolve_sheet_name(spreadsheet_id: str, configured_name: str) -> Optional[str]:
+    """
+    Verify a sheet tab name exists. If not, try to find the correct tab.
+
+    Strategy:
+    1. If configured_name exists → return it (no change needed)
+    2. If only one tab exists → return that tab's name (user probably renamed it)
+    3. If multiple tabs → return None (ambiguous, can't auto-resolve)
+
+    Returns:
+        The resolved sheet name, or None if it can't be determined.
+    """
+    try:
+        tabs = get_sheet_tab_names(spreadsheet_id)
+        if not tabs:
+            return None
+
+        # Exact match — all good
+        if configured_name in tabs:
+            return configured_name
+
+        # Single tab — user renamed it, use the new name
+        if len(tabs) == 1:
+            print(f"[sheets_manager] Tab '{configured_name}' not found. "
+                  f"Auto-resolved to only tab: '{tabs[0]}'")
+            return tabs[0]
+
+        # Multiple tabs — can't auto-resolve
+        print(f"[sheets_manager] Tab '{configured_name}' not found. "
+              f"Available tabs: {tabs}. Cannot auto-resolve.")
+        return None
+    except Exception as e:
+        print(f"[sheets_manager] Warning: Could not resolve sheet name: {e}")
+        return None
+
+
 def get_sheet_headers(spreadsheet_id: str, sheet_name: str = 'Sheet1') -> List[str]:
     """Get the header row from a sheet."""
     values = read_sheet(spreadsheet_id, f'{sheet_name}!1:1')

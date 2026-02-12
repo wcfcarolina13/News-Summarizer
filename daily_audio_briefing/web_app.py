@@ -296,8 +296,9 @@ HTML_TEMPLATE = '''
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
     <title>Daily Audio Briefing</title>
-    <link rel="icon" type="image/png" sizes="32x32" href="data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAACAAAAAgCAYAAABzenr0AAABTklEQVR4nGNgGOmAEZeEkIjUf2pa9O7NM6x2MdHDcnxmYjiAFpbjM5uJkAJaO4IJlwS9HMFCjIbHj+6RZZGsnBJBNfCUiSsE+IRlybIcBj69fYxVHJYrsOYCGCDX56SYgdcB9ACjDiCYC66ePziwDmBgYGC4++AJTjllBRkGBgYGBne/WAy5nZsWEzQbbzZ8/OgeXsvRHYELYCsPYNmQqBAgBmALAQYGwqFANQcgW2S/6DHDwTjiCjCqh8CPkDYUPl1DwH4Rotj9EdJGVCgQLAcIJTCYPLLlMIBNDB0QFQKEHIHPIkKOIOgAXKkbGXDgkdu5aTGDbA2ZDpCVUyK5RoT5GBb/hNoEVAkBZAALDfc1xKkn2CChFYCVhChtdWyO0DKwpsiiaxeO4rQcwwG4HEFNgN5BwdpbQXZEaSGAzce4LMfpAHRHUAPg6pqNAgBtCXK0fWb/cgAAAABJRU5ErkJggg==">
-    <link rel="apple-touch-icon" href="data:image/png;base64,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">
+    <link rel="icon" type="image/x-icon" href="/favicon.ico">
+    <link rel="icon" type="image/png" sizes="32x32" href="/favicon-32.png">
+    <link rel="apple-touch-icon" sizes="180x180" href="/favicon-apple.png">
     <link rel="manifest" href="/manifest.json">
     <meta name="theme-color" content="#0f0f0f">
     <meta name="mobile-web-app-capable" content="yes">
@@ -2742,9 +2743,39 @@ def health():
         'scheduler_running': server_scheduler.is_running if server_scheduler else False,
     })
 
+@app.route('/favicon.ico')
+def favicon_ico():
+    """Serve favicon.ico — browsers always request this."""
+    import base64
+    ICO_B64 = "AAABAAEAEBAAAAAAIADnAAAAFgAAAIlQTkcNChoKAAAADUlIRFIAAAAQAAAAEAgGAAAAH/P/YQAAAK5JREFUeJxjYKAQMCJzhESk/hOj6d2bZ3B9TKRqRlfLiCzAJyxLlAGf3j6Gu4SJgFqCgGIDWJA5m9YvxVCQlVeJwt+5aTGDrJwSdgOwgZ2bFhPvAmzA3S+WMgOQXWC/6DHDwThZFC+gRKOWgTUh8xgYGBgYrl04ysDAAIlGFBfg8q/9oseoAhfs4UwUA3D5lwOPa+BpmpSkzMCAyA8omcnGJZQoQ47sWc1IWBWRAADPHTCqNjkNHwAAAABJRU5ErkJggg=="
+    data = base64.b64decode(ICO_B64)
+    return Response(data, mimetype='image/x-icon',
+                    headers={'Cache-Control': 'public, max-age=604800'})
+
+
+@app.route('/favicon-32.png')
+def favicon_32():
+    """Serve 32x32 PNG favicon."""
+    import base64
+    PNG32_B64 = "iVBORw0KGgoAAAANSUhEUgAAACAAAAAgCAYAAABzenr0AAABTklEQVR4nGNgGOmAEZeEkIjUf2pa9O7NM6x2MdHDcnxmYjiAFpbjM5uJkAJaO4IJlwS9HMFCjIbHj+6RZZGsnBJBNfCUiSsE+IRlybIcBj69fYxVHJYrsOYCGCDX56SYgdcB9ACjDiCYC66ePziwDmBgYGC4++AJTjllBRkGBgYGBne/WAy5nZsWEzQbbzZ8/OgeXsvRHYELYCsPYNmQqBAgBmALAQYGwqFANQcgW2S/6DHDwTjiCjCqh8CPkDYUPl1DwH4Rotj9EdJGVCgQLAcIJTCYPLLlMIBNDB0QFQKEHIHPIkKOIOgAXKkbGXDgkdu5aTGDbA2ZDpCVUyK5RoT5GBb/hNoEVAkBZAALDfc1xKkn2CChFYCVhChtdWyO0DKwpsiiaxeO4rQcwwG4HEFNgN5BwdpbQXZEaSGAzce4LMfpAHRHUAPg6pqNAgBtCXK0fWb/cgAAAABJRU5ErkJggg=="
+    data = base64.b64decode(PNG32_B64)
+    return Response(data, mimetype='image/png',
+                    headers={'Cache-Control': 'public, max-age=604800'})
+
+
+@app.route('/favicon-apple.png')
+def favicon_apple():
+    """Serve Apple touch icon (180x180)."""
+    import base64
+    APPLE_B64 = "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"
+    data = base64.b64decode(APPLE_B64)
+    return Response(data, mimetype='image/png',
+                    headers={'Cache-Control': 'public, max-age=604800'})
+
+
 @app.route('/manifest.json')
 def manifest():
-    """PWA manifest."""
+    """PWA manifest with icons."""
     return jsonify({
         'name': 'Daily Audio Briefing',
         'short_name': 'Briefing',
@@ -2752,7 +2783,10 @@ def manifest():
         'display': 'standalone',
         'background_color': '#0f0f0f',
         'theme_color': '#0f0f0f',
-        'icons': []
+        'icons': [
+            {'src': '/favicon-32.png', 'sizes': '32x32', 'type': 'image/png'},
+            {'src': '/favicon-apple.png', 'sizes': '180x180', 'type': 'image/png'}
+        ]
     })
 
 # =============================================================================

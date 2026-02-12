@@ -404,24 +404,38 @@ class Scheduler:
             # Export to Google Sheets if enabled
             if task.export_to_sheets and items and task.spreadsheet_id:
                 try:
-                    from sheets_manager import export_items_to_sheet, is_sheets_available
+                    from sheets_manager import (
+                        export_items_to_sheet, is_sheets_available, resolve_sheet_name
+                    )
 
                     if is_sheets_available():
-                        # Get columns: task override > config default
-                        columns = task.custom_columns
-                        if not columns and custom_instructions:
-                            columns = custom_instructions.get('csv_columns')
+                        # Auto-detect renamed sheet tabs
+                        resolved_name = resolve_sheet_name(task.spreadsheet_id, task.sheet_name)
+                        if resolved_name and resolved_name != task.sheet_name:
+                            print(f"[Scheduler] Sheet tab renamed: '{task.sheet_name}' → '{resolved_name}'")
+                            task.sheet_name = resolved_name
 
-                        result = export_items_to_sheet(
-                            items=items,
-                            spreadsheet_id=task.spreadsheet_id,
-                            sheet_name=task.sheet_name,
-                            columns=columns,
-                            include_headers=task.include_headers
-                        )
+                        if not resolved_name:
+                            task.last_result = (
+                                f"Extracted {len(items)} items, "
+                                f"Sheets error: tab '{task.sheet_name}' not found"
+                            )
+                        else:
+                            # Get columns: task override > config default
+                            columns = task.custom_columns
+                            if not columns and custom_instructions:
+                                columns = custom_instructions.get('csv_columns')
 
-                        updated = result.get('updates', {}).get('updatedRows', len(items))
-                        task.last_result = f"Success: {len(items)} items → {updated} rows to Sheets"
+                            result = export_items_to_sheet(
+                                items=items,
+                                spreadsheet_id=task.spreadsheet_id,
+                                sheet_name=task.sheet_name,
+                                columns=columns,
+                                include_headers=task.include_headers
+                            )
+
+                            updated = result.get('updates', {}).get('updatedRows', len(items))
+                            task.last_result = f"Success: {len(items)} items → {updated} rows to Sheets"
                     else:
                         task.last_result = f"Extracted {len(items)} items (Sheets not configured)"
                 except Exception as e:
