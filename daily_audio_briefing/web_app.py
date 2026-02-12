@@ -80,6 +80,36 @@ if SCHEDULER_AVAILABLE:
     if SERVER_MODE:
         server_scheduler.start()
 
+# Self-ping keep-alive (prevents Render free tier from sleeping)
+def _start_self_ping():
+    """Ping own /health endpoint every 4 minutes to prevent Render sleep."""
+    import time
+    import requests as _requests
+
+    # Detect the public URL from Render's environment
+    render_url = os.environ.get('RENDER_EXTERNAL_URL')
+    if not render_url:
+        print("[keep-alive] No RENDER_EXTERNAL_URL set, self-ping disabled")
+        return
+
+    health_url = f"{render_url}/health"
+    print(f"[keep-alive] Starting self-ping to {health_url} every 4 minutes")
+
+    def ping_loop():
+        while True:
+            time.sleep(240)  # 4 minutes
+            try:
+                resp = _requests.get(health_url, timeout=10)
+                print(f"[keep-alive] Ping {resp.status_code}")
+            except Exception as e:
+                print(f"[keep-alive] Ping failed: {e}")
+
+    t = threading.Thread(target=ping_loop, daemon=True)
+    t.start()
+
+if SERVER_MODE:
+    _start_self_ping()
+
 # =============================================================================
 # UTILITY FUNCTIONS
 # =============================================================================

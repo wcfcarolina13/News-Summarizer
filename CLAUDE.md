@@ -93,26 +93,39 @@ Deploy to Render.com free tier with keep-alive ping to prevent sleep.
 
 **Keep-alive:** Set up UptimeRobot (free) to ping `/health` every 5 minutes.
 
+## Current Status
+
+**Alpha testing.** API keys and Google credentials are hardcoded to the admin's accounts. The web dashboard is open (no auth). All costs (Gemini API, Sheets API) are on the admin's billing.
+
+**Live deployment:** https://news-summarizer-zgny.onrender.com (Render.com free tier, `server-deploy` branch)
+
 ## Pending Work
 
 **High Priority:**
 1. Rebuild macOS app — major features added since last build (scheduler, daemon, newsletter rewrite, audio fixes, UI reorg)
 2. Test multi-URL feature in GUI
-3. Commit outstanding changes — 20+ modified/new files in working tree
-4. Deploy to Render.com and verify scheduler runs 24/7
+3. ~~Commit outstanding changes~~ ✅ Pushed to `server-deploy` branch
+4. ~~Deploy to Render.com~~ ✅ Live at https://news-summarizer-zgny.onrender.com
 
 **Server/Infra:**
 5. Set up UptimeRobot keep-alive ping after Render deploy
 6. Test Sheets export via env var credentials on server
+7. Verify web app feature parity with desktop version
+
+**Critical — API Cost Protection:**
+8. API usage rate limiter — hard cap to prevent unexpected bills from scheduler bursts
+9. User-configurable spending limit with warnings (desktop notification + email)
+10. Per-task API call tracking and cost estimation
+11. Dashboard showing cumulative API usage and remaining budget
 
 **Future — Multi-tenant SaaS:**
-7. Add authentication to web dashboard (currently open)
-8. Per-client API keys and Sheets credentials
-9. Task isolation (client A can't see/modify client B's tasks)
-10. Rate limiting per client
-11. Progress indicator for multi-URL extraction
-12. Save/load URL lists for recurring newsletter batches
-13. Keyboard shortcuts for common actions
+12. Add authentication to web dashboard (currently open)
+13. Per-client API keys and Sheets credentials
+14. Task isolation (client A can't see/modify client B's tasks)
+15. Rate limiting per client
+16. Progress indicator for multi-URL extraction
+17. Save/load URL lists for recurring newsletter batches
+18. Keyboard shortcuts for common actions
 
 ## Build Instructions
 
