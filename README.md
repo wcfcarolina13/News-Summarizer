@@ -1,6 +1,6 @@
 # Daily Audio Briefing
 
-A desktop application that creates personalized audio news briefings from YouTube channels, articles, and newsletters using AI summarization and text-to-speech.
+A desktop + web application that creates personalized audio news briefings from YouTube channels, articles, and newsletters using AI summarization and text-to-speech. Includes an automated scheduler that extracts data on a recurring schedule and exports to Google Sheets.
 
 ## Download
 
@@ -54,6 +54,19 @@ A desktop application that creates personalized audio news briefings from YouTub
 - **LLM Reasoning**: AI-powered suggestions for Grid profile updates
 - **CSV Export**: Export extracted data with Grid matching results
 - **Google Sheets Export**: Export directly to Google Sheets
+
+### Automated Scheduler
+- **Recurring Extraction Tasks**: Schedule data extraction to run hourly, daily, weekly, or on a custom interval
+- **Google Sheets Export**: Automatically push extracted data to Google Sheets after each run
+- **Task Management**: Enable/disable tasks, edit schedules, run tasks on demand
+- **Column Configuration**: Use config defaults or define custom columns for Sheets export
+- **Live Preview**: Preview how data will look in your spreadsheet before saving
+
+### Web Dashboard
+- **Mobile-Friendly Interface**: Full-featured web app accessible from any device
+- **All Desktop Features**: Summarize, extract, generate audio, and manage scheduler from the browser
+- **In-App Guide**: Built-in user guide accessible from the header
+- **Tooltips**: Hover over any field for helpful guidance
 
 ### Additional Features
 - **API Key Management**: Save, view, copy, and manage your API key securely
@@ -109,6 +122,42 @@ Or use GitHub Actions - push a version tag to automatically build both installer
 git tag v1.0.0
 git push --tags
 ```
+
+---
+
+## Web Dashboard (Server Mode)
+
+The web dashboard provides a mobile-friendly interface for all features, plus an automated scheduler for hands-free data extraction.
+
+### Running Locally
+
+```bash
+cd daily_audio_briefing
+pip install -r requirements-server.txt
+python web_app.py
+# Opens at http://localhost:5001
+```
+
+### Deploy to Render.com (Free Tier)
+
+1. Push to GitHub (use the `server-deploy` branch)
+2. Create a new Web Service on [Render.com](https://render.com)
+3. Connect your GitHub repository
+4. Configure:
+   - **Root Directory**: `daily_audio_briefing`
+   - **Build Command**: `pip install -r requirements-server.txt`
+   - **Start Command**: `gunicorn web_app:app --bind 0.0.0.0:$PORT --timeout 120 --workers 1`
+5. Set environment variables in Render dashboard:
+   - `SERVER_MODE=true` — Enables auto-start of scheduler
+   - `GEMINI_API_KEY` — Your Google Gemini API key
+   - `GOOGLE_CREDENTIALS_JSON` — Full JSON of service account credentials (for Sheets export)
+6. Deploy
+
+### Keep-Alive
+
+Render's free tier sleeps after 15 minutes of inactivity. The app includes a built-in self-ping that uses the `RENDER_EXTERNAL_URL` env var (auto-set by Render). For additional reliability, set up [UptimeRobot](https://uptimerobot.com) (free) to ping your `/health` endpoint every 5 minutes.
+
+> **Note**: The web dashboard is currently in alpha testing. API keys and Google credentials are managed by the admin. There is no authentication on the web interface.
 
 ---
 
@@ -202,12 +251,15 @@ python gui_app.py
 
 | Problem | Solution |
 |---------|----------|
-| No summaries generated | Check that channels.txt has valid YouTube channel URLs |
+| No summaries generated | Check that sources.json has valid YouTube channel URLs |
 | API errors | Verify your API key is correct (click 👁 to check) |
 | "API key expired" | Get a new key at aistudio.google.com |
 | No audio output | Check gui_log.txt for error details |
 | Article fetch failed | Some sites block automated access; try pasting content directly |
 | Transcription not available | Install faster-whisper: `pip install faster-whisper` |
+| Port 5001 in use (web app) | Set `PORT` env var: `PORT=5002 python web_app.py` |
+| Scheduler task disappears (Render) | Render's free tier has ephemeral storage — tasks reset on redeploy |
+| Sheets export fails | Ensure `GOOGLE_CREDENTIALS_JSON` is set and the service account has sheet access |
 
 ---
 
@@ -215,15 +267,24 @@ python gui_app.py
 
 | File | Purpose |
 |------|---------|
-| `gui_app.py` | Main GUI application |
-| `transcription_service.py` | Audio transcription with system Python detection |
-| `file_manager.py` | File I/O operations |
-| `audio_generator.py` | Audio generation |
-| `voice_manager.py` | Voice preset management |
-| `data_csv_processor.py` | Data extraction and enrichment |
-| `sheets_manager.py` | Google Sheets integration |
+| `gui_app.py` | Main desktop GUI application (Tkinter) |
+| `web_app.py` | Flask web dashboard (server mode) |
+| `server_scheduler.py` | Flask-integrated scheduler for cloud deployment |
+| `scheduler.py` | Automated extraction task scheduler |
+| `data_csv_processor.py` | Data extraction and Grid enrichment |
+| `source_fetcher.py` | Unified content fetching (YouTube, RSS, articles) |
+| `source_processor.py` | Source type routing |
+| `execsum_processor.py` | ExecSum newsletter processing |
 | `get_youtube_news.py` | YouTube fetching and summarization |
+| `sheets_manager.py` | Google Sheets export |
+| `audio_generator.py` | Audio generation orchestration |
 | `make_audio_quality.py` | High-quality Kokoro TTS |
+| `voice_manager.py` | Voice preset management |
+| `file_manager.py` | File I/O with frozen app support |
+| `transcription_service.py` | Audio transcription with system Python detection |
+
+**Config files**: `sources.json`, `instruction_profiles.json`, `scheduled_tasks.json`, `settings.json`
+**Extraction configs**: `extraction_instructions/*.json` (per-source extraction rules)
 
 ---
 

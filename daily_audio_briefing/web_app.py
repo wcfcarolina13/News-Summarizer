@@ -951,9 +951,17 @@ HTML_TEMPLATE = '''
 </head>
 <body>
     <!-- Header -->
-    <div class="header">
-        <h1>Daily Audio Briefing</h1>
-        <div class="subtitle" id="headerSubtitle">Mobile Web Interface</div>
+    <div class="header" style="display:flex;align-items:center;justify-content:space-between;">
+        <div>
+            <h1>Daily Audio Briefing</h1>
+            <div class="subtitle" id="headerSubtitle">Mobile Web Interface</div>
+        </div>
+        <button onclick="navigateTo('guide')" style="background:none;border:1px solid var(--border);color:var(--accent);padding:6px 14px;border-radius:8px;font-size:0.8rem;cursor:pointer;" title="Open the user guide">&#x2753; Guide</button>
+    </div>
+
+    <!-- Alpha Notice -->
+    <div style="background:rgba(243,156,18,0.12);border:1px solid rgba(243,156,18,0.3);border-radius:8px;padding:8px 14px;margin:8px 16px 0;font-size:0.75rem;color:#f39c12;">
+        &#x26A0; <strong>Alpha</strong> &mdash; API keys and credentials are managed by the admin. <a href="#" onclick="navigateTo('guide'); return false;" style="color:#f39c12;text-decoration:underline;">Learn more</a>
     </div>
 
     <!-- Status Bar -->
@@ -1006,17 +1014,17 @@ HTML_TEMPLATE = '''
                     YouTube Summarization
                 </div>
 
-                <label>Gemini API Key</label>
-                <input type="password" id="apiKey" placeholder="Enter your Gemini API key">
+                <label title="Your Google Gemini API key for AI summarization">Gemini API Key</label>
+                <input type="password" id="apiKey" placeholder="Enter your Gemini API key" title="Paste your API key from ai.google.dev">
 
-                <label>Model</label>
-                <select id="model">
+                <label title="AI model tier — higher quality uses more of your daily quota">Model</label>
+                <select id="model" title="Fast: highest quota, good quality. Best: lowest quota, highest quality.">
                     <option value="fast">Fast (FREE) - 4000 req/min</option>
                     <option value="balanced">Balanced (FREE) - 1500 req/day</option>
                     <option value="best">Best (FREE) - 50 req/day</option>
                 </select>
 
-                <label>Fetch Mode</label>
+                <label title="Choose how to select which videos to summarize">Fetch Mode</label>
                 <div class="mode-selector">
                     <div class="mode-option active" onclick="setMode('days')">Days</div>
                     <div class="mode-option" onclick="setMode('hours')">Hours</div>
@@ -1024,20 +1032,20 @@ HTML_TEMPLATE = '''
                 </div>
 
                 <div id="fetchValueSection">
-                    <label id="fetchLabel">Number of Days</label>
-                    <input type="number" id="fetchValue" value="7" min="1">
+                    <label id="fetchLabel" title="How far back to look for new videos">Number of Days</label>
+                    <input type="number" id="fetchValue" value="7" min="1" title="e.g. 7 = fetch videos from the last week">
                 </div>
 
                 <div id="urlsSection" class="hidden">
-                    <label>YouTube URLs (one per line)</label>
-                    <textarea id="urls" placeholder="https://youtube.com/watch?v=..."></textarea>
+                    <label title="Paste specific video URLs to summarize">YouTube URLs (one per line)</label>
+                    <textarea id="urls" placeholder="https://youtube.com/watch?v=..." title="One YouTube URL per line — each video will be transcribed and summarized"></textarea>
                 </div>
 
                 <div id="sourceCount" style="color: var(--text-muted); font-size: 0.8rem; margin-bottom: 12px;">
                     Loading sources...
                 </div>
 
-                <button class="btn btn-primary" id="fetchBtn" onclick="startFetch()">
+                <button class="btn btn-primary" id="fetchBtn" onclick="startFetch()" title="Fetch videos from your sources and generate an AI summary">
                     <svg width="18" height="18" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-4l-4 4m0 0l-4-4m4 4V4"/></svg>
                     Fetch & Summarize
                 </button>
@@ -1045,10 +1053,10 @@ HTML_TEMPLATE = '''
 
             <div class="card" id="summaryCard" style="display: none;">
                 <div class="card-title">Summary</div>
-                <textarea id="summaryText" style="min-height: 200px;"></textarea>
+                <textarea id="summaryText" style="min-height: 200px;" title="Edit the AI-generated summary before saving or generating audio"></textarea>
                 <div class="btn-row">
-                    <button class="btn btn-secondary" onclick="saveSummary()">Save</button>
-                    <button class="btn btn-success" onclick="navigateTo('audio')">Generate Audio</button>
+                    <button class="btn btn-secondary" onclick="saveSummary()" title="Save the summary text to a file">Save</button>
+                    <button class="btn btn-success" onclick="navigateTo('audio')" title="Go to the Audio page to turn this summary into a spoken briefing">Generate Audio</button>
                 </div>
             </div>
         </div>
@@ -1067,32 +1075,32 @@ HTML_TEMPLATE = '''
                 </div>
 
                 <div id="extractUrlSection">
-                    <label>Newsletter URL</label>
-                    <input type="text" id="extractUrl" placeholder="https://cryptosum.beehiiv.com/p/...">
+                    <label title="URL of the newsletter issue to extract links from">Newsletter URL</label>
+                    <input type="text" id="extractUrl" placeholder="https://cryptosum.beehiiv.com/p/..." title="Paste the full URL of a newsletter issue or article archive page">
                 </div>
 
                 <div id="extractHtmlSection" class="hidden">
-                    <label>Paste HTML Content</label>
-                    <textarea id="extractHtml" placeholder="Paste HTML source here..."></textarea>
-                    <label>Source URL (optional)</label>
-                    <input type="text" id="extractSourceUrl" placeholder="https://...">
+                    <label title="Raw HTML source of the newsletter (View Source in browser)">Paste HTML Content</label>
+                    <textarea id="extractHtml" placeholder="Paste HTML source here..." title="Right-click the page > View Page Source, then copy-paste the HTML here"></textarea>
+                    <label title="Original URL of this content — used for resolving relative links">Source URL (optional)</label>
+                    <input type="text" id="extractSourceUrl" placeholder="https://..." title="Helps resolve relative links in the pasted HTML">
                 </div>
 
-                <label>Config</label>
-                <select id="extractConfig">
+                <label title="Extraction config controls which links are kept and how data is structured">Config</label>
+                <select id="extractConfig" title="Each config has include/exclude patterns for specific newsletter formats">
                     <option value="default">Default (all links)</option>
                     <option value="cryptosum">CryptoSum Newsletter</option>
                 </select>
 
                 <div class="toggle-row" style="margin: 12px 0;">
-                    <span>Enrich with The Grid data</span>
-                    <div class="toggle" id="gridToggle" onclick="toggleGrid()"></div>
+                    <span title="Cross-reference extracted entities with The Grid Web3 database for extra metadata">Enrich with The Grid data</span>
+                    <div class="toggle" id="gridToggle" onclick="toggleGrid()" title="Toggle Grid enrichment on/off"></div>
                 </div>
                 <p style="font-size: 0.75rem; color: var(--text-muted); margin-bottom: 12px;">
                     Match entities to The Grid's Web3 database and add TGS recommendations
                 </p>
 
-                <button class="btn btn-primary" onclick="startExtract()">
+                <button class="btn btn-primary" onclick="startExtract()" title="Parse the newsletter and extract structured data using the selected config">
                     Extract Links
                 </button>
             </div>
@@ -1102,10 +1110,10 @@ HTML_TEMPLATE = '''
                     Extracted Links (<span id="extractCount">0</span>)
                 </div>
                 <div class="btn-row">
-                    <button class="btn btn-success" onclick="downloadExtractedCSV()">
+                    <button class="btn btn-success" onclick="downloadExtractedCSV()" title="Download the extracted data as a CSV file">
                         Download CSV
                     </button>
-                    <button class="btn btn-secondary" onclick="copyExtractedCSV()">
+                    <button class="btn btn-secondary" onclick="copyExtractedCSV()" title="Copy CSV data to clipboard for pasting into spreadsheets">
                         Copy CSV
                     </button>
                 </div>
@@ -1125,23 +1133,23 @@ HTML_TEMPLATE = '''
                     <!-- Filled by JS -->
                 </div>
 
-                <label>Voice (for Quality mode)</label>
-                <select id="voice">
+                <label title="Select the AI voice for high-quality Kokoro audio generation">Voice (for Quality mode)</label>
+                <select id="voice" title="af_ = female voices, am_ = male voices. Only used in Quality mode.">
                     <option value="af_sarah">af_sarah (Female)</option>
                     <option value="af_bella">af_bella (Female)</option>
                     <option value="am_adam">am_adam (Male)</option>
                     <option value="am_michael">am_michael (Male)</option>
                 </select>
 
-                <button class="btn btn-secondary" onclick="playSample()">
+                <button class="btn btn-secondary" onclick="playSample()" title="Hear a short preview of the selected voice">
                     ▶ Play Sample
                 </button>
 
                 <div class="btn-row" style="margin-top: 12px;">
-                    <button class="btn btn-primary" onclick="generateAudio('fast')">
+                    <button class="btn btn-primary" onclick="generateAudio('fast')" title="Quick generation using Google TTS — robotic but fast">
                         Fast (gTTS)
                     </button>
-                    <button class="btn btn-success" onclick="generateAudio('quality')">
+                    <button class="btn btn-success" onclick="generateAudio('quality')" title="High-quality generation using Kokoro ONNX — natural voice, slower">
                         Quality (Kokoro)
                     </button>
                 </div>
@@ -1177,7 +1185,7 @@ HTML_TEMPLATE = '''
                     </div>
                 </div>
 
-                <button class="btn btn-primary" onclick="openTaskEditor()">
+                <button class="btn btn-primary" onclick="openTaskEditor()" title="Create a new automated extraction task">
                     + Add Task
                 </button>
             </div>
@@ -1186,20 +1194,20 @@ HTML_TEMPLATE = '''
             <div class="card" id="taskEditorCard" style="display:none;">
                 <div class="card-title" id="taskEditorTitle">New Task</div>
 
-                <label>Task Name</label>
-                <input type="text" id="taskName" placeholder="e.g. RWA TG Updater">
+                <label title="A friendly name to identify this task in the list">Task Name</label>
+                <input type="text" id="taskName" placeholder="e.g. RWA TG Updater" title="Give your task a descriptive name">
 
-                <label>Source URL</label>
-                <input type="text" id="taskSourceUrl" placeholder="https://t.me/channel or newsletter URL">
+                <label title="The feed URL to extract data from on each run">Source URL</label>
+                <input type="text" id="taskSourceUrl" placeholder="https://t.me/channel or newsletter URL" title="Telegram channel, newsletter archive page, or RSS feed URL">
                 <p style="font-size:0.7rem;color:var(--text-muted);margin:-8px 0 12px;">Telegram channel, newsletter archive, or RSS feed URL</p>
 
-                <label>Extraction Config</label>
-                <select id="taskConfig">
+                <label title="Determines how links are filtered and structured — each config is tailored to a specific source">Extraction Config</label>
+                <select id="taskConfig" title="Choose the extraction profile that matches your source format">
                     <option value="Default">Default (all links)</option>
                 </select>
 
-                <label>Schedule</label>
-                <select id="taskInterval" onchange="updateScheduleFields()">
+                <label title="How often this task should run automatically">Schedule</label>
+                <select id="taskInterval" onchange="updateScheduleFields()" title="Pick a frequency — task runs automatically on this schedule">
                     <option value="hourly">Hourly</option>
                     <option value="every_6_hours">Every 6 Hours</option>
                     <option value="every_12_hours">Every 12 Hours</option>
@@ -1209,13 +1217,13 @@ HTML_TEMPLATE = '''
                 </select>
 
                 <div id="scheduleTimeRow" style="display:none;margin-bottom:12px;">
-                    <label>Run at Time (HH:MM)</label>
-                    <input type="time" id="taskRunTime" value="09:00">
+                    <label title="What time of day to run this task (server timezone)">Run at Time (HH:MM)</label>
+                    <input type="time" id="taskRunTime" value="09:00" title="24-hour format, e.g. 09:00 or 18:00">
                 </div>
 
                 <div id="scheduleDayRow" style="display:none;margin-bottom:12px;">
-                    <label>Day of Week</label>
-                    <select id="taskRunDay">
+                    <label title="Which day of the week to run (for weekly schedules)">Day of Week</label>
+                    <select id="taskRunDay" title="Task will run once per week on this day">
                         <option value="0">Monday</option>
                         <option value="1">Tuesday</option>
                         <option value="2">Wednesday</option>
@@ -1227,50 +1235,123 @@ HTML_TEMPLATE = '''
                 </div>
 
                 <div id="scheduleCustomRow" style="display:none;margin-bottom:12px;">
-                    <label>Every N Hours</label>
-                    <input type="number" id="taskCustomHours" value="24" min="1">
+                    <label title="Custom interval in hours between each run">Every N Hours</label>
+                    <input type="number" id="taskCustomHours" value="24" min="1" title="e.g. 4 = run every 4 hours">
                 </div>
 
                 <div style="border:1px solid var(--border);border-radius:8px;padding:12px;margin-bottom:16px;">
                     <div style="display:flex;align-items:center;gap:8px;margin-bottom:12px;">
-                        <input type="checkbox" id="taskExportSheets" onchange="toggleSheetsFields()" style="width:18px;height:18px;margin:0;">
-                        <label style="margin:0;font-weight:600;">Export to Google Sheets</label>
+                        <input type="checkbox" id="taskExportSheets" onchange="toggleSheetsFields()" style="width:18px;height:18px;margin:0;" title="Enable automatic export of extracted data to a Google Sheet">
+                        <label style="margin:0;font-weight:600;" title="Send extracted data directly to Google Sheets after each run">Export to Google Sheets</label>
                     </div>
 
                     <div id="sheetsFields" style="display:none;">
-                        <label>Spreadsheet URL or ID</label>
-                        <input type="text" id="taskSpreadsheetId" placeholder="https://docs.google.com/spreadsheets/d/...">
+                        <label title="The Google Sheets URL or the spreadsheet ID from the URL">Spreadsheet URL or ID</label>
+                        <input type="text" id="taskSpreadsheetId" placeholder="https://docs.google.com/spreadsheets/d/..." title="Paste the full Google Sheets URL or just the long ID from the URL">
 
-                        <label>Sheet Tab Name</label>
-                        <input type="text" id="taskSheetName" value="Sheet1" placeholder="Sheet1">
+                        <label title="Which tab in the spreadsheet to write data to">Sheet Tab Name</label>
+                        <input type="text" id="taskSheetName" value="Sheet1" placeholder="Sheet1" title="Must match an existing tab name exactly (case-sensitive)">
 
                         <div style="display:flex;align-items:center;gap:8px;margin-bottom:12px;">
-                            <input type="checkbox" id="taskIncludeHeaders" style="width:18px;height:18px;margin:0;">
-                            <label style="margin:0;">Include headers (check for new sheets)</label>
+                            <input type="checkbox" id="taskIncludeHeaders" style="width:18px;height:18px;margin:0;" title="Add column headers as the first row — enable for brand new sheets">
+                            <label style="margin:0;" title="Writes column names (title, url, date, etc.) as the first row">Include headers (check for new sheets)</label>
                         </div>
 
                         <div style="border-top:1px solid var(--border);padding-top:12px;margin-top:8px;">
                             <div style="display:flex;align-items:center;gap:8px;margin-bottom:8px;">
-                                <input type="checkbox" id="taskUseConfigColumns" checked onchange="toggleColumnOverride()" style="width:18px;height:18px;margin:0;">
-                                <label style="margin:0;font-size:0.85rem;">Use config default columns</label>
+                                <input type="checkbox" id="taskUseConfigColumns" checked onchange="toggleColumnOverride()" style="width:18px;height:18px;margin:0;" title="Use the column set defined in the extraction config file">
+                                <label style="margin:0;font-size:0.85rem;" title="Uncheck to define your own custom columns instead">Use config default columns</label>
                             </div>
 
                             <div id="columnOverrideSection" style="display:none;">
-                                <label>Custom Columns (one per line)</label>
-                                <textarea id="taskCustomColumns" style="min-height:80px;font-family:monospace;font-size:0.85rem;" placeholder="title&#10;url&#10;date_published" oninput="refreshPreview()"></textarea>
+                                <label title="Define which data columns to export — one column name per line">Custom Columns (one per line)</label>
+                                <textarea id="taskCustomColumns" style="min-height:80px;font-family:monospace;font-size:0.85rem;" placeholder="title&#10;url&#10;date_published" oninput="refreshPreview()" title="Column names like: title, url, date_published, summary, source"></textarea>
                             </div>
                         </div>
 
                         <div style="margin-top:12px;">
-                            <button class="btn btn-secondary" onclick="refreshPreview()" style="margin-bottom:8px;">Preview Sheet Output</button>
+                            <button class="btn btn-secondary" onclick="refreshPreview()" style="margin-bottom:8px;" title="See a sample of how data will look in your Google Sheet">Preview Sheet Output</button>
                             <div id="sheetPreview" style="overflow-x:auto;"></div>
                         </div>
                     </div>
                 </div>
 
                 <div class="btn-row">
-                    <button class="btn btn-success" onclick="saveTask()">Save Task</button>
-                    <button class="btn btn-secondary" onclick="cancelTaskEditor()">Cancel</button>
+                    <button class="btn btn-success" onclick="saveTask()" title="Save this task and add it to the scheduler">Save Task</button>
+                    <button class="btn btn-secondary" onclick="cancelTaskEditor()" title="Discard changes and close the editor">Cancel</button>
+                </div>
+            </div>
+        </div>
+
+        <!-- Guide Page -->
+        <div class="page" id="page-guide">
+            <div class="card">
+                <div class="card-title">
+                    <svg fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 6.253v13m0-13C10.832 5.477 9.246 5 7.5 5S4.168 5.477 3 6.253v13C4.168 18.477 5.754 18 7.5 18s3.332.477 4.5 1.253m0-13C13.168 5.477 14.754 5 16.5 5c1.747 0 3.332.477 4.5 1.253v13C19.832 18.477 18.247 18 16.5 18c-1.746 0-3.332.477-4.5 1.253"/></svg>
+                    User Guide
+                </div>
+
+                <div style="padding:4px 0;font-size:0.85rem;line-height:1.6;color:var(--text-secondary);">
+
+                <p style="color:var(--warning);font-weight:600;">&#x26A0; Alpha Version &mdash; This app is in early testing. API keys and Google credentials are currently managed by the admin. All API costs are on the admin's billing.</p>
+
+                <h3 style="color:var(--text-primary);margin:18px 0 8px;">Getting Started</h3>
+                <ol>
+                    <li><strong>Scheduler</strong> &mdash; Set up automated feeds that run on a schedule and export to Google Sheets</li>
+                    <li><strong>News</strong> &mdash; Fetch and summarize YouTube videos with AI</li>
+                    <li><strong>Extract</strong> &mdash; Pull article links from newsletters (ExecSum, CryptoSum, RWA, etc.)</li>
+                    <li><strong>Audio</strong> &mdash; Generate audio briefings from your summaries</li>
+                    <li><strong>Settings</strong> &mdash; Manage API key, sources, and custom instructions</li>
+                </ol>
+
+                <h3 style="color:var(--text-primary);margin:18px 0 8px;">Scheduler &mdash; Automated Feeds</h3>
+                <p>The Scheduler runs tasks automatically (hourly, daily, weekly) and exports results to Google Sheets.</p>
+                <ul>
+                    <li><strong>Add Task</strong> &mdash; Give it a name, source URL, and extraction config</li>
+                    <li><strong>Source URL</strong> &mdash; A Telegram channel (t.me/channel), newsletter archive, or RSS feed</li>
+                    <li><strong>Config</strong> &mdash; Choose a config to control what gets extracted and how columns are structured</li>
+                    <li><strong>Google Sheets</strong> &mdash; Toggle on, paste your spreadsheet URL/ID, and set the sheet tab name</li>
+                    <li><strong>Custom Columns</strong> &mdash; Override the default columns from the config. Uncheck "Use config defaults" and enter one column name per line</li>
+                    <li><strong>Run Now</strong> &mdash; Trigger an immediate extraction without waiting for the schedule</li>
+                </ul>
+
+                <h3 style="color:var(--text-primary);margin:18px 0 8px;">Data Extraction</h3>
+                <p>Extract article links from newsletters and news feeds. Supports:</p>
+                <ul>
+                    <li>Beehiiv newsletters (ExecSum, CryptoSum)</li>
+                    <li>Substack, Medium, news sites</li>
+                    <li>Telegram channels (RWA, crypto news)</li>
+                    <li>Grid integration for entity matching</li>
+                    <li>CSV and Google Sheets export</li>
+                </ul>
+
+                <h3 style="color:var(--text-primary);margin:18px 0 8px;">Supported Sources</h3>
+                <ul>
+                    <li>YouTube channels (any public channel)</li>
+                    <li>Substack &amp; Beehiiv newsletters</li>
+                    <li>Telegram channels</li>
+                    <li>CoinDesk, CoinTelegraph, Bloomberg, and most article-based sites</li>
+                </ul>
+
+                <h3 style="color:var(--text-primary);margin:18px 0 8px;">AI Models</h3>
+                <table style="width:100%;font-size:0.8rem;border-collapse:collapse;margin:8px 0;">
+                    <tr style="border-bottom:1px solid var(--border);"><th style="text-align:left;padding:6px;">Model</th><th style="text-align:left;padding:6px;">Speed</th><th style="text-align:left;padding:6px;">Limits</th></tr>
+                    <tr style="border-bottom:1px solid var(--border);"><td style="padding:6px;">gemini-2.0-flash-exp</td><td style="padding:6px;">Fastest</td><td style="padding:6px;">4000 req/min</td></tr>
+                    <tr style="border-bottom:1px solid var(--border);"><td style="padding:6px;">gemini-1.5-flash</td><td style="padding:6px;">Balanced</td><td style="padding:6px;">1500 req/day</td></tr>
+                    <tr><td style="padding:6px;">gemini-1.5-pro</td><td style="padding:6px;">Highest quality</td><td style="padding:6px;">50 req/day</td></tr>
+                </table>
+
+                <h3 style="color:var(--text-primary);margin:18px 0 8px;">Troubleshooting</h3>
+                <ul>
+                    <li><strong>No summaries?</strong> &mdash; Check that sources are configured in Settings</li>
+                    <li><strong>API errors?</strong> &mdash; Verify your API key is correct</li>
+                    <li><strong>Sheets not working?</strong> &mdash; Ensure the spreadsheet is shared with the service account email</li>
+                    <li><strong>Task vanished?</strong> &mdash; Server redeployments clear task data. Re-create the task.</li>
+                    <li><strong>Extraction empty?</strong> &mdash; Some sites block automated access. Try a different URL or config.</li>
+                </ul>
+
+                <p style="margin-top:18px;font-size:0.75rem;color:var(--text-muted);">Built with Flask, Google Gemini AI, and Kokoro TTS. Source on <a href="https://github.com/wcfcarolina13/News-Summarizer" target="_blank" style="color:var(--accent);">GitHub</a>.</p>
+
                 </div>
             </div>
         </div>
@@ -1283,9 +1364,9 @@ HTML_TEMPLATE = '''
                     Settings
                 </div>
 
-                <label>Gemini API Key</label>
-                <input type="password" id="settingsApiKey" placeholder="sk-...">
-                <button class="btn btn-secondary" onclick="saveApiKey()">Save API Key</button>
+                <label title="Your Google Gemini API key — used for all AI summarization">Gemini API Key</label>
+                <input type="password" id="settingsApiKey" placeholder="sk-..." title="Get your free key from ai.google.dev/aistudio">
+                <button class="btn btn-secondary" onclick="saveApiKey()" title="Save your API key for this session">Save API Key</button>
             </div>
 
             <div class="card">
@@ -1293,15 +1374,15 @@ HTML_TEMPLATE = '''
                 <p style="font-size: 0.8rem; color: var(--text-muted); margin-bottom: 12px;">
                     Personalize how Gemini summarizes content for you.
                 </p>
-                <textarea id="customInstructions" placeholder="I'm interested in crypto, AI, geopolitics..."></textarea>
-                <button class="btn btn-secondary" onclick="saveCustomInstructions()">Save Instructions</button>
+                <textarea id="customInstructions" placeholder="I'm interested in crypto, AI, geopolitics..." title="Tell the AI what topics matter to you — this shapes how summaries are written"></textarea>
+                <button class="btn btn-secondary" onclick="saveCustomInstructions()" title="Save your custom instructions to personalize future summaries">Save Instructions</button>
             </div>
 
             <div class="card">
                 <div class="card-title">YouTube Sources</div>
                 <div id="sourcesList"></div>
-                <input type="text" id="newSourceUrl" placeholder="https://youtube.com/@channel/videos">
-                <button class="btn btn-secondary" onclick="addSource()">Add Source</button>
+                <input type="text" id="newSourceUrl" placeholder="https://youtube.com/@channel/videos" title="Paste a YouTube channel URL ending in /videos">
+                <button class="btn btn-secondary" onclick="addSource()" title="Add this YouTube channel to your sources list">Add Source</button>
             </div>
 
             <div class="card">
@@ -1313,27 +1394,27 @@ HTML_TEMPLATE = '''
 
     <!-- Bottom Navigation -->
     <nav class="nav-bottom" id="mainNav">
-        <a class="nav-item active" href="#" onclick="navigateTo('home'); return false;" data-page="home">
+        <a class="nav-item active" href="#" onclick="navigateTo('home'); return false;" data-page="home" title="Dashboard overview">
             <svg fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M3 12l2-2m0 0l7-7 7 7M5 10v10a1 1 0 001 1h3m10-11l2 2m-2-2v10a1 1 0 01-1 1h-3m-6 0a1 1 0 001-1v-4a1 1 0 011-1h2a1 1 0 011 1v4a1 1 0 001 1m-6 0h6"/></svg>
             <span>Home</span>
         </a>
-        <a class="nav-item" href="#" onclick="navigateTo('summarize'); return false;" data-page="summarize">
+        <a class="nav-item" href="#" onclick="navigateTo('summarize'); return false;" data-page="summarize" title="Fetch YouTube videos and generate AI summaries">
             <svg fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15 10l4.553-2.276A1 1 0 0121 8.618v6.764a1 1 0 01-1.447.894L15 14M5 18h8a2 2 0 002-2V8a2 2 0 00-2-2H5a2 2 0 00-2 2v8a2 2 0 002 2z"/></svg>
             <span>News</span>
         </a>
-        <a class="nav-item" href="#" onclick="navigateTo('extract'); return false;" data-page="extract">
+        <a class="nav-item" href="#" onclick="navigateTo('extract'); return false;" data-page="extract" title="Extract structured data from newsletters">
             <svg fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M13.828 10.172a4 4 0 00-5.656 0l-4 4a4 4 0 105.656 5.656l1.102-1.101m-.758-4.899a4 4 0 005.656 0l4-4a4 4 0 00-5.656-5.656l-1.1 1.1"/></svg>
             <span>Extract</span>
         </a>
-        <a class="nav-item" href="#" onclick="navigateTo('audio'); return false;" data-page="audio">
+        <a class="nav-item" href="#" onclick="navigateTo('audio'); return false;" data-page="audio" title="Convert summaries into audio briefings">
             <svg fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 11a7 7 0 01-7 7m0 0a7 7 0 01-7-7m7 7v4m0 0H8m4 0h4m-4-8a3 3 0 01-3-3V5a3 3 0 116 0v6a3 3 0 01-3 3z"/></svg>
             <span>Audio</span>
         </a>
-        <a class="nav-item" href="#" onclick="navigateTo('scheduler'); return false;" data-page="scheduler">
+        <a class="nav-item" href="#" onclick="navigateTo('scheduler'); return false;" data-page="scheduler" title="Manage automated extraction tasks">
             <svg fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 8v4l3 3m6-3a9 9 0 11-18 0 9 9 0 0118 0z"/></svg>
             <span>Scheduler</span>
         </a>
-        <a class="nav-item" href="#" onclick="navigateTo('settings'); return false;" data-page="settings">
+        <a class="nav-item" href="#" onclick="navigateTo('settings'); return false;" data-page="settings" title="API keys, custom instructions, and sources">
             <svg fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M10.325 4.317c.426-1.756 2.924-1.756 3.35 0a1.724 1.724 0 002.573 1.066c1.543-.94 3.31.826 2.37 2.37a1.724 1.724 0 001.065 2.572c1.756.426 1.756 2.924 0 3.35a1.724 1.724 0 00-1.066 2.573c.94 1.543-.826 3.31-2.37 2.37a1.724 1.724 0 00-2.572 1.065c-.426 1.756-2.924 1.756-3.35 0a1.724 1.724 0 00-2.573-1.066c-1.543.94-3.31-.826-2.37-2.37a1.724 1.724 0 00-1.065-2.572c-1.756-.426-1.756-2.924 0-3.35a1.724 1.724 0 001.066-2.573c-.94-1.543.826-3.31 2.37-2.37.996.608 2.296.07 2.572-1.065z"/><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15 12a3 3 0 11-6 0 3 3 0 016 0z"/></svg>
             <span>Settings</span>
         </a>
@@ -1348,6 +1429,7 @@ HTML_TEMPLATE = '''
             document.getElementById('page-extract').style.cssText = 'display:none!important';
             document.getElementById('page-audio').style.cssText = 'display:none!important';
             document.getElementById('page-scheduler').style.cssText = 'display:none!important';
+            document.getElementById('page-guide').style.cssText = 'display:none!important';
             document.getElementById('page-settings').style.cssText = 'display:none!important';
 
             // Show target page
@@ -1987,7 +2069,7 @@ HTML_TEMPLATE = '''
             var configSelect = document.getElementById('taskConfig');
             configSelect.innerHTML = '<option value="Default">Default (all links)</option>';
             extractionConfigs.forEach(function(c) {
-                configSelect.innerHTML += '<option value="' + c.display_name + '">' + c.display_name + ' - ' + (c.description || c.name) + '</option>';
+                configSelect.innerHTML += '<option value="' + c.name + '">' + c.display_name + ' - ' + (c.description || c.name) + '</option>';
             });
 
             if (task) {
