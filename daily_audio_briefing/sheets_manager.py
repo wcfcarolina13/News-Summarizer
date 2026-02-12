@@ -380,16 +380,20 @@ def export_items_to_sheet(
         # Get all unique keys from items
         cols = list(rows_data[0].keys())
 
-    # Check if sheet has headers, if not add them (only if include_headers is True)
+    # Ensure headers exist (idempotent — only adds if row 1 is empty)
     if include_headers:
         try:
             existing_headers = get_sheet_headers(spreadsheet_id, sheet_name)
             if not existing_headers:
-                # Add header row first
                 append_to_sheet(spreadsheet_id, f'{sheet_name}!A1', [cols])
-        except HttpError:
-            # Sheet might be empty or not exist, try adding headers
-            append_to_sheet(spreadsheet_id, f'{sheet_name}!A1', [cols])
+                print(f"[sheets_manager] Added header row: {cols}")
+            # else: headers already present, skip
+        except HttpError as e:
+            print(f"[sheets_manager] Could not check headers, attempting to add: {e}")
+            try:
+                append_to_sheet(spreadsheet_id, f'{sheet_name}!A1', [cols])
+            except HttpError:
+                pass  # Tab may not exist — resolve_sheet_name should handle this
 
     # Deduplication: skip items whose URL already exists in the sheet
     if deduplicate and dedup_column in cols:

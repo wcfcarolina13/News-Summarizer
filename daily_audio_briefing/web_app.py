@@ -1205,9 +1205,33 @@ HTML_TEMPLATE = '''
                 <p style="font-size:0.7rem;color:var(--text-muted);margin:-8px 0 12px;">Telegram channel, newsletter archive, or RSS feed URL</p>
 
                 <label title="Determines how links are filtered and structured — each config is tailored to a specific source">Extraction Config</label>
-                <select id="taskConfig" title="Choose the extraction profile that matches your source format">
+                <select id="taskConfig" onchange="loadConfigEditor(); refreshPreview()" title="Choose the extraction profile that matches your source format">
                     <option value="Default">Default (all links)</option>
                 </select>
+
+                <div id="configEditorToggle" style="display:none;margin:-4px 0 12px;">
+                    <button onclick="toggleConfigEditor()" style="background:transparent;border:1px solid var(--border);color:var(--text-muted);padding:4px 12px;border-radius:6px;cursor:pointer;font-size:0.78rem;">&#x2699; Edit Config Settings</button>
+                </div>
+                <div id="configEditorPanel" style="display:none;background:var(--surface);border:1px solid var(--border);border-radius:8px;padding:14px;margin-bottom:14px;">
+                    <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:10px;">
+                        <span style="font-weight:600;font-size:0.85rem;" id="configEditorTitle">Config Settings</span>
+                        <div id="configEditorStatus" style="font-size:0.78rem;color:var(--text-muted);"></div>
+                    </div>
+
+                    <label style="font-size:0.8rem;" title="Column headers for Sheets/CSV export. One per line.">Output Columns (one per line)</label>
+                    <textarea id="cfgCsvColumns" rows="4" style="font-size:0.82rem;font-family:monospace;margin-bottom:10px;" placeholder="title&#10;url&#10;date_published"></textarea>
+
+                    <label style="font-size:0.8rem;" title="Only items matching at least one pattern are included. Leave empty to include all.">Include Patterns (one per line)</label>
+                    <textarea id="cfgIncludePatterns" rows="3" style="font-size:0.82rem;font-family:monospace;margin-bottom:10px;" placeholder="keyword1&#10;keyword2"></textarea>
+
+                    <label style="font-size:0.8rem;" title="Items matching any pattern are excluded. Common filters: subscribe, sponsored, advertisement.">Exclude Patterns (one per line)</label>
+                    <textarea id="cfgExcludePatterns" rows="3" style="font-size:0.82rem;font-family:monospace;margin-bottom:10px;" placeholder="subscribe&#10;sponsored"></textarea>
+
+                    <label style="font-size:0.8rem;" title="Domains to never extract links from.">Blocked Domains (one per line)</label>
+                    <textarea id="cfgBlockedDomains" rows="3" style="font-size:0.82rem;font-family:monospace;margin-bottom:10px;" placeholder="twitter.com&#10;facebook.com"></textarea>
+
+                    <button onclick="saveConfigEdits()" style="padding:8px 20px;border-radius:6px;border:none;background:var(--accent);color:white;cursor:pointer;font-size:0.85rem;">Save Config Changes</button>
+                </div>
 
                 <label title="How often this task should run automatically">Schedule</label>
                 <select id="taskInterval" onchange="updateScheduleFields()" title="Pick a frequency — task runs automatically on this schedule">
@@ -1257,8 +1281,8 @@ HTML_TEMPLATE = '''
                         <div id="sheetTabStatus" style="display:none;font-size:0.82rem;margin:-4px 0 8px 0;padding:6px 10px;border-radius:6px;"></div>
 
                         <div style="display:flex;align-items:center;gap:8px;margin-bottom:12px;">
-                            <input type="checkbox" id="taskIncludeHeaders" style="width:18px;height:18px;margin:0;" title="Add column headers as the first row — enable for brand new sheets">
-                            <label style="margin:0;" title="Writes column names (title, url, date, etc.) as the first row">Include headers (check for new sheets)</label>
+                            <input type="checkbox" id="taskIncludeHeaders" style="width:18px;height:18px;margin:0;" title="Ensures column headers exist in row 1 — safe to leave on, only adds once">
+                            <label style="margin:0;" title="Checks if row 1 has headers; adds them only if empty. Safe to leave enabled permanently.">Auto-add headers (only if missing)</label>
                         </div>
 
                         <div style="border-top:1px solid var(--border);padding-top:12px;margin-top:8px;">
@@ -2119,8 +2143,10 @@ HTML_TEMPLATE = '''
             updateScheduleFields();
             toggleSheetsFields();
             toggleColumnOverride();
-            // Reset tab validation state
+            loadConfigEditor();
+            // Reset tab validation and config editor state
             document.getElementById('sheetTabStatus').style.display = 'none';
+            document.getElementById('configEditorPanel').style.display = 'none';
             _tabValidationDone = {};
         }
 
@@ -2149,6 +2175,84 @@ HTML_TEMPLATE = '''
         function toggleColumnOverride() {
             var useDefaults = document.getElementById('taskUseConfigColumns').checked;
             document.getElementById('columnOverrideSection').style.display = useDefaults ? 'none' : 'block';
+        }
+
+        var _currentConfigData = null;
+        function toggleConfigEditor() {
+            var panel = document.getElementById('configEditorPanel');
+            panel.style.display = panel.style.display === 'none' ? 'block' : 'none';
+        }
+
+        async function loadConfigEditor() {
+            var configName = document.getElementById('taskConfig').value;
+            var toggleBtn = document.getElementById('configEditorToggle');
+            var panel = document.getElementById('configEditorPanel');
+
+            if (configName === 'Default') {
+                toggleBtn.style.display = 'none';
+                panel.style.display = 'none';
+                _currentConfigData = null;
+                return;
+            }
+
+            toggleBtn.style.display = 'block';
+
+            try {
+                var data = await api('/api/configs/' + encodeURIComponent(configName));
+                if (data.error) {
+                    toggleBtn.style.display = 'none';
+                    return;
+                }
+                _currentConfigData = data;
+                document.getElementById('configEditorTitle').textContent = (data.name || configName) + ' Config';
+                document.getElementById('cfgCsvColumns').value = (data.csv_columns || []).join('\\n');
+                document.getElementById('cfgIncludePatterns').value = (data.include_patterns || []).join('\\n');
+                document.getElementById('cfgExcludePatterns').value = (data.exclude_patterns || []).join('\\n');
+                document.getElementById('cfgBlockedDomains').value = (data.blocked_domains || []).join('\\n');
+                document.getElementById('configEditorStatus').textContent = '';
+            } catch (e) {
+                toggleBtn.style.display = 'none';
+                _currentConfigData = null;
+            }
+        }
+
+        async function saveConfigEdits() {
+            var configName = document.getElementById('taskConfig').value;
+            if (configName === 'Default' || !_currentConfigData) return;
+
+            function linesToArray(id) {
+                return document.getElementById(id).value.split('\\n').map(function(s) { return s.trim(); }).filter(Boolean);
+            }
+
+            var updates = {
+                csv_columns: linesToArray('cfgCsvColumns'),
+                include_patterns: linesToArray('cfgIncludePatterns'),
+                exclude_patterns: linesToArray('cfgExcludePatterns'),
+                blocked_domains: linesToArray('cfgBlockedDomains')
+            };
+
+            var statusEl = document.getElementById('configEditorStatus');
+            statusEl.textContent = 'Saving...';
+            statusEl.style.color = 'var(--text-muted)';
+
+            try {
+                var result = await api('/api/configs/' + encodeURIComponent(configName), updates, 'PUT');
+                if (result.success) {
+                    statusEl.textContent = '&#x2714; Saved';
+                    statusEl.style.color = '#66bb6a';
+                    // Also refresh the preview to reflect new columns
+                    refreshPreview();
+                    // Update the local configs cache
+                    var cfg = extractionConfigs.find(function(c) { return c.name === configName; });
+                    if (cfg) cfg.csv_columns = updates.csv_columns;
+                } else {
+                    statusEl.textContent = 'Error: ' + (result.error || 'Unknown');
+                    statusEl.style.color = '#ef5350';
+                }
+            } catch (e) {
+                statusEl.textContent = 'Error: ' + (e.message || e);
+                statusEl.style.color = '#ef5350';
+            }
         }
 
         var _tabValidationDone = {};  // Track which tab names we&#39;ve already offered to create
@@ -2726,7 +2830,12 @@ def api_configs_update(name):
     existing = json.loads(config_path.read_text())
     updates = request.json
     # Only allow updating safe fields
-    for key in ('csv_columns', 'include_patterns', 'exclude_patterns', 'description'):
+    safe_fields = (
+        'csv_columns', 'include_patterns', 'exclude_patterns',
+        'blocked_domains', 'allowed_domains', 'source_url_patterns',
+        'description', 'output_format'
+    )
+    for key in safe_fields:
         if key in updates:
             existing[key] = updates[key]
     config_path.write_text(json.dumps(existing, indent=2))
