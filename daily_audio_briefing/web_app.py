@@ -1451,6 +1451,8 @@ HTML_TEMPLATE = '''
     <script>
         // Navigation function
         function navigateTo(page) {
+            // Dismiss any active notification
+            hideStatus();
             // Hide all pages
             document.getElementById('page-home').style.cssText = 'display:none!important';
             document.getElementById('page-summarize').style.cssText = 'display:none!important';
@@ -1487,13 +1489,20 @@ HTML_TEMPLATE = '''
         var currentTaskId = null;
 
         // Status messages
+        var _statusTimer = null;
         function showStatus(message, type = 'info', spinner = false) {
             const status = document.getElementById('globalStatus');
             status.className = 'status show ' + type;
             status.innerHTML = (spinner ? '<span class="spinner"></span>' : '') + message;
+            // Auto-dismiss success/info after 5 seconds (errors stay)
+            if (_statusTimer) clearTimeout(_statusTimer);
+            if (type === 'success' || type === 'info') {
+                _statusTimer = setTimeout(hideStatus, 5000);
+            }
         }
 
         function hideStatus() {
+            if (_statusTimer) { clearTimeout(_statusTimer); _statusTimer = null; }
             document.getElementById('globalStatus').className = 'status';
         }
 

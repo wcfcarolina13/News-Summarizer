@@ -157,11 +157,12 @@ class Scheduler:
         self.load_tasks()
 
     def load_tasks(self):
-        """Load scheduled tasks from config file or SCHEDULED_TASKS_JSON env var.
+        """Load scheduled tasks with multi-tier fallback.
 
         Priority:
         1. Config file on disk (always preferred if it exists)
-        2. SCHEDULED_TASKS_JSON env var (seeds tasks on first boot, e.g. after Render redeploy)
+        2. Google Sheets _scheduler_config tab (survives Render redeploys)
+        3. SCHEDULED_TASKS_JSON env var (initial seed / emergency fallback)
         """
         config_path = get_scheduler_config_path(self.data_dir)
         loaded_from = None
@@ -176,7 +177,19 @@ class Scheduler:
                 print(f"[Scheduler] Error loading tasks from file: {e}")
                 self.tasks = []
 
-        # Fallback: load from env var (survives Render redeploys)
+        # Fallback 1: Google Sheets persistence (server mode)
+        if not self.tasks and self.server_mode:
+            sheet_data = self._load_from_sheets()
+            if sheet_data:
+                try:
+                    self.tasks = [ScheduledTask.from_dict(t) for t in sheet_data.get("tasks", [])]
+                    loaded_from = "sheets"
+                    self._write_tasks_to_file(config_path)
+                except Exception as e:
+                    print(f"[Scheduler] Error parsing tasks from Sheets: {e}")
+                    self.tasks = []
+
+        # Fallback 2: env var (initial seed / emergency)
         if not self.tasks:
             env_tasks = os.environ.get('SCHEDULED_TASKS_JSON')
             if env_tasks:
@@ -184,7 +197,6 @@ class Scheduler:
                     data = json.loads(env_tasks)
                     self.tasks = [ScheduledTask.from_dict(t) for t in data.get("tasks", [])]
                     loaded_from = "env:SCHEDULED_TASKS_JSON"
-                    # Persist to disk so file is available for subsequent loads
                     self._write_tasks_to_file(config_path)
                 except Exception as e:
                     print(f"[Scheduler] Error loading tasks from env var: {e}")
@@ -208,17 +220,87 @@ class Scheduler:
             print(f"[Scheduler] Error writing tasks to file: {e}")
 
     def save_tasks(self):
-        """Save scheduled tasks to config file. In server mode, also log the
-        JSON so the admin can update the SCHEDULED_TASKS_JSON env var."""
+        """Save scheduled tasks to config file and (in server mode) to Google Sheets."""
         config_path = get_scheduler_config_path(self.data_dir)
         data = {"tasks": [t.to_dict() for t in self.tasks]}
 
         self._write_tasks_to_file(config_path)
 
-        # In server mode, log the tasks JSON for env var persistence
+        # In server mode, persist to Google Sheets (survives redeploys)
         if self.server_mode:
-            compact = json.dumps(data, separators=(',', ':'))
-            print(f"[Scheduler] PERSIST_TASKS={compact}")
+            self._save_to_sheets(data)
+
+    # --- Google Sheets persistence helpers ---
+
+    def _get_persistence_sheet_id(self) -> Optional[str]:
+        """Get the spreadsheet ID used for config persistence."""
+        return os.environ.get('SCHEDULER_SHEET_ID')
+
+    def _save_to_sheets(self, data: dict):
+        """Write tasks JSON to the _scheduler_config tab of the persistence sheet."""
+        sheet_id = self._get_persistence_sheet_id()
+        if not sheet_id:
+            return
+
+        try:
+            from sheets_manager import is_sheets_available, get_sheets_service
+            if not is_sheets_available():
+                return
+
+            service = get_sheets_service()
+            json_str = json.dumps(data, indent=2)
+
+            # Ensure the _scheduler_config tab exists
+            try:
+                service.spreadsheets().values().get(
+                    spreadsheetId=sheet_id,
+                    range='_scheduler_config!A1'
+                ).execute()
+            except Exception:
+                # Tab doesn't exist — create it
+                try:
+                    service.spreadsheets().batchUpdate(
+                        spreadsheetId=sheet_id,
+                        body={'requests': [{'addSheet': {'properties': {'title': '_scheduler_config'}}}]}
+                    ).execute()
+                except Exception:
+                    pass  # Tab might already exist in a race
+
+            # Write JSON to cell A1
+            service.spreadsheets().values().update(
+                spreadsheetId=sheet_id,
+                range='_scheduler_config!A1',
+                valueInputOption='RAW',
+                body={'values': [[json_str]]}
+            ).execute()
+            print(f"[Scheduler] Saved {len(data.get('tasks', []))} task(s) to Sheets persistence")
+        except Exception as e:
+            print(f"[Scheduler] Warning: Could not save to Sheets: {e}")
+
+    def _load_from_sheets(self) -> Optional[dict]:
+        """Read tasks JSON from the _scheduler_config tab of the persistence sheet."""
+        sheet_id = self._get_persistence_sheet_id()
+        if not sheet_id:
+            return None
+
+        try:
+            from sheets_manager import is_sheets_available, get_sheets_service
+            if not is_sheets_available():
+                return None
+
+            service = get_sheets_service()
+            result = service.spreadsheets().values().get(
+                spreadsheetId=sheet_id,
+                range='_scheduler_config!A1'
+            ).execute()
+            values = result.get('values', [])
+            if values and values[0]:
+                data = json.loads(values[0][0])
+                print(f"[Scheduler] Read config from Sheets persistence")
+                return data
+        except Exception as e:
+            print(f"[Scheduler] Could not load from Sheets: {e}")
+        return None
 
     def add_task(self, task: ScheduledTask) -> bool:
         """Add a new scheduled task."""
