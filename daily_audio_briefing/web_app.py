@@ -2018,12 +2018,22 @@ HTML_TEMPLATE = '''
                 var resultColor = (t.last_result && t.last_result.startsWith('Success')) ? 'var(--success)' :
                                  (t.last_result && t.last_result.startsWith('Error')) ? 'var(--danger)' : 'var(--text-muted)';
                 var sheetsIcon = t.export_to_sheets ? '<span style="color:var(--success);font-size:0.7rem;">&#x2713; Sheets</span>' : '';
+                var sheetsLink = '';
+                if (t.export_to_sheets && t.spreadsheet_id) {
+                    var sheetId = t.spreadsheet_id;
+                    if (sheetId.includes('docs.google.com')) {
+                        sheetsLink = '<a href="' + sheetId + '" target="_blank" rel="noopener" style="color:var(--accent);font-size:0.7rem;text-decoration:underline;" title="Open spreadsheet in Google Sheets">&#x1F4CA; Open Sheet</a>';
+                    } else {
+                        sheetsLink = '<a href="https://docs.google.com/spreadsheets/d/' + sheetId + '" target="_blank" rel="noopener" style="color:var(--accent);font-size:0.7rem;text-decoration:underline;" title="Open spreadsheet in Google Sheets">&#x1F4CA; Open Sheet</a>';
+                    }
+                }
 
                 return '<div class="summary-card" style="border-left-color:' + statusColor + ';">' +
                     '<div style="display:flex;align-items:center;gap:8px;margin-bottom:8px;">' +
                         '<span style="font-weight:600;font-size:0.9rem;">' + (t.name || 'Untitled') + '</span>' +
                         '<span style="font-size:0.7rem;padding:2px 8px;border-radius:8px;background:var(--bg-tertiary);color:var(--text-muted);">' + t.interval + '</span>' +
                         sheetsIcon +
+                        sheetsLink +
                         '<span style="margin-left:auto;font-size:0.7rem;color:' + statusColor + ';">' + (t.enabled ? 'Enabled' : 'Disabled') + '</span>' +
                     '</div>' +
                     '<div style="font-size:0.75rem;color:var(--text-muted);margin-bottom:4px;">Source: ' + (t.source_url || '-') + '</div>' +
