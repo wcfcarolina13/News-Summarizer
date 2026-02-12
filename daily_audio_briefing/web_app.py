@@ -296,6 +296,8 @@ HTML_TEMPLATE = '''
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
     <title>Daily Audio Briefing</title>
+    <link rel="icon" type="image/png" sizes="32x32" href="data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAACAAAAAgCAYAAABzenr0AAABTklEQVR4nGNgGOmAEZeEkIjUf2pa9O7NM6x2MdHDcnxmYjiAFpbjM5uJkAJaO4IJlwS9HMFCjIbHj+6RZZGsnBJBNfCUiSsE+IRlybIcBj69fYxVHJYrsOYCGCDX56SYgdcB9ACjDiCYC66ePziwDmBgYGC4++AJTjllBRkGBgYGBne/WAy5nZsWEzQbbzZ8/OgeXsvRHYELYCsPYNmQqBAgBmALAQYGwqFANQcgW2S/6DHDwTjiCjCqh8CPkDYUPl1DwH4Rotj9EdJGVCgQLAcIJTCYPLLlMIBNDB0QFQKEHIHPIkKOIOgAXKkbGXDgkdu5aTGDbA2ZDpCVUyK5RoT5GBb/hNoEVAkBZAALDfc1xKkn2CChFYCVhChtdWyO0DKwpsiiaxeO4rQcwwG4HEFNgN5BwdpbQXZEaSGAzce4LMfpAHRHUAPg6pqNAgBtCXK0fWb/cgAAAABJRU5ErkJggg==">
+    <link rel="apple-touch-icon" href="data:image/png;base64,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">
     <link rel="manifest" href="/manifest.json">
     <meta name="theme-color" content="#0f0f0f">
     <meta name="mobile-web-app-capable" content="yes">
@@ -2152,7 +2154,8 @@ HTML_TEMPLATE = '''
                     custom_columns: customCols
                 });
 
-                var html = '<table style="width:100%;border-collapse:collapse;font-size:0.75rem;">';
+                var html = '<p style="font-size:0.7rem;color:var(--text-muted);margin-bottom:6px;">' + data.columns.length + ' columns from config &middot; ' + data.rows.length + ' sample rows</p>';
+                html += '<div style="overflow-x:auto;"><table style="width:100%;border-collapse:collapse;font-size:0.75rem;">';
                 html += '<tr>';
                 data.columns.forEach(function(col) {
                     html += '<th style="padding:6px 8px;border:1px solid var(--border);background:var(--accent);color:white;white-space:nowrap;">' + col + '</th>';
@@ -2165,7 +2168,7 @@ HTML_TEMPLATE = '''
                     });
                     html += '</tr>';
                 });
-                html += '</table>';
+                html += '</table></div>';
 
                 document.getElementById('sheetPreview').innerHTML = html;
             } catch (e) {
@@ -2648,30 +2651,44 @@ def api_sheets_preview():
     if not columns:
         columns = ['title', 'url', 'date_published', 'source_name', 'description']
 
-    # Generate mock rows
+    # Generate mock rows with realistic sample data
+    today = datetime.now().strftime('%Y-%m-%d')
+    yesterday = (datetime.now() - timedelta(days=1)).strftime('%Y-%m-%d')
     mock_rows = [
         {
-            'title': 'Sample Article Title',
-            'url': 'https://example.com/article-1',
-            'date_published': datetime.now().strftime('%Y-%m-%d'),
+            'title': 'BlackRock Tokenized Fund Surpasses $500M',
+            'url': 'https://example.com/blackrock-fund',
+            'date_published': today,
             'date_extracted': datetime.now().strftime('%Y-%m-%d %H:%M'),
-            'source_name': 'Example Source',
+            'source_name': 'RWAxyz',
             'section': 'News',
-            'description': 'A brief description of the article content...',
-            'author': 'Author Name',
-            'original_url': 'https://example.com/article-1',
+            'description': 'BlackRock\'s tokenized money market fund BUIDL crosses $500M in AUM.',
+            'author': 'Staff Writer',
+            'original_url': 'https://example.com/blackrock-fund',
             'Track?': '',
         },
         {
-            'title': 'Another Article',
-            'url': 'https://example.com/article-2',
-            'date_published': datetime.now().strftime('%Y-%m-%d'),
+            'title': 'Ondo Finance Launches New RWA Vault',
+            'url': 'https://example.com/ondo-vault',
+            'date_published': today,
             'date_extracted': datetime.now().strftime('%Y-%m-%d %H:%M'),
-            'source_name': 'Example Source',
-            'section': 'Analysis',
-            'description': 'Description of the second article...',
-            'author': 'Another Author',
-            'original_url': 'https://example.com/article-2',
+            'source_name': 'CoinDesk',
+            'section': 'DeFi',
+            'description': 'Ondo Finance introduces tokenized US Treasuries vault with instant redemption.',
+            'author': 'DeFi Desk',
+            'original_url': 'https://example.com/ondo-vault',
+            'Track?': '',
+        },
+        {
+            'title': 'Securitize Partners with Hamilton Lane',
+            'url': 'https://example.com/securitize-hamilton',
+            'date_published': yesterday,
+            'date_extracted': datetime.now().strftime('%Y-%m-%d %H:%M'),
+            'source_name': 'The Block',
+            'section': 'Institutional',
+            'description': 'Securitize brings Hamilton Lane private equity funds on-chain.',
+            'author': 'Institutional Reporter',
+            'original_url': 'https://example.com/securitize-hamilton',
             'Track?': '',
         },
     ]
