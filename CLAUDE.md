@@ -20,7 +20,7 @@ All source files are in `daily_audio_briefing/`.
 | `make_audio_quality.py` | ~210 | Kokoro TTS high-quality audio |
 | `sheets_manager.py` | ~210 | Google Sheets export |
 | `file_manager.py` | ~155 | File I/O with frozen app support |
-| `web_app.py` | ~2200 | Flask web dashboard (scheduler, extraction, audio) |
+| `web_app.py` | ~2700 | Flask web dashboard (scheduler, extraction, audio) — **NEVER read in full.** Use grep. |
 | `server_scheduler.py` | ~80 | Flask-integrated scheduler for cloud deployment |
 
 Config files: `sources.json`, `instruction_profiles.json`, `scheduled_tasks.json`, `settings.json`
@@ -106,26 +106,30 @@ Deploy to Render.com free tier with keep-alive ping to prevent sleep.
 2. Test multi-URL feature in GUI
 3. ~~Commit outstanding changes~~ ✅ Pushed to `server-deploy` branch
 4. ~~Deploy to Render.com~~ ✅ Live at https://news-summarizer-zgny.onrender.com
+5. ~~Add Guide page, tooltips, alpha banner~~ ✅ Done
+6. ~~Update README with web dashboard and server docs~~ ✅ Done
+7. ~~Fix config name mapping (display_name vs filename)~~ ✅ Done
 
 **Server/Infra:**
-5. Set up UptimeRobot keep-alive ping after Render deploy
-6. Test Sheets export via env var credentials on server
-7. Verify web app feature parity with desktop version
+8. ~~Set up UptimeRobot keep-alive ping after Render deploy~~ ✅ Self-ping built-in + UptimeRobot
+9. Test Sheets export via env var credentials on server
+10. Verify web app feature parity with desktop version
+11. Persistent storage solution for Render (tasks lost on redeploy)
 
 **Critical — API Cost Protection:**
-8. API usage rate limiter — hard cap to prevent unexpected bills from scheduler bursts
-9. User-configurable spending limit with warnings (desktop notification + email)
-10. Per-task API call tracking and cost estimation
-11. Dashboard showing cumulative API usage and remaining budget
+12. API usage rate limiter — hard cap to prevent unexpected bills from scheduler bursts
+13. User-configurable spending limit with warnings (desktop notification + email)
+14. Per-task API call tracking and cost estimation
+15. Dashboard showing cumulative API usage and remaining budget
 
 **Future — Multi-tenant SaaS:**
-12. Add authentication to web dashboard (currently open)
-13. Per-client API keys and Sheets credentials
-14. Task isolation (client A can't see/modify client B's tasks)
-15. Rate limiting per client
-16. Progress indicator for multi-URL extraction
-17. Save/load URL lists for recurring newsletter batches
-18. Keyboard shortcuts for common actions
+16. Add authentication to web dashboard (currently open)
+17. Per-client API keys and Sheets credentials
+18. Task isolation (client A can't see/modify client B's tasks)
+19. Rate limiting per client
+20. Progress indicator for multi-URL extraction
+21. Save/load URL lists for recurring newsletter batches
+22. Keyboard shortcuts for common actions
 
 ## Build Instructions
 
