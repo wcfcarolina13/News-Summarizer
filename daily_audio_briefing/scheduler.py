@@ -157,32 +157,68 @@ class Scheduler:
         self.load_tasks()
 
     def load_tasks(self):
-        """Load scheduled tasks from config file."""
+        """Load scheduled tasks from config file or SCHEDULED_TASKS_JSON env var.
+
+        Priority:
+        1. Config file on disk (always preferred if it exists)
+        2. SCHEDULED_TASKS_JSON env var (seeds tasks on first boot, e.g. after Render redeploy)
+        """
         config_path = get_scheduler_config_path(self.data_dir)
+        loaded_from = None
+
         if os.path.exists(config_path):
             try:
                 with open(config_path, 'r', encoding='utf-8') as f:
                     data = json.load(f)
                     self.tasks = [ScheduledTask.from_dict(t) for t in data.get("tasks", [])]
-                    # Recalculate next run times
-                    for task in self.tasks:
-                        if task.enabled:
-                            task.next_run = self._calculate_next_run(task)
+                    loaded_from = "file"
             except Exception as e:
-                print(f"[Scheduler] Error loading tasks: {e}")
+                print(f"[Scheduler] Error loading tasks from file: {e}")
                 self.tasks = []
-        else:
-            self.tasks = []
 
-    def save_tasks(self):
-        """Save scheduled tasks to config file."""
-        config_path = get_scheduler_config_path(self.data_dir)
+        # Fallback: load from env var (survives Render redeploys)
+        if not self.tasks:
+            env_tasks = os.environ.get('SCHEDULED_TASKS_JSON')
+            if env_tasks:
+                try:
+                    data = json.loads(env_tasks)
+                    self.tasks = [ScheduledTask.from_dict(t) for t in data.get("tasks", [])]
+                    loaded_from = "env:SCHEDULED_TASKS_JSON"
+                    # Persist to disk so file is available for subsequent loads
+                    self._write_tasks_to_file(config_path)
+                except Exception as e:
+                    print(f"[Scheduler] Error loading tasks from env var: {e}")
+                    self.tasks = []
+
+        # Recalculate next run times
+        for task in self.tasks:
+            if task.enabled:
+                task.next_run = self._calculate_next_run(task)
+
+        if loaded_from and self.tasks:
+            print(f"[Scheduler] Loaded {len(self.tasks)} task(s) from {loaded_from}")
+
+    def _write_tasks_to_file(self, config_path: str):
+        """Write tasks to file (internal helper)."""
         try:
             data = {"tasks": [t.to_dict() for t in self.tasks]}
             with open(config_path, 'w', encoding='utf-8') as f:
                 json.dump(data, f, indent=2)
         except Exception as e:
-            print(f"[Scheduler] Error saving tasks: {e}")
+            print(f"[Scheduler] Error writing tasks to file: {e}")
+
+    def save_tasks(self):
+        """Save scheduled tasks to config file. In server mode, also log the
+        JSON so the admin can update the SCHEDULED_TASKS_JSON env var."""
+        config_path = get_scheduler_config_path(self.data_dir)
+        data = {"tasks": [t.to_dict() for t in self.tasks]}
+
+        self._write_tasks_to_file(config_path)
+
+        # In server mode, log the tasks JSON for env var persistence
+        if self.server_mode:
+            compact = json.dumps(data, separators=(',', ':'))
+            print(f"[Scheduler] PERSIST_TASKS={compact}")
 
     def add_task(self, task: ScheduledTask) -> bool:
         """Add a new scheduled task."""

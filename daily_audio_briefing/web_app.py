@@ -2710,6 +2710,29 @@ def api_sheets_preview():
     return jsonify({'columns': columns, 'rows': rows})
 
 
+@app.route('/api/sheets/deduplicate', methods=['POST'])
+def api_sheets_deduplicate():
+    """Deduplicate an existing Google Sheet by removing duplicate URLs."""
+    data = request.json
+    spreadsheet_id = data.get('spreadsheet_id', '')
+    sheet_name = data.get('sheet_name', 'Sheet1')
+    dedup_column = data.get('dedup_column', 'url')
+
+    if not spreadsheet_id:
+        return jsonify({'error': 'spreadsheet_id required'}), 400
+
+    try:
+        from sheets_manager import deduplicate_sheet, extract_sheet_id, is_sheets_available
+        if not is_sheets_available():
+            return jsonify({'error': 'Google Sheets not configured'}), 400
+
+        sid = extract_sheet_id(spreadsheet_id)
+        result = deduplicate_sheet(sid, sheet_name, dedup_column)
+        return jsonify(result)
+    except Exception as e:
+        return jsonify({'error': str(e)}), 500
+
+
 @app.route('/health')
 def health():
     """Health check."""

@@ -138,15 +138,136 @@ def get_sheet_headers(spreadsheet_id: str, sheet_name: str = 'Sheet1') -> List[s
     return values[0] if values else []
 
 
+def get_existing_urls(spreadsheet_id: str, sheet_name: str = 'Sheet1', url_column: str = 'url') -> set:
+    """
+    Read all existing URLs from a sheet to enable deduplication.
+
+    Args:
+        spreadsheet_id: The Google Sheet ID
+        sheet_name: Name of the sheet tab
+        url_column: Name of the column containing URLs
+
+    Returns:
+        Set of URL strings already in the sheet
+    """
+    try:
+        # Read headers to find URL column index
+        headers = get_sheet_headers(spreadsheet_id, sheet_name)
+        if not headers or url_column not in headers:
+            return set()
+
+        url_idx = headers.index(url_column)
+
+        # Read all data (just the URL column would be ideal, but Sheets API reads full rows)
+        all_data = read_sheet(spreadsheet_id, f'{sheet_name}!A:Z')
+        if not all_data or len(all_data) < 2:  # header only or empty
+            return set()
+
+        # Extract URLs from the correct column (skip header row)
+        existing = set()
+        for row in all_data[1:]:
+            if len(row) > url_idx and row[url_idx]:
+                existing.add(row[url_idx].strip())
+
+        return existing
+    except Exception as e:
+        print(f"[sheets_manager] Warning: Could not read existing URLs for dedup: {e}")
+        return set()
+
+
+def deduplicate_sheet(
+    spreadsheet_id: str,
+    sheet_name: str = 'Sheet1',
+    url_column: str = 'url'
+) -> Dict[str, Any]:
+    """
+    Remove duplicate rows from an existing Google Sheet, keeping the first occurrence.
+
+    Args:
+        spreadsheet_id: The Google Sheet ID
+        sheet_name: Name of the sheet tab
+        url_column: Column to use for deduplication
+
+    Returns:
+        Dict with before_count, after_count, removed_count
+    """
+    service = get_sheets_service()
+
+    # Read all data
+    all_data = read_sheet(spreadsheet_id, f'{sheet_name}!A:Z')
+    if not all_data or len(all_data) < 2:
+        return {'before_count': 0, 'after_count': 0, 'removed_count': 0}
+
+    headers = all_data[0]
+    data_rows = all_data[1:]
+    before_count = len(data_rows)
+
+    # Find URL column index
+    if url_column not in headers:
+        print(f"[sheets_manager] Column '{url_column}' not found in headers: {headers}")
+        return {'before_count': before_count, 'after_count': before_count, 'removed_count': 0, 'error': f'Column {url_column} not found'}
+
+    url_idx = headers.index(url_column)
+
+    # Deduplicate keeping first occurrence
+    seen = set()
+    unique_rows = []
+    for row in data_rows:
+        url_val = row[url_idx].strip() if len(row) > url_idx and row[url_idx] else ''
+        if url_val and url_val in seen:
+            continue  # Skip duplicate
+        if url_val:
+            seen.add(url_val)
+        unique_rows.append(row)
+
+    removed_count = before_count - len(unique_rows)
+
+    if removed_count == 0:
+        return {'before_count': before_count, 'after_count': before_count, 'removed_count': 0}
+
+    # Clear the sheet and rewrite with deduplicated data
+    # First, get the sheet ID (not spreadsheet ID) for the clear request
+    try:
+        # Clear all data rows (keep headers)
+        clear_range = f'{sheet_name}!A2:Z'
+        service.spreadsheets().values().clear(
+            spreadsheetId=spreadsheet_id,
+            range=clear_range,
+            body={}
+        ).execute()
+
+        # Write back deduplicated data
+        if unique_rows:
+            service.spreadsheets().values().update(
+                spreadsheetId=spreadsheet_id,
+                range=f'{sheet_name}!A2',
+                valueInputOption='USER_ENTERED',
+                body={'values': unique_rows}
+            ).execute()
+
+        print(f"[sheets_manager] Dedup complete: {before_count} -> {len(unique_rows)} rows ({removed_count} removed)")
+    except HttpError as e:
+        print(f"[sheets_manager] Error during dedup write-back: {e}")
+        return {'before_count': before_count, 'after_count': before_count, 'removed_count': 0, 'error': str(e)}
+
+    return {
+        'before_count': before_count,
+        'after_count': len(unique_rows),
+        'removed_count': removed_count
+    }
+
+
 def export_items_to_sheet(
     items: List[Any],
     spreadsheet_id: str,
     sheet_name: str = 'Sheet1',
     columns: Optional[List[str]] = None,
-    include_headers: bool = True
+    include_headers: bool = True,
+    deduplicate: bool = True,
+    dedup_column: str = 'url'
 ) -> Dict[str, Any]:
     """
-    Export extracted items to a Google Sheet.
+    Export extracted items to a Google Sheet with optional deduplication.
 
     Args:
         items: List of ExtractedItem objects
@@ -155,6 +276,8 @@ def export_items_to_sheet(
         columns: List of column names to export (uses item's to_dict keys if not specified)
         include_headers: If True, add headers if sheet is empty. If False, skip headers entirely.
                         Set to False for append-only mode where headers already exist.
+        deduplicate: If True, skip items whose URL already exists in the sheet (default: True)
+        dedup_column: Column name to use for deduplication (default: 'url')
 
     Returns:
         API response with number of rows added
@@ -192,6 +315,19 @@ def export_items_to_sheet(
         except HttpError:
             # Sheet might be empty or not exist, try adding headers
             append_to_sheet(spreadsheet_id, f'{sheet_name}!A1', [cols])
+
+    # Deduplication: skip items whose URL already exists in the sheet
+    if deduplicate and dedup_column in cols:
+        existing_urls = get_existing_urls(spreadsheet_id, sheet_name, dedup_column)
+        if existing_urls:
+            original_count = len(rows_data)
+            rows_data = [r for r in rows_data if r.get(dedup_column, '').strip() not in existing_urls]
+            skipped = original_count - len(rows_data)
+            if skipped > 0:
+                print(f"[sheets_manager] Dedup: skipped {skipped} items already in sheet ({len(rows_data)} new)")
+
+    if not rows_data:
+        return {'updates': {'updatedRows': 0}, 'dedup_skipped': 'all items already exist'}
 
     # Convert items to rows matching column order
     rows = []
