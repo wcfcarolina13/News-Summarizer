@@ -19,3 +19,5 @@ services:
         sync: false  # Set manually in Render dashboard
       - key: GOOGLE_CREDENTIALS_JSON
         sync: false  # Paste full JSON of service account credentials
+      - key: SCHEDULER_SHEET_ID
+        sync: false  # Spreadsheet ID for task persistence across redeploys
