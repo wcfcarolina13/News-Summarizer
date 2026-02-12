@@ -1,0 +1,27 @@
+# Server-only dependencies (no GUI, no audio)
+# Used by Render.com / Railway / Fly.io deployments
+
+# Web framework
+flask
+gunicorn
+
+# Content fetching
+requests
+beautifulsoup4
+lxml
+dateparser
+
+# YouTube
+youtube-transcript-api
+scrapetube
+yt-dlp
+
+# AI summarization
+google-generativeai
+
+# Google Sheets
+google-api-python-client
+google-auth
+
+# Utilities
+python-dotenv

@@ -1,27 +1,60 @@
-
-daily_audio_briefing/kokoro-v1.0.onnx
-daily_audio_briefing/voices.bin
-daily_audio_briefing/.env
-daily_audio_briefing/summary*.txt
-daily_audio_briefing/Week_*/
-daily_audio_briefing/temp_sub_*
-daily_audio_briefing/*.mp3
-daily_audio_briefing/*.wav
-daily_audio_briefing/__pycache__/
-daily_audio_briefing/*.pyc
-daily_audio_briefing/gui_log.txt
-daily_audio_briefing/cli_launch_log.txt
-daily_audio_briefing/sample_temp.wav
-.DS_Store
+# =============================================================================
+# CREDENTIALS & SECRETS - NEVER COMMIT
+# =============================================================================
 .env
-*.pyc
-__pycache__/
-# Specific video lists - temporary files
-daily_audio_briefing/Specific Video Lists/
-daily_audio_briefing/Transcriptions/
+daily_audio_briefing/.env
+daily_audio_briefing/google_credentials.json
+
+# =============================================================================
+# USER DATA - personal configs with spreadsheet IDs, task history, etc.
+# =============================================================================
+daily_audio_briefing/scheduled_tasks.json
 daily_audio_briefing/settings.json
 
-# Build artifacts
+# =============================================================================
+# GENERATED OUTPUT - summaries, audio, archives
+# =============================================================================
+daily_audio_briefing/summary*.txt
+daily_audio_briefing/Week_*/
+daily_audio_briefing/Archive/
+daily_audio_briefing/*.mp3
+daily_audio_briefing/*.wav
+daily_audio_briefing/sample_temp.wav
+daily_audio_briefing/temp_sub_*
+daily_audio_briefing/Specific Video Lists/
+daily_audio_briefing/Transcriptions/
+
+# =============================================================================
+# LARGE BINARY / MODEL FILES
+# =============================================================================
+daily_audio_briefing/kokoro-v1.0.onnx
+daily_audio_briefing/voices.bin
+
+# =============================================================================
+# BUILD ARTIFACTS
+# =============================================================================
 daily_audio_briefing/build/
 daily_audio_briefing/dist/
 *.spec.bak
+
+# =============================================================================
+# LOGS & DEBUG
+# =============================================================================
+daily_audio_briefing/gui_log.txt
+daily_audio_briefing/cli_launch_log.txt
+daily_audio_briefing/fetch_debug.log
+
+# =============================================================================
+# BACKUPS & TRAINING DATA
+# =============================================================================
+backups/
+execsum_training_dec24_v2.csv
+
+# =============================================================================
+# GENERAL
+# =============================================================================
+.DS_Store
+*.pyc
+__pycache__/
+daily_audio_briefing/__pycache__/
+daily_audio_briefing/*.pyc

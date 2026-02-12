@@ -2,6 +2,13 @@
   "name": "RWA News",
   "description": "Extraction config for RWA (Real World Assets) news from Telegram channels like RWAxyzNewswire",
 
+  "source_url_patterns": [
+    "rwaxyz.com",
+    "rwanews.com",
+    "t.me/RWAxyzNewswire",
+    "t.me/s/RWAxyzNewswire"
+  ],
+
   "include_patterns": [],
 
   "exclude_patterns": [

@@ -1,39 +1,86 @@
 {
-  "name": "Source Name",
-  "description": "Description of this extraction config",
+  "_documentation": {
+    "overview": "This is a template for creating custom extraction configs. Copy this file and rename it to match your source (e.g., 'my-newsletter.json').",
+    "usage": "Reference this config in sources.json by setting 'config': 'my-newsletter' (without .json extension)",
+    "fields": {
+      "name": "Human-readable name for this config",
+      "description": "What this config extracts and why",
+      "include_patterns": "Only items matching at least one pattern are included. Leave empty to include all.",
+      "exclude_patterns": "Items matching any pattern are excluded, even if they match include_patterns.",
+      "exclude_sections": "Section names to skip entirely (e.g., 'Ads', 'Sponsored').",
+      "include_sections": "If specified, only extract from these sections.",
+      "allowed_domains": "Whitelist - only links to these domains are extracted. Empty = allow all.",
+      "blocked_domains": "Blacklist - links to these domains are never extracted.",
+      "require_include_pattern": "If true, items MUST match an include_pattern. If false, items only need to NOT match exclude_patterns.",
+      "require_url": "If true, items must have a URL to be included.",
+      "extract_markets_section": "For newsletter configs - extract bullet points from Markets-style sections.",
+      "csv_columns": "Column headers for CSV/Sheets export. Order determines column order. Use 'include_headers: false' in scheduler for append-only mode.",
+      "capabilities": "Object defining advanced features. Enable only what your workflow needs."
+    },
+    "capabilities_reference": {
+      "csv_export": "Enable CSV export with custom columns. Useful for data pipelines and spreadsheet workflows.",
+      "grid_enrichment": "Enable Grid/database enrichment features. Requires external Grid API setup.",
+      "research_articles": "Enable deep article fetching and research-grade summarization.",
+      "custom_prompts": "Enable custom AI prompts for specialized extraction logic."
+    }
+  },
+
+  "name": "My Custom Config",
+  "description": "Custom extraction config for [Your Source]. Extracts [topics] while filtering out [noise].",
 
   "include_patterns": [
-    "Only extract items matching these patterns (leave empty to include all)"
+    "keyword1",
+    "keyword2",
+    "important topic"
   ],
 
   "exclude_patterns": [
-    "Skip items matching these patterns",
-    "sponsor",
-    "advertisement"
+    "subscribe",
+    "unsubscribe",
+    "advertisement",
+    "sponsored",
+    "click here",
+    "sign up"
   ],
 
-  "allowed_domains": [
-    "Leave empty to allow all domains",
-    "Or specify domains to whitelist: example.com"
+  "exclude_sections": [
+    "Advertisement",
+    "Sponsored Content",
+    "Related Posts"
   ],
+
+  "include_sections": [],
+
+  "allowed_domains": [],
 
   "blocked_domains": [
     "twitter.com",
+    "x.com",
     "facebook.com",
-    "linkedin.com"
+    "linkedin.com",
+    "instagram.com"
   ],
+
+  "allowed_source_domains": [],
+
+  "require_url": false,
+  "require_include_pattern": false,
+  "extract_markets_section": false,
 
   "csv_columns": [
+    "section",
     "title",
     "url",
-    "category",
-    "description",
-    "source_name",
-    "source_url",
-    "author",
-    "date_published",
-    "date_extracted"
+    "source",
+    "description"
   ],
 
-  "notes": "Add any notes about this extraction config here"
+  "capabilities": {
+    "csv_export": false,
+    "grid_enrichment": false,
+    "research_articles": false,
+    "custom_prompts": false
+  },
+
+  "notes": "Add any notes about this extraction config here. Document why certain patterns are included/excluded."
 }

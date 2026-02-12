@@ -1,13 +1,21 @@
 # Render.com deployment config
+# Scheduler runs as a background thread inside the Flask web process.
+# Use UptimeRobot (free) to ping /health every 5 min to prevent sleep.
 services:
   - type: web
-    name: news-summarizer-csv
+    name: daily-briefing-server
     runtime: python
     rootDir: daily_audio_briefing
-    buildCommand: pip install flask gunicorn beautifulsoup4 lxml requests
-    startCommand: gunicorn web_app:app --bind 0.0.0.0:$PORT
+    buildCommand: pip install -r requirements-server.txt
+    startCommand: gunicorn web_app:app --bind 0.0.0.0:$PORT --timeout 120 --workers 1
     healthCheckPath: /health
     plan: free
     envVars:
       - key: PYTHON_VERSION
         value: "3.11"
+      - key: SERVER_MODE
+        value: "true"
+      - key: GEMINI_API_KEY
+        sync: false  # Set manually in Render dashboard
+      - key: GOOGLE_CREDENTIALS_JSON
+        sync: false  # Paste full JSON of service account credentials

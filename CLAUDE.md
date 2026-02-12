@@ -20,6 +20,8 @@ All source files are in `daily_audio_briefing/`.
 | `make_audio_quality.py` | ~210 | Kokoro TTS high-quality audio |
 | `sheets_manager.py` | ~210 | Google Sheets export |
 | `file_manager.py` | ~155 | File I/O with frozen app support |
+| `web_app.py` | ~2200 | Flask web dashboard (scheduler, extraction, audio) |
+| `server_scheduler.py` | ~80 | Flask-integrated scheduler for cloud deployment |
 
 Config files: `sources.json`, `instruction_profiles.json`, `scheduled_tasks.json`, `settings.json`
 Extraction configs: `extraction_instructions/*.json` (execsum, rwa, cryptosum, _template)
@@ -73,17 +75,44 @@ To add new mappings: add `source_url_patterns` field to config JSON, or update `
 - Read `gui_app.py` in full (~8300 lines) — always use grep/targeted reads
 - Commit `.env`, `google_credentials.json`, or API keys
 
+## Server Deployment (Render.com)
+
+The web dashboard (`web_app.py`) includes a Scheduler page for managing automated feed→Sheets tasks.
+Deploy to Render.com free tier with keep-alive ping to prevent sleep.
+
+**Key server files:**
+- `web_app.py` — Flask app with scheduler dashboard, API endpoints, live preview
+- `server_scheduler.py` — Flask-integrated scheduler wrapper (runs as background thread)
+- `requirements-server.txt` — Server-only dependencies (no GUI/audio)
+- `render.yaml` — Render.com deployment config
+
+**Environment variables (set in Render dashboard):**
+- `SERVER_MODE=true` — Enables auto-start of scheduler
+- `GEMINI_API_KEY` — For AI summarization
+- `GOOGLE_CREDENTIALS_JSON` — Full JSON of service account credentials (for Sheets)
+
+**Keep-alive:** Set up UptimeRobot (free) to ping `/health` every 5 minutes.
+
 ## Pending Work
 
 **High Priority:**
 1. Rebuild macOS app — major features added since last build (scheduler, daemon, newsletter rewrite, audio fixes, UI reorg)
 2. Test multi-URL feature in GUI
 3. Commit outstanding changes — 20+ modified/new files in working tree
+4. Deploy to Render.com and verify scheduler runs 24/7
 
-**Future:**
-4. Progress indicator for multi-URL extraction
-5. Save/load URL lists for recurring newsletter batches
-6. Keyboard shortcuts for common actions
+**Server/Infra:**
+5. Set up UptimeRobot keep-alive ping after Render deploy
+6. Test Sheets export via env var credentials on server
+
+**Future — Multi-tenant SaaS:**
+7. Add authentication to web dashboard (currently open)
+8. Per-client API keys and Sheets credentials
+9. Task isolation (client A can't see/modify client B's tasks)
+10. Rate limiting per client
+11. Progress indicator for multi-URL extraction
+12. Save/load URL lists for recurring newsletter batches
+13. Keyboard shortcuts for common actions
 
 ## Build Instructions
 

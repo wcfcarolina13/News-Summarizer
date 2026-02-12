@@ -2,111 +2,140 @@
   "sources": [
     {
       "url": "https://www.youtube.com/@CoinBureauTrading/videos",
-      "enabled": true
+      "enabled": true,
+      "type": "youtube"
     },
     {
       "url": "https://www.youtube.com/@Limitless-FT/videos",
-      "enabled": true
+      "enabled": true,
+      "type": "youtube"
     },
     {
       "url": "https://www.youtube.com/@TomBilyeu/videos",
-      "enabled": true
+      "enabled": true,
+      "type": "youtube"
     },
     {
       "url": "https://www.youtube.com/@WesRoth/videos",
-      "enabled": true
+      "enabled": true,
+      "type": "youtube"
     },
     {
       "url": "https://www.youtube.com/@Bankless/videos",
-      "enabled": true
+      "enabled": true,
+      "type": "youtube"
     },
     {
       "url": "https://www.youtube.com/@UnchainedCrypto/videos",
-      "enabled": true
+      "enabled": true,
+      "type": "youtube"
     },
     {
       "url": "https://www.youtube.com/@PaulBarronNetwork/videos",
-      "enabled": true
+      "enabled": true,
+      "type": "youtube"
     },
     {
       "url": "https://www.youtube.com/@CoinBureau/videos",
-      "enabled": true
+      "enabled": true,
+      "type": "youtube"
     },
     {
       "url": "https://www.youtube.com/@RealVisionFinance/streams",
-      "enabled": true
+      "enabled": true,
+      "type": "youtube"
     },
     {
       "url": "https://www.youtube.com/@RaoulPalTJM/videos",
-      "enabled": true
+      "enabled": true,
+      "type": "youtube"
     },
     {
       "url": "https://www.youtube.com/@HowMoneyWorks/videos",
-      "enabled": true
+      "enabled": true,
+      "type": "youtube"
     },
     {
       "url": "https://www.youtube.com/@CaspianReport/videos",
-      "enabled": true
+      "enabled": true,
+      "type": "youtube"
     },
     {
       "url": "https://www.youtube.com/@ForwardGuidanceBW/videos",
-      "enabled": true
+      "enabled": true,
+      "type": "youtube"
     },
     {
       "url": "https://www.youtube.com/@clearvaluetax9382/videos",
-      "enabled": true
+      "enabled": true,
+      "type": "youtube"
     },
     {
       "url": "https://www.youtube.com/@DamonCassidy/videos",
-      "enabled": true
+      "enabled": true,
+      "type": "youtube"
     },
     {
       "url": "https://www.youtube.com/@DaveShap/videos",
-      "enabled": true
+      "enabled": true,
+      "type": "youtube"
     },
     {
       "url": "https://www.youtube.com/@ZeihanonGeopolitics/videos",
-      "enabled": true
+      "enabled": true,
+      "type": "youtube"
     },
     {
       "url": "https://www.youtube.com/coldfusion/videos",
-      "enabled": true
+      "enabled": true,
+      "type": "youtube"
     },
     {
       "url": "https://www.youtube.com/@TheDiaryOfACEO/videos",
-      "enabled": true
+      "enabled": true,
+      "type": "youtube"
     },
     {
       "url": "https://www.youtube.com/@MooninPapa/videos",
-      "enabled": true
+      "enabled": true,
+      "type": "youtube"
     },
     {
       "url": "https://www.youtube.com/@carpenoctom/videos",
-      "enabled": true
+      "enabled": true,
+      "type": "youtube"
     },
     {
       "url": "https://www.youtube.com/@milesdeutscher1357/videos",
-      "enabled": true
+      "enabled": true,
+      "type": "youtube"
     },
     {
       "url": "https://www.youtube.com/@intothecryptoverse/videos",
-      "enabled": true
+      "enabled": true,
+      "type": "youtube"
     },
     {
       "url": "https://www.youtube.com/jesseeckel2/videos",
-      "enabled": true
-    },
-    {
-      "url": "https://www.youtube.com/@CoinBureauTrading/videos",
-      "enabled": true
+      "enabled": true,
+      "type": "youtube"
     },
     {
       "url": "https://www.youtube.com/@TheJayMartinShow/videos",
-      "enabled": true
+      "enabled": true,
+      "type": "youtube"
     },
     {
       "url": "https://www.youtube.com/@RealLifeLore",
-      "enabled": true
+      "enabled": true,
+      "type": "youtube"
+    },
+    {
+      "url": "https://www.execsum.co/authors/2e8f4f5d-5856-4463-ad71-a48cbba10c7a",
+      "enabled": true,
+      "type": "newsletter",
+      "config": "execsum",
+      "name": "ExecSum"
     }
   ]
 }

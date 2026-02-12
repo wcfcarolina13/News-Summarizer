@@ -8,11 +8,42 @@ import argparse
 import sys
 from kokoro_onnx import Kokoro
 
+
+def get_resource_path(filename):
+    """Get the path to a bundled resource file.
+
+    When running as a PyInstaller bundle, resources are in sys._MEIPASS.
+    When running normally, they're in the same directory as this script.
+    """
+    if getattr(sys, 'frozen', False):
+        # Running as PyInstaller bundle
+        return os.path.join(sys._MEIPASS, filename)
+    else:
+        # Running normally - use script directory
+        return os.path.join(os.path.dirname(os.path.abspath(__file__)), filename)
+
+
 MODEL_URL = "https://github.com/thewh1teagle/kokoro-onnx/releases/download/model-files-v1.0/kokoro-v1.0.onnx"
 VOICES_URL = "https://github.com/thewh1teagle/kokoro-onnx/releases/download/model-files/voices.bin"
-MODEL_FILE = "kokoro-v1.0.onnx"
-VOICES_FILE = "voices.bin"
 TEXT_FILE = "summary.txt"
+
+
+def get_model_file():
+    """Get the path to the ONNX model file."""
+    bundled = get_resource_path("kokoro-v1.0.onnx")
+    if os.path.exists(bundled):
+        return bundled
+    # Fall back to current directory (will be downloaded if needed)
+    return "kokoro-v1.0.onnx"
+
+
+def get_voices_file():
+    """Get the path to the voices.bin file."""
+    bundled = get_resource_path("voices.bin")
+    if os.path.exists(bundled):
+        return bundled
+    # Fall back to current directory (will be downloaded if needed)
+    return "voices.bin"
 
 def download_file(url, filename):
     if not os.path.exists(filename):
@@ -103,9 +134,16 @@ def main():
                         help="MP3 bitrate (default: 128k). Use 192k or 256k for higher quality")
     args = parser.parse_args()
 
+    # Get model file paths (bundled or downloaded)
+    model_file = get_model_file()
+    voices_file = get_voices_file()
+
     try:
-        download_file(MODEL_URL, MODEL_FILE)
-        download_file(VOICES_URL, VOICES_FILE)
+        # Only download if using non-bundled paths
+        if model_file == "kokoro-v1.0.onnx":
+            download_file(MODEL_URL, model_file)
+        if voices_file == "voices.bin":
+            download_file(VOICES_URL, voices_file)
     except Exception as e:
         print(f"Failed to setup models: {e}")
         return
@@ -134,7 +172,7 @@ def main():
 
     print(f"Initializing Kokoro with voice: {args.voice}...")
     try:
-        kokoro = Kokoro(MODEL_FILE, VOICES_FILE)
+        kokoro = Kokoro(model_file, voices_file)
         
         # Check if voice exists by trying to access it or just relying on error
         # kokoro-onnx doesnt easily list voices via API in all versions, 

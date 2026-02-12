@@ -1,0 +1,10 @@
+{
+  "active_profile": "Default",
+  "profiles": {
+    "Default": {
+      "name": "Default",
+      "description": "Default profile - crypto, AI, geopolitics, and finance focus",
+      "instructions": "I'm interested in cryptocurrency, AI, geopolitics, and finance.\n\nFocus on:\n- Main points, takeaways, and unique insights (\"alpha\")\n- Specific data points, predictions, and actionable recommendations\n- Technical analysis details when available\n- Companies, projects, or entities mentioned (with brief context)\n\nPlease organize summaries to highlight information most relevant to my interests.\n\nOmit:\n- Marketing, sales pitches, demos, promo codes, advertizements, sponsors"
+    }
+  }
+}

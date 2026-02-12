@@ -13,10 +13,26 @@ from dotenv import load_dotenv
 load_dotenv()
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
 
+
+def get_resource_path(filename):
+    """Get the path to a bundled resource file.
+
+    When running as a PyInstaller bundle, resources are in sys._MEIPASS.
+    When running normally, they're in the same directory as this script.
+    """
+    if getattr(sys, 'frozen', False):
+        # Running as PyInstaller bundle
+        return os.path.join(sys._MEIPASS, filename)
+    else:
+        # Running normally - use script directory
+        return os.path.join(os.path.dirname(os.path.abspath(__file__)), filename)
+
+
 OUTPUT_FILE = "summary.txt"
 SPECIFIC_OUTPUT_DIR = "Specific Video Lists"
-CHANNELS_FILE = "channels.txt"
-SOURCES_JSON = "sources.json"
+# These are config files that may be bundled with the app
+CHANNELS_FILE = get_resource_path("channels.txt")
+SOURCES_JSON = get_resource_path("sources.json")
 
 def log(msg):
     print(f"[DEBUG] {msg}")
@@ -112,14 +128,39 @@ def get_transcript_text(video_id):
         except: pass
     return clean_vtt(content)
 
+def get_data_directory():
+    """Get the persistent data directory for user files."""
+    if getattr(sys, "frozen", False):
+        if sys.platform == "darwin":
+            data_dir = os.path.expanduser("~/Library/Application Support/Daily Audio Briefing")
+        elif sys.platform == "win32":
+            data_dir = os.path.join(os.environ.get("APPDATA", ""), "Daily Audio Briefing")
+        else:
+            data_dir = os.path.expanduser("~/.daily-audio-briefing")
+        os.makedirs(data_dir, exist_ok=True)
+        return data_dir
+    else:
+        return os.path.dirname(os.path.abspath(__file__))
+
 def load_custom_instructions():
-    """Load custom instructions from file if it exists."""
-    try:
-        if os.path.exists("custom_instructions.txt"):
-            with open("custom_instructions.txt", "r", encoding="utf-8") as f:
-                return f.read().strip()
-    except Exception:
-        pass
+    """Load custom instructions from file if it exists. Checks data directory first."""
+    # Try data directory first (persistent across reinstalls)
+    data_dir = get_data_directory()
+    paths_to_try = [
+        os.path.join(data_dir, "custom_instructions.txt"),
+        "custom_instructions.txt",  # Current working directory
+        os.path.join(os.path.dirname(os.path.abspath(__file__)), "custom_instructions.txt")
+    ]
+
+    for path in paths_to_try:
+        try:
+            if os.path.exists(path):
+                with open(path, "r", encoding="utf-8") as f:
+                    content = f.read().strip()
+                    if content:
+                        return content
+        except Exception:
+            pass
     return ""
 
 def summarize_text(model, text, previous_context=""):
@@ -257,20 +298,45 @@ def process_channel(channel_url, model, shared_context, cutoff_date, cutoff_time
 
     return new_summaries, shared_context
 
+def get_data_directory():
+    """Get the appropriate data directory for storing output files.
+
+    When running as a frozen app (PyInstaller), uses Application Support.
+    When running in development, uses the script directory.
+    """
+    if getattr(sys, "frozen", False):
+        # Frozen app - use Application Support for persistent storage
+        if sys.platform == "darwin":
+            data_dir = os.path.expanduser("~/Library/Application Support/Daily Audio Briefing")
+        elif sys.platform == "win32":
+            data_dir = os.path.join(os.environ.get("APPDATA", ""), "Daily Audio Briefing")
+        else:
+            data_dir = os.path.expanduser("~/.daily-audio-briefing")
+
+        # Create if it doesn't exist
+        if not os.path.exists(data_dir):
+            os.makedirs(data_dir, exist_ok=True)
+
+        return data_dir
+    else:
+        # Development mode - use script directory
+        return os.path.dirname(os.path.abspath(__file__))
+
+
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--days", type=int, default=1, help="Process this many days starting from today")
     parser.add_argument("--hours", type=int, help="Process videos from the last N hours")
     parser.add_argument("--start", type=str, help="Start date YYYY-MM-DD")
     parser.add_argument("--end", type=str, help="End date YYYY-MM-DD")
-    parser.add_argument("--model", type=str, default="gemini-2.5-flash", 
+    parser.add_argument("--model", type=str, default="gemini-2.5-flash",
                         help="Gemini model to use (gemini-2.5-flash, gemini-2.5-pro)")
     parser.add_argument("--urls", nargs="+", help="Specific YouTube video URLs to summarize")
     args = parser.parse_args()
 
-
-    script_dir = os.path.dirname(os.path.abspath(__file__))
-    os.chdir(script_dir)
+    # Use data directory for output files (persists in user's data folder when frozen)
+    data_dir = get_data_directory()
+    os.chdir(data_dir)
 
     model = setup_gemini(args.model)
 
@@ -307,7 +373,7 @@ def main():
             summaries.append(entry)
         if summaries:
             # Ensure output directory exists
-            out_dir = os.path.join(script_dir, SPECIFIC_OUTPUT_DIR)
+            out_dir = os.path.join(data_dir, SPECIFIC_OUTPUT_DIR)
             os.makedirs(out_dir, exist_ok=True)
             # Timestamped filename
             ts = datetime.datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
@@ -324,21 +390,56 @@ def main():
             log("WARNING: No summaries created for provided URLs.")
             return
 
-    # Load sources from sources.json if present, else fallback to channels.txt
-    channels = []
+    # Load sources from sources.json with type-aware processing
+    sources = []
+    youtube_sources = []
+    newsletter_sources = []
+
     if os.path.exists(SOURCES_JSON):
         import json
         try:
             data = json.load(open(SOURCES_JSON))
-            channels = [s["url"] for s in data.get("sources", []) if s.get("enabled", True)]
+            for s in data.get("sources", []):
+                if not s.get("enabled", True):
+                    continue
+                source_type = s.get("type", "youtube")  # Default to youtube for backward compatibility
+                url = s.get("url", "")
+
+                # Auto-detect type if not specified
+                if not source_type or source_type == "auto":
+                    if "youtube.com" in url or "youtu.be" in url:
+                        source_type = "youtube"
+                    else:
+                        source_type = "newsletter"
+
+                source_entry = {
+                    "url": url,
+                    "type": source_type,
+                    "config": s.get("config"),
+                    "name": s.get("name")
+                }
+
+                if source_type == "youtube":
+                    youtube_sources.append(source_entry)
+                elif source_type == "newsletter":
+                    newsletter_sources.append(source_entry)
+                sources.append(source_entry)
         except Exception as e:
             log(f"Error reading sources.json: {e}")
-    if not channels and os.path.exists(CHANNELS_FILE):
+
+    # Fallback to channels.txt for backward compatibility
+    if not sources and os.path.exists(CHANNELS_FILE):
         with open(CHANNELS_FILE, "r") as f:
-            channels = [line.strip() for line in f if line.strip()]
-    if not channels:
+            for line in f:
+                url = line.strip()
+                if url:
+                    youtube_sources.append({"url": url, "type": "youtube"})
+
+    if not youtube_sources and not newsletter_sources:
         log("Error: No sources configured.")
         return
+
+    log(f"Loaded {len(youtube_sources)} YouTube sources, {len(newsletter_sources)} newsletter sources")
 
     # Build date list
     dates_to_process = []
@@ -369,22 +470,73 @@ def main():
         for day_offset in range(args.days):
             dates_to_process.append(datetime.datetime.now() - datetime.timedelta(days=day_offset))
 
-    for target_date in dates_to_process:
-
-        pass
-        # placeholder to satisfy indentation; actual processing happens below
     shared_context = []
     total_summaries = 0
     log(f"DEBUG: Will save summaries in {os.path.dirname(__file__)}")
+
     for target_date in dates_to_process:
         if hours_mode:
             log(f"=== Processing videos from last {args.hours} hour(s) ===")
         else:
             log(f"=== Processing date: {target_date.date()} ===")
+
         day_summaries = []
-        for channel in channels:
-            summaries, shared_context = process_channel(channel, model, shared_context, target_date, cutoff_time)
+
+        # Process YouTube sources
+        for source in youtube_sources:
+            channel_url = source.get("url", "")
+            summaries, shared_context = process_channel(channel_url, model, shared_context, target_date, cutoff_time)
             day_summaries.extend(summaries)
+
+        # Process newsletter sources
+        if newsletter_sources:
+            try:
+                from execsum_processor import (
+                    extract_newsletter_content,
+                    load_config as load_execsum_config,
+                    create_basic_summary,
+                    load_api_key
+                )
+
+                for source in newsletter_sources:
+                    newsletter_url = source.get("url", "")
+                    config_name = source.get("config")
+                    source_name = source.get("name") or newsletter_url.split("/")[2] if "/" in newsletter_url else "Newsletter"
+
+                    log(f"--- Processing Newsletter: {newsletter_url} ---")
+
+                    # Load extraction config
+                    if config_name:
+                        config_path = os.path.join(os.path.dirname(__file__), 'extraction_instructions', f'{config_name}.json')
+                        if os.path.exists(config_path):
+                            import json
+                            with open(config_path, 'r') as f:
+                                config = json.load(f)
+                            log(f"  Using config: {config_name}")
+                        else:
+                            config = load_execsum_config()
+                            log(f"  Config '{config_name}' not found, using default")
+                    else:
+                        config = load_execsum_config()
+                        log(f"  Using default execsum config")
+
+                    # Extract and summarize newsletter content
+                    items, newsletter_date = extract_newsletter_content(newsletter_url, config)
+                    if items:
+                        log(f"  Found {len(items)} items")
+                        content = create_basic_summary(items)
+                        if content.strip():
+                            date_str = newsletter_date or target_date.strftime("%B %d, %Y")
+                            entry = f"\n\n=== {source_name} (Articles) ===\n\n\n{content}\n"
+                            day_summaries.append(entry)
+                            log(f"  -> Newsletter summary added")
+                    else:
+                        log(f"  No relevant items found")
+
+            except ImportError as e:
+                log(f"Warning: Could not import execsum_processor: {e}")
+            except Exception as e:
+                log(f"Error processing newsletters: {e}")
         if day_summaries:
             if hours_mode:
                 out_name = f"summary_last_{args.hours}h.txt"

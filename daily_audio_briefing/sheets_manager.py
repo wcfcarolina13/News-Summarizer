@@ -30,8 +30,10 @@ CREDENTIALS_FILE = os.path.join(os.path.dirname(__file__), 'google_credentials.j
 
 
 def is_sheets_available() -> bool:
-    """Check if Google Sheets integration is available."""
-    return SHEETS_AVAILABLE and os.path.exists(CREDENTIALS_FILE)
+    """Check if Google Sheets integration is available (file or env var credentials)."""
+    if not SHEETS_AVAILABLE:
+        return False
+    return os.path.exists(CREDENTIALS_FILE) or bool(os.environ.get('GOOGLE_CREDENTIALS_JSON'))
 
 
 def get_missing_requirements() -> str:
@@ -39,20 +41,34 @@ def get_missing_requirements() -> str:
     issues = []
     if not SHEETS_AVAILABLE:
         issues.append("Required packages not installed. Run: pip install google-auth google-auth-oauthlib google-api-python-client")
-    if not os.path.exists(CREDENTIALS_FILE):
-        issues.append(f"Credentials file not found at: {CREDENTIALS_FILE}")
+    if not os.path.exists(CREDENTIALS_FILE) and not os.environ.get('GOOGLE_CREDENTIALS_JSON'):
+        issues.append(f"No credentials found. Set GOOGLE_CREDENTIALS_JSON env var or place file at: {CREDENTIALS_FILE}")
     return "\n".join(issues) if issues else ""
 
 
 def get_sheets_service():
-    """Create and return a Google Sheets service instance."""
+    """Create and return a Google Sheets service instance.
+
+    Supports two credential sources:
+    1. GOOGLE_CREDENTIALS_JSON env var (for server deployment)
+    2. google_credentials.json file (for local development)
+    """
     if not SHEETS_AVAILABLE:
         raise ImportError("Google API packages not installed")
 
-    if not os.path.exists(CREDENTIALS_FILE):
-        raise FileNotFoundError(f"Credentials file not found: {CREDENTIALS_FILE}")
+    # Try env var first (for server/cloud deployment)
+    creds_json = os.environ.get('GOOGLE_CREDENTIALS_JSON')
+    if creds_json:
+        info = json.loads(creds_json)
+        credentials = Credentials.from_service_account_info(info, scopes=SCOPES)
+    elif os.path.exists(CREDENTIALS_FILE):
+        credentials = Credentials.from_service_account_file(CREDENTIALS_FILE, scopes=SCOPES)
+    else:
+        raise FileNotFoundError(
+            "No Google credentials found. Set GOOGLE_CREDENTIALS_JSON env var "
+            f"or place credentials file at: {CREDENTIALS_FILE}"
+        )
 
-    credentials = Credentials.from_service_account_file(CREDENTIALS_FILE, scopes=SCOPES)
     service = build('sheets', 'v4', credentials=credentials)
     return service
 
@@ -126,7 +142,8 @@ def export_items_to_sheet(
     items: List[Any],
     spreadsheet_id: str,
     sheet_name: str = 'Sheet1',
-    columns: Optional[List[str]] = None
+    columns: Optional[List[str]] = None,
+    include_headers: bool = True
 ) -> Dict[str, Any]:
     """
     Export extracted items to a Google Sheet.
@@ -136,6 +153,8 @@ def export_items_to_sheet(
         spreadsheet_id: The Google Sheet ID
         sheet_name: Name of the sheet tab
         columns: List of column names to export (uses item's to_dict keys if not specified)
+        include_headers: If True, add headers if sheet is empty. If False, skip headers entirely.
+                        Set to False for append-only mode where headers already exist.
 
     Returns:
         API response with number of rows added
@@ -163,15 +182,16 @@ def export_items_to_sheet(
         # Get all unique keys from items
         cols = list(rows_data[0].keys())
 
-    # Check if sheet has headers, if not add them
-    try:
-        existing_headers = get_sheet_headers(spreadsheet_id, sheet_name)
-        if not existing_headers:
-            # Add header row first
+    # Check if sheet has headers, if not add them (only if include_headers is True)
+    if include_headers:
+        try:
+            existing_headers = get_sheet_headers(spreadsheet_id, sheet_name)
+            if not existing_headers:
+                # Add header row first
+                append_to_sheet(spreadsheet_id, f'{sheet_name}!A1', [cols])
+        except HttpError:
+            # Sheet might be empty or not exist, try adding headers
             append_to_sheet(spreadsheet_id, f'{sheet_name}!A1', [cols])
-    except HttpError:
-        # Sheet might be empty or not exist, try adding headers
-        append_to_sheet(spreadsheet_id, f'{sheet_name}!A1', [cols])
 
     # Convert items to rows matching column order
     rows = []

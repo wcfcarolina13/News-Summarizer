@@ -7,3 +7,6 @@ Focus on:
 - Companies, projects, or entities mentioned (with brief context)
 
 Please organize summaries to highlight information most relevant to my interests.
+
+Omit:
+- Marketing, sales pitches, demos, promo codes, advertizements, sponsors

@@ -90,6 +90,38 @@ class ExtractionConfig:
     ])
     append_mode: bool = True
 
+    # Filter patterns from config file
+    include_patterns: List[str] = field(default_factory=list)
+    exclude_patterns: List[str] = field(default_factory=list)
+    blocked_domains: List[str] = field(default_factory=list)
+    allowed_domains: List[str] = field(default_factory=list)
+    exclude_sections: List[str] = field(default_factory=list)
+
+    @classmethod
+    def from_dict(cls, config_dict: Dict[str, Any]) -> 'ExtractionConfig':
+        """Create an ExtractionConfig from a dictionary (e.g., loaded from JSON)."""
+        config = cls()
+
+        # Map known fields
+        if 'csv_columns' in config_dict:
+            config.csv_columns = config_dict['csv_columns']
+        if 'include_patterns' in config_dict:
+            config.include_patterns = config_dict['include_patterns']
+        if 'exclude_patterns' in config_dict:
+            config.exclude_patterns = config_dict['exclude_patterns']
+        if 'blocked_domains' in config_dict:
+            config.blocked_domains = config_dict['blocked_domains']
+        if 'allowed_domains' in config_dict:
+            config.allowed_domains = config_dict['allowed_domains']
+        if 'exclude_sections' in config_dict:
+            config.exclude_sections = config_dict['exclude_sections']
+        if 'timeout' in config_dict:
+            config.timeout = config_dict['timeout']
+        if 'fetch_limit' in config_dict:
+            config.fetch_limit = config_dict['fetch_limit']
+
+        return config
+
 
 # =============================================================================
 # URL UTILITIES

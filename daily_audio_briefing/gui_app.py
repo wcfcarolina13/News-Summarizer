@@ -11,6 +11,46 @@ import tkinter.filedialog as filedialog
 import qrcode
 from PIL import Image # PIL is imported by qrcode, but explicit import helps CTkImage
 
+
+def get_data_directory():
+    """Get the appropriate data directory for storing output files.
+
+    When running as a frozen app (PyInstaller), uses Application Support.
+    When running in development, uses the script directory.
+    """
+    if getattr(sys, "frozen", False):
+        # Frozen app - use Application Support for persistent storage
+        if sys.platform == "darwin":
+            data_dir = os.path.expanduser("~/Library/Application Support/Daily Audio Briefing")
+        elif sys.platform == "win32":
+            data_dir = os.path.join(os.environ.get("APPDATA", ""), "Daily Audio Briefing")
+        else:
+            data_dir = os.path.expanduser("~/.daily-audio-briefing")
+
+        # Create if it doesn't exist
+        if not os.path.exists(data_dir):
+            os.makedirs(data_dir, exist_ok=True)
+
+        return data_dir
+    else:
+        # Development mode - use script directory
+        return os.path.dirname(os.path.abspath(__file__))
+
+
+def get_resource_path(filename):
+    """Get the path to a bundled resource file.
+
+    When running as a PyInstaller bundle, resources are in sys._MEIPASS.
+    When running normally, they're in the same directory as this script.
+    """
+    if getattr(sys, "frozen", False):
+        # Running as PyInstaller bundle
+        return os.path.join(sys._MEIPASS, filename)
+    else:
+        # Running normally - use script directory
+        return os.path.join(os.path.dirname(os.path.abspath(__file__)), filename)
+
+
 from podcast_manager import PodcastServer # Import your podcast manager
 from file_manager import FileManager
 from audio_generator import AudioGenerator
@@ -43,6 +83,78 @@ except Exception:
 # Configuration - Dark theme to match web interface
 ctk.set_appearance_mode("Dark")
 ctk.set_default_color_theme("blue")
+
+
+class ToolTip:
+    """
+    Tooltip class for CustomTkinter widgets.
+    Shows a tooltip after hovering for a specified delay (default 1.2 seconds).
+    """
+    def __init__(self, widget, text, delay=1200):
+        self.widget = widget
+        self.text = text
+        self.delay = delay  # milliseconds
+        self.tooltip_window = None
+        self.schedule_id = None
+
+        widget.bind("<Enter>", self._on_enter)
+        widget.bind("<Leave>", self._on_leave)
+        widget.bind("<Button-1>", self._on_leave)  # Hide on click
+
+    def _on_enter(self, event=None):
+        """Schedule tooltip to appear after delay."""
+        self._cancel_schedule()
+        self.schedule_id = self.widget.after(self.delay, self._show_tooltip)
+
+    def _on_leave(self, event=None):
+        """Cancel scheduled tooltip and hide if visible."""
+        self._cancel_schedule()
+        self._hide_tooltip()
+
+    def _cancel_schedule(self):
+        """Cancel any pending tooltip display."""
+        if self.schedule_id:
+            self.widget.after_cancel(self.schedule_id)
+            self.schedule_id = None
+
+    def _show_tooltip(self):
+        """Display the tooltip window."""
+        if self.tooltip_window:
+            return
+
+        # Get widget position
+        x = self.widget.winfo_rootx() + 10
+        y = self.widget.winfo_rooty() + self.widget.winfo_height() + 5
+
+        # Create tooltip window
+        self.tooltip_window = tw = ctk.CTkToplevel(self.widget)
+        tw.wm_overrideredirect(True)  # Remove window decorations
+        tw.wm_geometry(f"+{x}+{y}")
+        tw.attributes("-topmost", True)
+
+        # Create tooltip content
+        label = ctk.CTkLabel(
+            tw,
+            text=self.text,
+            fg_color=("gray85", "gray25"),
+            corner_radius=6,
+            padx=10,
+            pady=6,
+            font=ctk.CTkFont(size=12),
+            wraplength=300
+        )
+        label.pack()
+
+    def _hide_tooltip(self):
+        """Hide the tooltip window."""
+        if self.tooltip_window:
+            self.tooltip_window.destroy()
+            self.tooltip_window = None
+
+
+def add_tooltip(widget, text, delay=1200):
+    """Helper function to add a tooltip to any widget."""
+    return ToolTip(widget, text, delay)
 
 class AudioBriefingApp(ctk.CTk):
     def __init__(self):
@@ -77,14 +189,30 @@ class AudioBriefingApp(ctk.CTk):
         self.extracted_items = []
         self.data_processor = None  # Lazy init to avoid slow startup
 
+        # Direct Audio cache - stores cleaned text to avoid re-processing
+        # Format: {"raw_hash": hash, "cleaned_text": str}
+        self._cleaned_text_cache = None
+
+        # Unified Content Editor state
+        self._editor_showing_raw = True  # True = showing raw text, False = showing cleaned
+        self._raw_text_backup = ""  # Stores raw text when showing cleaned view
+        self._cleaned_text_backup = ""  # Stores cleaned text when showing raw view
+
         # App settings
         self.settings = self._load_settings()
+        self._current_text_scale = 1.0  # Initialize scale tracking
+
+        # Long-running operation flag - prevents scheduler from overwriting status
+        self._long_operation_in_progress = False
+
+        # Apply saved text scale on startup
+        self._apply_text_scale()
 
         # self.podcast_server = PodcastServer()  # Disabled
         # self.drive_manager = None  # Google Drive features removed
 
         # Header
-        self.label_header = ctk.CTkLabel(self.main_scroll, text="Daily News Summary & YouTube Integration", font=ctk.CTkFont(size=20, weight="bold"))
+        self.label_header = ctk.CTkLabel(self.main_scroll, text="Summarize Text, Articles, and Videos", font=ctk.CTkFont(size=20, weight="bold"))
         self.label_header.grid(row=0, column=0, padx=20, pady=(20, 10), sticky="ew")
 
         # Text Area Section (collapsible)
@@ -97,7 +225,7 @@ class AudioBriefingApp(ctk.CTk):
         text_header.grid(row=0, column=0, sticky="ew", padx=10, pady=(5, 0))
         text_header.grid_columnconfigure(0, weight=1)
 
-        ctk.CTkLabel(text_header, text="News Summary", font=ctk.CTkFont(size=14, weight="bold")).grid(row=0, column=0, sticky="w")
+        ctk.CTkLabel(text_header, text="Audio Content", font=ctk.CTkFont(size=14, weight="bold")).grid(row=0, column=0, sticky="w")
 
         # Fetch Article button - for loading article content from URL
         self.btn_fetch_article = ctk.CTkButton(text_header, text="Fetch Article", width=100, fg_color="green", command=self.open_fetch_article_dialog)
@@ -112,26 +240,283 @@ class AudioBriefingApp(ctk.CTk):
 
         # Text content frame (collapsible)
         self.text_content = ctk.CTkFrame(self.frame_text, fg_color="transparent")
-        self.text_content.grid(row=1, column=0, sticky="ew", padx=5, pady=5)
+        self.text_content.grid(row=1, column=0, sticky="nsew", padx=5, pady=5)
         self.text_content.grid_columnconfigure(0, weight=1)
+        self.text_content.grid_rowconfigure(0, weight=1)  # Allow textbox row to expand
         self.text_expanded = True  # Track expansion state
 
-        # Textbox with fixed height (scrollable container handles overflow)
-        self.textbox = ctk.CTkTextbox(self.text_content, height=150, font=ctk.CTkFont(size=14))
-        self.textbox.grid(row=0, column=0, sticky="ew")
+        # Textbox - 25% taller default (188px vs 150px)
+        self._textbox_height = 188
+        self.textbox = ctk.CTkTextbox(self.text_content, height=self._textbox_height, font=ctk.CTkFont(size=14))
+        self.textbox.grid(row=0, column=0, sticky="nsew")
 
-        # Non-textual placeholder overlay
-        self._placeholder = ctk.CTkLabel(self.textbox, text="Paste or edit the news summary here. You can also load it via Get YouTube News or Upload File.", text_color="gray")
+        # Resize handle for textbox - allows dragging to resize height
+        self.textbox_resize_handle = ctk.CTkFrame(
+            self.text_content,
+            height=10,
+            fg_color=("gray80", "gray30"),
+            cursor="sb_v_double_arrow"
+        )
+        self.textbox_resize_handle.grid(row=1, column=0, sticky="ew", pady=(2, 0))
+
+        # Grip icon in the center of the resize handle (three horizontal lines)
+        self.resize_grip = ctk.CTkLabel(
+            self.textbox_resize_handle,
+            text="⋯",  # Three dots as grip indicator
+            font=ctk.CTkFont(size=14, weight="bold"),
+            text_color=("gray50", "gray60"),
+            cursor="sb_v_double_arrow"
+        )
+        self.resize_grip.place(relx=0.5, rely=0.5, anchor="center")
+
+        # Resize drag logic
+        self._resize_start_y = 0
+        self._resize_start_height = 0
+
+        def _on_resize_start(event):
+            self._resize_start_y = event.y_root
+            self._resize_start_height = self.textbox.winfo_height()
+
+        def _on_resize_drag(event):
+            delta = event.y_root - self._resize_start_y
+            new_height = max(100, self._resize_start_height + delta)  # Minimum 100px
+            self.textbox.configure(height=new_height)
+            self._textbox_height = new_height
+
+        def _on_resize_enter(event):
+            self.textbox_resize_handle.configure(fg_color=("gray70", "gray40"))
+            self.resize_grip.configure(text_color=("gray30", "gray80"))
+
+        def _on_resize_leave(event):
+            self.textbox_resize_handle.configure(fg_color=("gray80", "gray30"))
+            self.resize_grip.configure(text_color=("gray50", "gray60"))
+
+        self.textbox_resize_handle.bind("<Button-1>", _on_resize_start)
+        self.textbox_resize_handle.bind("<B1-Motion>", _on_resize_drag)
+        self.textbox_resize_handle.bind("<Enter>", _on_resize_enter)
+        self.textbox_resize_handle.bind("<Leave>", _on_resize_leave)
+        # Also bind the grip label so dragging on it works
+        self.resize_grip.bind("<Button-1>", _on_resize_start)
+        self.resize_grip.bind("<B1-Motion>", _on_resize_drag)
+        self.resize_grip.bind("<Enter>", _on_resize_enter)
+        self.resize_grip.bind("<Leave>", _on_resize_leave)
+
+        # Scroll capture - prevent mouse scroll from propagating to main_scroll when over textbox
+        # Use fractional scrolling for smoother feel, especially on macOS trackpads
+        self._scroll_accumulator = 0.0  # Accumulate small scroll deltas for smooth scrolling
+
+        def _on_textbox_scroll(event):
+            """Handle scroll events within the textbox with smooth fractional scrolling."""
+            try:
+                inner_text = self.textbox._textbox
+
+                # Get current scroll position and content info
+                first_visible, last_visible = inner_text.yview()
+
+                # Calculate scroll delta as a fraction of visible area
+                if event.delta:
+                    # macOS trackpad sends many small events; Windows sends fewer large ones
+                    if abs(event.delta) < 10:
+                        # macOS-style: small delta values (1, -1, 2, -2)
+                        # Use smaller multiplier for smoother feel
+                        scroll_delta = -event.delta * 0.02
+                    else:
+                        # Windows-style: large delta values (120, -120)
+                        scroll_delta = -event.delta / 120 * 0.05
+                elif event.num == 4:  # Linux scroll up
+                    scroll_delta = -0.05
+                elif event.num == 5:  # Linux scroll down
+                    scroll_delta = 0.05
+                else:
+                    return "break"
+
+                # Accumulate scroll for very small movements (trackpad momentum)
+                self._scroll_accumulator += scroll_delta
+
+                # Only apply scroll if accumulated enough (reduces jitter)
+                if abs(self._scroll_accumulator) >= 0.005:
+                    new_pos = first_visible + self._scroll_accumulator
+                    # Clamp to valid range
+                    new_pos = max(0.0, min(1.0 - (last_visible - first_visible), new_pos))
+                    inner_text.yview_moveto(new_pos)
+                    self._scroll_accumulator = 0.0
+
+            except Exception as e:
+                print(f"[DEBUG] Scroll error: {e}")
+            return "break"  # Stop event propagation to parent
+
+        # Store scroll handler for use in enter/leave bindings
+        self._textbox_scroll_handler = _on_textbox_scroll
+
+        # Track if mouse is over the textbox for scroll handling
+        self._mouse_over_textbox = False
+
+        def _on_textbox_enter(event):
+            """When mouse enters textbox, set flag for scroll capture."""
+            self._mouse_over_textbox = True
+
+        def _on_textbox_leave(event):
+            """When mouse leaves textbox, clear flag."""
+            self._mouse_over_textbox = False
+
+        # Bind enter/leave events to track mouse position
+        self.textbox.bind("<Enter>", _on_textbox_enter)
+        self.textbox.bind("<Leave>", _on_textbox_leave)
+
+        # Prevent trackpad gestures from being interpreted as drag-to-select
+        # This can happen when the textbox captures B1-Motion events from trackpad scrolling
+        def _on_textbox_button_press(event):
+            """Handle button press - only allow if intentionally clicking in textbox."""
+            # Store press location to detect intentional clicks vs accidental drags
+            self._textbox_press_x = event.x
+            self._textbox_press_y = event.y
+            self._textbox_intentional_click = True
+
+        def _on_textbox_motion(event):
+            """Prevent accidental drag-to-select from trackpad gestures."""
+            # If motion is happening but we didn't have an intentional press, it might be
+            # a trackpad gesture being misinterpreted - don't select text
+            if not getattr(self, '_textbox_intentional_click', False):
+                return "break"
+            # Allow normal drag-select for intentional clicks
+            return None
+
+        def _on_textbox_button_release(event):
+            """Clear the intentional click flag on release."""
+            self._textbox_intentional_click = False
+
+        # Bind to inner textbox to prevent accidental selection
+        try:
+            inner = self.textbox._textbox
+            inner.bind("<Button-1>", _on_textbox_button_press, add="+")
+            inner.bind("<ButtonRelease-1>", _on_textbox_button_release, add="+")
+        except Exception:
+            pass
+
+        # Initial bindings for textbox scroll
+        self.textbox.bind("<MouseWheel>", _on_textbox_scroll)
+        self.textbox.bind("<Button-4>", _on_textbox_scroll)
+        self.textbox.bind("<Button-5>", _on_textbox_scroll)
+        try:
+            self.textbox._textbox.bind("<MouseWheel>", _on_textbox_scroll)
+            self.textbox._textbox.bind("<Button-4>", _on_textbox_scroll)
+            self.textbox._textbox.bind("<Button-5>", _on_textbox_scroll)
+        except Exception:
+            pass
+
+        # Non-textual placeholder overlay - hidden when textbox has content
+        self._placeholder = ctk.CTkLabel(
+            self.textbox,
+            text="Paste content here, or load via Get Summaries / Upload File. URLs will be auto-detected.",
+            text_color="gray"
+        )
         self._placeholder.place(relx=0.02, rely=0.02, anchor="nw")
-        def _toggle_placeholder(event=None):
+        self._placeholder_visible = True
+
+        def _update_placeholder(event=None):
+            """Update placeholder visibility based on textbox content."""
             has_text = bool(self.textbox.get("0.0", "end-1c").strip())
-            if has_text:
+            if has_text and self._placeholder_visible:
                 self._placeholder.place_forget()
-            else:
+                self._placeholder_visible = False
+            elif not has_text and not self._placeholder_visible:
                 self._placeholder.place(relx=0.02, rely=0.02, anchor="nw")
-        self.textbox.bind("<KeyRelease>", _toggle_placeholder)
-        self.textbox.bind("<FocusIn>", _toggle_placeholder)
-        self.textbox.bind("<FocusOut>", _toggle_placeholder)
+                self._placeholder_visible = True
+
+        # Update placeholder on any text change, not just focus
+        self.textbox.bind("<KeyRelease>", _update_placeholder)
+        self.textbox.bind("<FocusIn>", _update_placeholder)
+        self.textbox.bind("<FocusOut>", _update_placeholder)
+        # Catch paste events (Cmd+V on macOS, Ctrl+V on Windows/Linux)
+        self.textbox.bind("<<Paste>>", lambda e: self.after(10, _update_placeholder))
+        self.textbox.bind("<Command-v>", lambda e: self.after(10, _update_placeholder))
+        self.textbox.bind("<Control-v>", lambda e: self.after(10, _update_placeholder))
+        # Also bind to the inner textbox widget for more complete coverage
+        try:
+            inner = self.textbox._textbox
+            inner.bind("<<Paste>>", lambda e: self.after(10, _update_placeholder))
+            inner.bind("<Command-v>", lambda e: self.after(10, _update_placeholder))
+            inner.bind("<Control-v>", lambda e: self.after(10, _update_placeholder))
+            inner.bind("<<Modified>>", lambda e: self.after(10, _update_placeholder))
+        except:
+            pass
+        self._update_placeholder = _update_placeholder  # Store reference for external calls
+
+        # Inline status bar (below resize handle)
+        self.inline_status_frame = ctk.CTkFrame(self.text_content, fg_color="transparent")
+        self.inline_status_frame.grid(row=2, column=0, sticky="ew", pady=(5, 0))
+        self.inline_status_frame.grid_columnconfigure(0, weight=1)
+
+        self.inline_status_label = ctk.CTkLabel(
+            self.inline_status_frame,
+            text="",
+            text_color="gray",
+            font=ctk.CTkFont(size=12)
+        )
+        self.inline_status_label.grid(row=0, column=0, sticky="w")
+
+        # View toggle button (Raw/Cleaned) - starts disabled
+        self.btn_toggle_view = ctk.CTkButton(
+            self.inline_status_frame,
+            text="Show Cleaned",
+            width=100,
+            fg_color="gray",
+            state="disabled",
+            command=self._toggle_editor_view
+        )
+        self.btn_toggle_view.grid(row=0, column=1, sticky="e", padx=(10, 0))
+
+        # URL detection banner (always visible, greyed out when no URLs detected)
+        self.url_banner_frame = ctk.CTkFrame(self.text_content, fg_color=("gray85", "gray20"))
+        self.url_banner_frame.grid(row=3, column=0, sticky="ew", pady=(5, 0))
+        self.url_banner_frame.grid_columnconfigure(0, weight=1)
+        # Don't hide - always visible
+
+        self.url_banner_label = ctk.CTkLabel(
+            self.url_banner_frame,
+            text="No articles or URLs detected",
+            font=ctk.CTkFont(size=12),
+            text_color="gray"
+        )
+        self.url_banner_label.grid(row=0, column=0, padx=10, pady=8, sticky="w")
+
+        self.btn_fetch_urls = ctk.CTkButton(
+            self.url_banner_frame,
+            text="Fetch Content",
+            width=110,
+            fg_color="gray",
+            state="disabled",
+            command=self._fetch_detected_urls
+        )
+        self.btn_fetch_urls.grid(row=0, column=1, padx=(5, 5), pady=5)
+
+        self.btn_ignore_urls = ctk.CTkButton(
+            self.url_banner_frame,
+            text="Keep as Text",
+            width=100,
+            fg_color="gray",
+            state="disabled",
+            command=self._dismiss_url_banner
+        )
+        self.btn_ignore_urls.grid(row=0, column=2, padx=(0, 5), pady=5)
+
+        # Extract Data button (always visible, enabled when config-matched URLs detected)
+        self.btn_extract_data = ctk.CTkButton(
+            self.url_banner_frame,
+            text="Extract Data",
+            width=100,
+            fg_color="gray",
+            state="disabled",
+            command=self._extract_config_urls
+        )
+        self.btn_extract_data.grid(row=0, column=3, padx=(0, 10), pady=5)
+        # Button stays visible - greyed out as explainer of available functionality
+
+        self._url_banner_active = False  # Track if URLs are detected
+        self._current_config_urls = None  # Track config-matched URLs
+
+        # Bind textbox changes for URL detection and placeholder
+        self.textbox.bind("<KeyRelease>", self._on_textbox_change)
 
         self.frame_yt_api = ctk.CTkFrame(self.main_scroll)
         self.frame_yt_api.grid(row=2, column=0, padx=20, pady=(10, 5), sticky="ew")
@@ -171,18 +556,18 @@ class AudioBriefingApp(ctk.CTk):
 
         ctk.CTkLabel(frame_row0, text="Model:").grid(row=0, column=5, padx=(0, 5), sticky="w")
         
-        self.model_var = ctk.StringVar(value="Fast (FREE)")
+        self.model_var = ctk.StringVar(value="gemini-2.0-flash (Fast)")
         self.model_combo = ctk.CTkComboBox(
             frame_row0,
             variable=self.model_var,
-            values=["Fast (FREE)", "Balanced (FREE)", "Best (FREE, 50/day)"],
-            width=180,
+            values=["gemini-2.0-flash (Fast)", "gemini-1.5-flash (Balanced)", "gemini-1.5-pro (Best, 50/day)"],
+            width=230,
             state="readonly"
         )
         self.model_combo.grid(row=0, column=6, sticky="w")
-        
+
         # Row 1: Help text
-        help_text = "💡 Fast: 4000/min | Balanced: 1500/day | Best: 50/day (highest quality)"
+        help_text = "💡 gemini-2.0-flash: 4000/min | gemini-1.5-flash: 1500/day | gemini-1.5-pro: 50/day"
         ctk.CTkLabel(self.frame_yt_api, text=help_text, font=ctk.CTkFont(size=10), text_color="gray").grid(
             row=1, column=0, columnspan=2, padx=10, pady=(0, 10), sticky="w"
         )
@@ -194,8 +579,8 @@ class AudioBriefingApp(ctk.CTk):
         frame_row2.grid_columnconfigure(1, weight=1)
         frame_row2.grid_columnconfigure(2, weight=1)
         
-        self.btn_get_yt_news = ctk.CTkButton(frame_row2, text="Get YouTube News", command=self.get_youtube_news_from_channels)
-        self.btn_get_yt_news.grid(row=0, column=0, padx=(0, 5), sticky="ew")
+        self.btn_get_summaries = ctk.CTkButton(frame_row2, text="Get Summaries", command=self.get_summaries_from_sources)
+        self.btn_get_summaries.grid(row=0, column=0, padx=(0, 5), sticky="ew")
 
         self.btn_edit_sources = ctk.CTkButton(frame_row2, text="Edit Sources", fg_color="gray", command=self.open_sources_editor)
         self.btn_edit_sources.grid(row=0, column=1, padx=5, sticky="ew")
@@ -242,33 +627,31 @@ class AudioBriefingApp(ctk.CTk):
         # Initialize state
         self.on_toggle_range()
 
-        # Row 4: Upload File
-        self.btn_upload_file = ctk.CTkButton(self.frame_yt_api, text="Upload File (.txt, .mp3, .wav, .m4a)", command=self.upload_text_file)
+        # Row 4: Upload Text File button (audio transcription moved to Advanced section)
+        self.btn_upload_file = ctk.CTkButton(self.frame_yt_api, text="Upload Text File (.txt)", command=self.upload_text_file)
         self.btn_upload_file.grid(row=4, column=0, columnspan=2, padx=10, pady=10, sticky="ew")
-        # Selected files panel
-        self.selected_panel = ctk.CTkFrame(self.frame_yt_api, fg_color=("gray90", "gray20"))
-        self.selected_panel.grid(row=5, column=0, columnspan=2, padx=10, pady=(0,10), sticky="ew")
-        self.selected_panel.grid_columnconfigure(0, weight=1)
-        self.files_combo = ctk.CTkComboBox(self.selected_panel, values=["No files selected"], width=250, state="readonly")
-        self.files_combo.grid(row=0, column=0, sticky="ew", padx=10, pady=5)
-        self.files_combo.set("No files selected")
-        self.btn_clear_selected = ctk.CTkButton(self.selected_panel, text="Clear", width=80, command=self._clear_selected_file)
-        self.btn_clear_selected.grid(row=0, column=1, padx=(10,10), pady=5)
-        self.btn_transcribe = ctk.CTkButton(self.selected_panel, text="Transcribe", width=100, command=self.start_transcription, state="disabled", fg_color="green")
-        self.btn_transcribe.grid(row=0, column=2, padx=(0,10), pady=5)
 
-        # Button: Specific URLs
-        self.btn_specific_urls = ctk.CTkButton(self.frame_yt_api, text="Specific URLs", command=self.open_specific_urls_dialog)
-        self.btn_specific_urls.grid(row=6, column=0, columnspan=2, padx=10, pady=(0, 10), sticky="ew")
+        # Note: "Specific URLs" button removed - functionality consolidated into News Summary textbox
+        # Users can now paste YouTube URLs or article URLs directly and they'll be auto-detected
+        # Note: Transcription features moved to collapsible "Advanced" section at bottom
+
+        # Separator and Audio Section Header
+        self.audio_separator = ctk.CTkFrame(self.main_scroll, height=2, fg_color=("gray70", "gray40"))
+        self.audio_separator.grid(row=3, column=0, padx=20, pady=(15, 5), sticky="ew")
+
+        self.label_audio_header = ctk.CTkLabel(self.main_scroll, text="Convert Text/Summaries to Audio", font=ctk.CTkFont(size=20, weight="bold"))
+        self.label_audio_header.grid(row=4, column=0, padx=20, pady=(10, 10), sticky="ew")
 
         # Audio Controls Frame
         self.frame_audio_controls = ctk.CTkFrame(self.main_scroll)
-        self.frame_audio_controls.grid(row=3, column=0, padx=20, pady=(5, 20), sticky="ew")
+        self.frame_audio_controls.grid(row=5, column=0, padx=20, pady=(5, 20), sticky="ew")
         self.frame_audio_controls.grid_columnconfigure((0, 1), weight=1)
 
-        # Row 0: Fast Generation
+        # Row 0: Fast Generation with sample button
         self.btn_fast = ctk.CTkButton(self.frame_audio_controls, text="Generate Fast (gTTS)", command=self.start_fast_generation)
-        self.btn_fast.grid(row=0, column=0, columnspan=2, padx=10, pady=10, sticky="ew")
+        self.btn_fast.grid(row=0, column=0, padx=(10, 5), pady=10, sticky="ew")
+        self.btn_fast_sample = ctk.CTkButton(self.frame_audio_controls, text="▶ Sample", width=90, fg_color="gray", command=self.play_gtts_sample)
+        self.btn_fast_sample.grid(row=0, column=1, padx=(5, 10), pady=10, sticky="e")
 
         # Row 1: Quality Generation Options
         self.label_voice = ctk.CTkLabel(self.frame_audio_controls, text="Quality Voice:")
@@ -292,46 +675,66 @@ class AudioBriefingApp(ctk.CTk):
         self.btn_convert_dates = ctk.CTkButton(self.frame_audio_controls, text="Convert Selected Dates to Audio", command=self.select_dates_to_audio)
         self.btn_convert_dates.grid(row=3, column=0, columnspan=2, padx=10, pady=(5, 10), sticky="ew")
 
-        # Direct Audio option (skip summary, clean text for listening)
-        self.direct_audio_var = ctk.BooleanVar(value=False)
-        self.chk_direct_audio = ctk.CTkCheckBox(
-            self.frame_audio_controls,
-            text="Direct Audio (clean text for listening, no summary)",
-            variable=self.direct_audio_var
-        )
-        self.chk_direct_audio.grid(row=4, column=0, columnspan=2, padx=10, pady=(5, 5), sticky="w")
+        # Note: Direct Audio checkbox removed - auto-clean is now always inline
+        # Text is automatically cleaned for audio when Generate is clicked
 
         self.btn_quality = ctk.CTkButton(self.frame_audio_controls, text="Generate Quality (Kokoro)", command=self.start_quality_generation)
-        self.btn_quality.grid(row=5, column=0, columnspan=2, padx=10, pady=(5, 10), sticky="ew")
+        self.btn_quality.grid(row=4, column=0, columnspan=2, padx=10, pady=(5, 10), sticky="ew")
 
-        # Data Extraction Section
-        self.frame_extract = ctk.CTkFrame(self.main_scroll)
-        self.frame_extract.grid(row=4, column=0, padx=20, pady=(5, 10), sticky="ew")
-        self.frame_extract.grid_columnconfigure(0, weight=1)
+        # Advanced Section (Collapsible) - Contains Data Extractor and Transcription
+        self.frame_advanced = ctk.CTkFrame(self.main_scroll)
+        self.frame_advanced.grid(row=6, column=0, padx=20, pady=(0, 10), sticky="ew")
+        self.frame_advanced.grid_columnconfigure(0, weight=1)
 
         # Header with expand/collapse toggle
+        advanced_header = ctk.CTkFrame(self.frame_advanced, fg_color="transparent")
+        advanced_header.grid(row=0, column=0, sticky="ew", padx=10, pady=(10, 5))
+        advanced_header.grid_columnconfigure(1, weight=1)
+
+        ctk.CTkLabel(advanced_header, text="Advanced", font=ctk.CTkFont(size=14, weight="bold")).grid(row=0, column=0, sticky="w")
+        self.advanced_toggle_btn = ctk.CTkButton(advanced_header, text="Expand", width=70, fg_color="gray", command=self.toggle_advanced_section)
+        self.advanced_toggle_btn.grid(row=0, column=2, padx=(10, 0))
+
+        # Collapsible content (contains nested sections)
+        self.advanced_content = ctk.CTkFrame(self.frame_advanced, fg_color="transparent")
+        self.advanced_content.grid(row=1, column=0, sticky="ew", padx=10, pady=5)
+        self.advanced_content.grid_columnconfigure(0, weight=1)
+        self.advanced_content.grid_remove()  # Start collapsed
+
+        # ============ DATA EXTRACTOR SECTION (nested dropdown) ============
+        self.frame_extract = ctk.CTkFrame(self.advanced_content)
+        self.frame_extract.grid(row=0, column=0, sticky="ew", pady=(0, 10))
+        self.frame_extract.grid_columnconfigure(0, weight=1)
+
+        # Data Extractor header with toggle
         extract_header = ctk.CTkFrame(self.frame_extract, fg_color="transparent")
         extract_header.grid(row=0, column=0, sticky="ew", padx=10, pady=(10, 5))
         extract_header.grid_columnconfigure(1, weight=1)
 
-        ctk.CTkLabel(extract_header, text="Data Extractor", font=ctk.CTkFont(size=14, weight="bold")).grid(row=0, column=0, sticky="w")
+        ctk.CTkLabel(extract_header, text="Data Extractor", font=ctk.CTkFont(size=13, weight="bold")).grid(row=0, column=0, sticky="w")
         self.extract_toggle_btn = ctk.CTkButton(extract_header, text="Expand", width=70, fg_color="gray", command=self.toggle_extract_section)
         self.extract_toggle_btn.grid(row=0, column=2, padx=(10, 0))
 
-        # Collapsible content
+        # Collapsible extractor content
         self.extract_content = ctk.CTkFrame(self.frame_extract, fg_color="transparent")
         self.extract_content.grid(row=1, column=0, sticky="ew", padx=10, pady=5)
         self.extract_content.grid_columnconfigure(0, weight=1)
         self.extract_content.grid_remove()  # Start collapsed
 
-        # Mode tabs (URL vs HTML)
+        # Mode tabs (URL vs HTML) - styled as toggle tabs
         tab_frame = ctk.CTkFrame(self.extract_content, fg_color="transparent")
         tab_frame.grid(row=0, column=0, sticky="w", pady=(0, 5))
 
+        ctk.CTkLabel(tab_frame, text="Input Mode:", font=ctk.CTkFont(size=12)).pack(side="left", padx=(0, 8))
+
         self.extract_mode_var = ctk.StringVar(value="url")
-        self.btn_tab_url = ctk.CTkButton(tab_frame, text="Extract from URL", width=140, command=lambda: self.set_extract_mode("url"))
+        self.btn_tab_url = ctk.CTkButton(tab_frame, text="● From URL(s)", width=130,
+                                         border_width=2, border_color=("gray40", "gray60"),
+                                         command=lambda: self.set_extract_mode("url"))
         self.btn_tab_url.pack(side="left", padx=(0, 5))
-        self.btn_tab_html = ctk.CTkButton(tab_frame, text="Paste HTML", width=120, fg_color="gray", command=lambda: self.set_extract_mode("html"))
+        self.btn_tab_html = ctk.CTkButton(tab_frame, text="○ Paste HTML", width=120,
+                                          fg_color=("gray70", "gray30"), border_width=0,
+                                          command=lambda: self.set_extract_mode("html"))
         self.btn_tab_html.pack(side="left")
 
         # URL input section
@@ -339,8 +742,14 @@ class AudioBriefingApp(ctk.CTk):
         self.url_input_frame.grid(row=1, column=0, sticky="ew", pady=5)
         self.url_input_frame.grid_columnconfigure(0, weight=1)
 
+        url_label = ctk.CTkLabel(self.url_input_frame, text="Paste URLs (any format - will auto-detect):", font=ctk.CTkFont(size=12))
+        url_label.grid(row=0, column=0, sticky="w", pady=(0, 3))
+
+        self.extract_url_text = ctk.CTkTextbox(self.url_input_frame, height=80)
+        self.extract_url_text.grid(row=1, column=0, sticky="ew")
+        self.extract_url_text.insert("1.0", "")
+
         self.extract_url_entry = ctk.CTkEntry(self.url_input_frame, placeholder_text="https://cryptosum.beehiiv.com/p/...")
-        self.extract_url_entry.grid(row=0, column=0, sticky="ew")
 
         # HTML input section (hidden initially)
         self.html_input_frame = ctk.CTkFrame(self.extract_content, fg_color="transparent")
@@ -360,11 +769,13 @@ class AudioBriefingApp(ctk.CTk):
 
         ctk.CTkLabel(options_frame, text="Config:").pack(side="left", padx=(0, 5))
 
-        # Load available extraction configs
         self.extract_config_var = ctk.StringVar(value="Default")
         config_values = self._get_extraction_configs()
-        self.extract_config_combo = ctk.CTkComboBox(options_frame, variable=self.extract_config_var, values=config_values, width=150, state="readonly")
-        self.extract_config_combo.pack(side="left", padx=(0, 15))
+        self.extract_config_combo = ctk.CTkComboBox(options_frame, variable=self.extract_config_var, values=config_values, width=150, state="readonly", command=self.on_extract_config_changed)
+        self.extract_config_combo.pack(side="left", padx=(0, 5))
+
+        self.btn_manage_configs = ctk.CTkButton(options_frame, text="Manage", width=60, fg_color="gray", command=self.open_config_manager)
+        self.btn_manage_configs.pack(side="left", padx=(0, 15))
 
         self.grid_enrich_var = ctk.BooleanVar(value=False)
         self.chk_grid_enrich = ctk.CTkCheckBox(options_frame, text="Enrich with Grid", variable=self.grid_enrich_var)
@@ -374,11 +785,12 @@ class AudioBriefingApp(ctk.CTk):
         self.chk_research_articles = ctk.CTkCheckBox(options_frame, text="Research Articles", variable=self.research_articles_var)
         self.chk_research_articles.pack(side="left", padx=(15, 0))
 
-        # Extract button
+        self.on_extract_config_changed(self.extract_config_var.get())
+
         self.btn_extract = ctk.CTkButton(self.extract_content, text="Extract Links", command=self.start_extraction, fg_color="green")
         self.btn_extract.grid(row=3, column=0, sticky="ew", pady=(10, 5))
 
-        # Results section (hidden until extraction)
+        # Results section
         self.extract_results_frame = ctk.CTkFrame(self.extract_content)
         self.extract_results_frame.grid(row=4, column=0, sticky="ew", pady=5)
         self.extract_results_frame.grid_columnconfigure(0, weight=1)
@@ -403,43 +815,246 @@ class AudioBriefingApp(ctk.CTk):
         self.btn_copy_text = ctk.CTkButton(export_btns, text="Copy", width=60, fg_color="gray", command=self.copy_extracted_text)
         self.btn_copy_text.pack(side="left")
 
-        # Results list
         self.extract_results_list = ctk.CTkScrollableFrame(self.extract_results_frame, height=150)
         self.extract_results_list.grid(row=1, column=0, sticky="ew", padx=5, pady=5)
         self.extract_results_list.grid_columnconfigure(0, weight=1)
 
-        # Row 3: Broadcast Button (disabled)
-        # self.btn_broadcast = ctk.CTkButton(self.frame_audio_controls, text="Broadcast to Phone", fg_color="green", command=self.toggle_podcast_server)
-        # Row 3: Local HTTP Server (removed)
-        # self.btn_http_server = ctk.CTkButton(self.frame_audio_controls, text="Start Local Server", fg_color="green", command=self.toggle_http_server)
-        # self.btn_http_server.grid(row=4, column=0, columnspan=2, padx=10, pady=15, sticky="ew")
-        # self.btn_broadcast.grid(row=4, column=0, columnspan=2, padx=10, pady=15, sticky="ew")
-        
-        # Row 4: Drive Sync Button
-        # Google Drive sync button removed
-        # self.btn_sync_drive = ctk.CTkButton(self.frame_audio_controls, text="Sync to Google Drive", fg_color="blue", command=self.sync_drive_action)
-        # (button removed)
+        # ============ TRANSCRIPTION SECTION (nested dropdown) ============
+        self.frame_transcription = ctk.CTkFrame(self.advanced_content)
+        self.frame_transcription.grid(row=1, column=0, sticky="ew", pady=(0, 5))
+        self.frame_transcription.grid_columnconfigure(0, weight=1)
 
-        # Status and Tutorial row
+        # Transcription header with toggle
+        transcription_header = ctk.CTkFrame(self.frame_transcription, fg_color="transparent")
+        transcription_header.grid(row=0, column=0, sticky="ew", padx=10, pady=(10, 5))
+        transcription_header.grid_columnconfigure(1, weight=1)
+
+        ctk.CTkLabel(transcription_header, text="Transcription", font=ctk.CTkFont(size=13, weight="bold")).grid(row=0, column=0, sticky="w")
+        self.transcription_toggle_btn = ctk.CTkButton(transcription_header, text="Expand", width=70, fg_color="gray", command=self.toggle_transcription_section)
+        self.transcription_toggle_btn.grid(row=0, column=2, padx=(10, 0))
+
+        # Collapsible transcription content
+        self.transcription_content = ctk.CTkFrame(self.frame_transcription, fg_color="transparent")
+        self.transcription_content.grid(row=1, column=0, sticky="ew", padx=10, pady=5)
+        self.transcription_content.grid_columnconfigure(0, weight=1)
+        self.transcription_content.grid_remove()  # Start collapsed
+
+        # Description
+        ctk.CTkLabel(
+            self.transcription_content,
+            text="Audio/video transcription (requires faster-whisper installation)",
+            font=("Arial", 11),
+            text_color="gray"
+        ).grid(row=0, column=0, sticky="w", pady=(0, 10))
+
+        # Upload Audio File button
+        self.btn_upload_audio = ctk.CTkButton(
+            self.transcription_content,
+            text="Upload Audio/Video File (.mp3, .wav, .m4a)",
+            command=self.upload_audio_file
+        )
+        self.btn_upload_audio.grid(row=1, column=0, sticky="ew", pady=(0, 5))
+
+        # Selected files panel for transcription
+        self.selected_panel = ctk.CTkFrame(self.transcription_content, fg_color=("gray90", "gray20"))
+        self.selected_panel.grid(row=2, column=0, sticky="ew", pady=(0, 10))
+        self.selected_panel.grid_columnconfigure(0, weight=1)
+
+        self.files_combo = ctk.CTkComboBox(self.selected_panel, values=["No files selected"], width=250, state="readonly")
+        self.files_combo.grid(row=0, column=0, sticky="ew", padx=10, pady=5)
+        self.files_combo.set("No files selected")
+
+        self.btn_clear_selected = ctk.CTkButton(self.selected_panel, text="Clear", width=80, command=self._clear_selected_file)
+        self.btn_clear_selected.grid(row=0, column=1, padx=(10, 10), pady=5)
+
+        self.btn_transcribe = ctk.CTkButton(self.selected_panel, text="Transcribe", width=100, command=self.start_transcription, state="disabled", fg_color="green")
+        self.btn_transcribe.grid(row=0, column=2, padx=(0, 10), pady=5)
+
+        # Transcription Status Indicator
+        self.transcription_service = get_transcription_service()
+        transcription_text, transcription_color = get_transcription_status()
+        cursor_type = "hand2" if transcription_color != "green" else "arrow"
+
+        self.label_transcription = ctk.CTkLabel(
+            self.transcription_content,
+            text=transcription_text,
+            text_color=transcription_color,
+            font=("Arial", 11),
+            cursor=cursor_type
+        )
+        self.label_transcription.grid(row=3, column=0, sticky="w", pady=(5, 0))
+        self.label_transcription.bind("<Button-1>", lambda e: self.show_transcription_guide())
+
+        # ============ SCHEDULER SECTION (nested dropdown) ============
+        self.frame_scheduler = ctk.CTkFrame(self.advanced_content)
+        self.frame_scheduler.grid(row=2, column=0, sticky="ew", pady=(0, 5))
+        self.frame_scheduler.grid_columnconfigure(0, weight=1)
+
+        # Scheduler header with toggle
+        scheduler_header = ctk.CTkFrame(self.frame_scheduler, fg_color="transparent")
+        scheduler_header.grid(row=0, column=0, sticky="ew", padx=10, pady=(10, 5))
+        scheduler_header.grid_columnconfigure(1, weight=1)
+
+        ctk.CTkLabel(scheduler_header, text="Scheduler", font=ctk.CTkFont(size=13, weight="bold")).grid(row=0, column=0, sticky="w")
+        self.scheduler_toggle_btn = ctk.CTkButton(scheduler_header, text="Expand", width=70, fg_color="gray", command=self.toggle_scheduler_section)
+        self.scheduler_toggle_btn.grid(row=0, column=2, padx=(10, 0))
+
+        # Collapsible scheduler content
+        self.scheduler_content = ctk.CTkFrame(self.frame_scheduler, fg_color="transparent")
+        self.scheduler_content.grid(row=1, column=0, sticky="ew", padx=10, pady=5)
+        self.scheduler_content.grid_columnconfigure(0, weight=1)
+        self.scheduler_content.grid_remove()  # Start collapsed
+
+        # Description
+        ctk.CTkLabel(
+            self.scheduler_content,
+            text="Automate data extraction on a schedule",
+            font=("Arial", 11),
+            text_color="gray"
+        ).grid(row=0, column=0, sticky="w", pady=(0, 10))
+
+        # Scheduler status and controls
+        scheduler_controls = ctk.CTkFrame(self.scheduler_content, fg_color="transparent")
+        scheduler_controls.grid(row=1, column=0, sticky="ew", pady=(0, 10))
+        scheduler_controls.grid_columnconfigure(1, weight=1)
+
+        # Scheduler on/off toggle
+        self.scheduler_enabled_var = ctk.BooleanVar(value=False)
+        self.scheduler_switch = ctk.CTkSwitch(
+            scheduler_controls,
+            text="Scheduler Active",
+            variable=self.scheduler_enabled_var,
+            command=self._toggle_scheduler,
+            onvalue=True,
+            offvalue=False
+        )
+        self.scheduler_switch.grid(row=0, column=0, sticky="w")
+
+        # Status label
+        self.scheduler_status_label = ctk.CTkLabel(
+            scheduler_controls,
+            text="● Stopped",
+            text_color="gray",
+            font=("Arial", 11)
+        )
+        self.scheduler_status_label.grid(row=0, column=1, sticky="w", padx=(15, 0))
+
+        # Setup Guide button
+        self.btn_scheduler_guide = ctk.CTkButton(
+            scheduler_controls,
+            text="? Setup Guide",
+            width=100,
+            fg_color="gray",
+            command=self.show_scheduler_guide
+        )
+        self.btn_scheduler_guide.grid(row=0, column=2, sticky="e")
+
+        # Tasks list frame
+        self.scheduler_tasks_frame = ctk.CTkFrame(self.scheduler_content)
+        self.scheduler_tasks_frame.grid(row=2, column=0, sticky="ew", pady=5)
+        self.scheduler_tasks_frame.grid_columnconfigure(0, weight=1)
+
+        # Tasks header
+        tasks_header = ctk.CTkFrame(self.scheduler_tasks_frame, fg_color="transparent")
+        tasks_header.grid(row=0, column=0, sticky="ew", padx=10, pady=5)
+        tasks_header.grid_columnconfigure(0, weight=1)
+
+        ctk.CTkLabel(tasks_header, text="Scheduled Tasks", font=ctk.CTkFont(weight="bold")).grid(row=0, column=0, sticky="w")
+        self.btn_add_task = ctk.CTkButton(tasks_header, text="+ Add Task", width=90, fg_color="green", command=self._open_task_editor)
+        self.btn_add_task.grid(row=0, column=1, sticky="e")
+
+        # Scrollable tasks list
+        self.scheduler_tasks_list = ctk.CTkScrollableFrame(self.scheduler_tasks_frame, height=120)
+        self.scheduler_tasks_list.grid(row=1, column=0, sticky="ew", padx=5, pady=5)
+        self.scheduler_tasks_list.grid_columnconfigure(0, weight=1)
+
+        # Placeholder for empty state
+        self.scheduler_empty_label = ctk.CTkLabel(
+            self.scheduler_tasks_list,
+            text="No scheduled tasks. Click '+ Add Task' to create one.",
+            text_color="gray",
+            font=("Arial", 11)
+        )
+        self.scheduler_empty_label.grid(row=0, column=0, pady=20)
+
+        # Background Scheduler Section
+        bg_scheduler_frame = ctk.CTkFrame(self.scheduler_content, fg_color=("gray85", "gray20"))
+        bg_scheduler_frame.grid(row=3, column=0, sticky="ew", pady=(10, 5))
+        bg_scheduler_frame.grid_columnconfigure(1, weight=1)
+
+        ctk.CTkLabel(
+            bg_scheduler_frame,
+            text="Background Mode",
+            font=ctk.CTkFont(size=12, weight="bold")
+        ).grid(row=0, column=0, sticky="w", padx=10, pady=(8, 2))
+
+        ctk.CTkLabel(
+            bg_scheduler_frame,
+            text="Run scheduler even when app is closed",
+            font=("Arial", 10),
+            text_color="gray"
+        ).grid(row=1, column=0, columnspan=2, sticky="w", padx=10, pady=(0, 5))
+
+        # Background scheduler controls row
+        bg_controls = ctk.CTkFrame(bg_scheduler_frame, fg_color="transparent")
+        bg_controls.grid(row=2, column=0, columnspan=3, sticky="ew", padx=10, pady=(0, 8))
+        bg_controls.grid_columnconfigure(2, weight=1)
+
+        # Background scheduler toggle
+        self.bg_scheduler_var = ctk.BooleanVar(value=False)
+        self.bg_scheduler_switch = ctk.CTkSwitch(
+            bg_controls,
+            text="Enable Background",
+            variable=self.bg_scheduler_var,
+            command=self._toggle_background_scheduler,
+            onvalue=True,
+            offvalue=False
+        )
+        self.bg_scheduler_switch.grid(row=0, column=0, sticky="w")
+
+        # Background status
+        self.bg_scheduler_status = ctk.CTkLabel(
+            bg_controls,
+            text="● Not running",
+            text_color="gray",
+            font=("Arial", 10)
+        )
+        self.bg_scheduler_status.grid(row=0, column=1, sticky="w", padx=(15, 0))
+
+        # Launch on login checkbox
+        self.launch_on_login_var = ctk.BooleanVar(value=False)
+        self.launch_on_login_check = ctk.CTkCheckBox(
+            bg_controls,
+            text="Start on login",
+            variable=self.launch_on_login_var,
+            command=self._toggle_launch_on_login,
+            font=("Arial", 11)
+        )
+        self.launch_on_login_check.grid(row=0, column=2, sticky="e", padx=(10, 0))
+
+        # Initialize background scheduler state
+        self._init_background_scheduler_state()
+
+        # Initialize scheduler (but don't start it yet)
+        self._init_scheduler()
+
+        # Open Folder Button
+        self.btn_open = ctk.CTkButton(self.main_scroll, text="Open Output Folder", fg_color="transparent", border_width=2, text_color=("gray10", "#DCE4EE"), command=self.open_output_folder)
+        self.btn_open.grid(row=7, column=0, padx=20, pady=(0, 10))
+
+        # Status row (at the bottom)
         status_frame = ctk.CTkFrame(self.main_scroll, fg_color="transparent")
-        status_frame.grid(row=6, column=0, padx=20, pady=(0, 10), sticky="ew")
+        status_frame.grid(row=8, column=0, padx=20, pady=(10, 5), sticky="ew")
         status_frame.grid_columnconfigure(0, weight=1)
 
         self.label_status = ctk.CTkLabel(status_frame, text="Ready", text_color=("gray10", "#DCE4EE"), font=("Arial", 14, "bold"))
         self.label_status.grid(row=0, column=0, sticky="w")
 
-        self.btn_tutorial = ctk.CTkButton(
-            status_frame, text="? Tutorial", width=80,
-            fg_color=("gray70", "gray30"), hover_color=("gray60", "gray40"),
-            command=self.start_tutorial
-        )
-        self.btn_tutorial.grid(row=0, column=1, sticky="e")
-
-        # Compression Status Indicator
+        # Compression Status Indicator (at the very bottom)
         self.compression_enabled = check_ffmpeg()
         compression_text = "✓ Compression enabled" if self.compression_enabled else "⚠ Compression disabled - see installation guide"
         compression_color = "green" if self.compression_enabled else "orange"
-        
+
         self.label_compression = ctk.CTkLabel(
             self.main_scroll,
             text=compression_text,
@@ -447,27 +1062,139 @@ class AudioBriefingApp(ctk.CTk):
             font=("Arial", 11),
             cursor="hand2"  # Show clickable cursor
         )
-        self.label_compression.grid(row=7, column=0, padx=20, pady=(0, 10))
+        self.label_compression.grid(row=9, column=0, padx=20, pady=(0, 20))
         self.label_compression.bind("<Button-1>", lambda e: self.show_compression_guide())
-        # Transcription Status Indicator (uses transcription_service for detection)
-        self.transcription_service = get_transcription_service()
-        transcription_text, transcription_color = get_transcription_status()
-        cursor_type = "hand2" if transcription_color != "green" else "arrow"
 
-        self.label_transcription = ctk.CTkLabel(
-            self.main_scroll,
-            text=transcription_text,
-            text_color=transcription_color,
-            font=("Arial", 11),
-            cursor=cursor_type
-        )
-        self.label_transcription.grid(row=8, column=0, padx=20, pady=(0, 10))
-        self.label_transcription.bind("<Button-1>", lambda e: self.show_transcription_guide())
-        # Open Folder Button
-        self.btn_open = ctk.CTkButton(self.main_scroll, text="Open Output Folder", fg_color="transparent", border_width=2, text_color=("gray10", "#DCE4EE"), command=self.open_output_folder)
-        self.btn_open.grid(row=9, column=0, padx=20, pady=(0, 20)) # Row 9
+        # Initialize tooltips for all buttons
+        self._init_tooltips()
 
-        # Load data
+        # Schedule placeholder check after UI fully loads (handles cached content)
+        self.after(100, self._check_placeholder_on_startup)
+
+    def _check_placeholder_on_startup(self):
+        """Check and update placeholder visibility after startup (for cached content)."""
+        if hasattr(self, '_update_placeholder'):
+            self._update_placeholder()
+        # Also trigger URL detection in case there's existing content
+        if hasattr(self, '_on_textbox_change'):
+            self._on_textbox_change()
+
+    def _init_tooltips(self):
+        """Initialize tooltips for all buttons in the application."""
+        # News Summary section
+        add_tooltip(self.btn_fetch_article,
+            "Fetch article content from a URL and add it to the text area. Useful for importing news articles.")
+        add_tooltip(self.btn_settings,
+            "Open application settings including output folder and default options.")
+        add_tooltip(self.text_toggle_btn,
+            "Collapse or expand the News Summary text area.")
+
+        # API Key section
+        add_tooltip(self.btn_save_key,
+            "Save your Gemini API key for future sessions.")
+        add_tooltip(self.btn_toggle_key,
+            "Show or hide the API key text.")
+        add_tooltip(self.btn_key_manager,
+            "Manage multiple API keys for different services.")
+        add_tooltip(self.model_combo,
+            "Select AI model quality. Fast: Quick responses, high limits. Balanced: Better quality. Best: Highest quality but limited to 50/day.")
+
+        # YouTube/Content section
+        add_tooltip(self.btn_get_summaries,
+            "Fetch summaries from your configured sources (YouTube, RSS, article archives).")
+        add_tooltip(self.btn_edit_sources,
+            "Add or edit your content sources (YouTube channels, RSS feeds, article archives).")
+        add_tooltip(self.btn_edit_instructions,
+            "Customize the AI instructions for how summaries should be generated.")
+        add_tooltip(self.btn_upload_file,
+            "Upload a text file (.txt) to load into the News Summary area.")
+
+        # Advanced section tooltips
+        add_tooltip(self.advanced_toggle_btn,
+            "Expand or collapse the Advanced section (transcription features).")
+        add_tooltip(self.btn_upload_audio,
+            "Upload audio/video files (.mp3, .wav, .m4a) for transcription.")
+        add_tooltip(self.btn_clear_selected,
+            "Clear the currently selected audio file.")
+        add_tooltip(self.btn_transcribe,
+            "Transcribe the selected audio file to text using AI (requires faster-whisper).")
+        # btn_specific_urls tooltip removed - button consolidated into textbox
+        add_tooltip(self.btn_start_cal,
+            "Open calendar to select start date.")
+        add_tooltip(self.btn_end_cal,
+            "Open calendar to select end date.")
+        add_tooltip(self.chk_range,
+            "Enable to filter by specific date range instead of number of days/videos.")
+
+        # Audio Generation section
+        add_tooltip(self.btn_fast,
+            "Generate audio quickly using Google Text-to-Speech. Free and fast, but lower quality voice.")
+        add_tooltip(self.btn_fast_sample,
+            "Play a sample of gTTS to hear what the fast voice sounds like.")
+        add_tooltip(self.btn_sample,
+            "Play a sample of the selected Kokoro voice.")
+        add_tooltip(self.btn_convert_dates,
+            "Select specific dates from your summaries and convert them to audio files.")
+        add_tooltip(self.btn_quality,
+            "Generate high-quality audio using Kokoro TTS. Better voice quality but requires more processing.")
+
+        # Data Extractor section
+        add_tooltip(self.extract_toggle_btn,
+            "Expand or collapse the Data Extractor section.")
+        add_tooltip(self.btn_tab_url,
+            "INPUT MODE: Extract from URL(s). Click to select this mode. Paste newsletter URLs and the app will fetch and extract content.")
+        add_tooltip(self.btn_tab_html,
+            "INPUT MODE: Paste HTML. Click to select this mode. Paste raw HTML source code directly (useful when URL fetching fails).")
+        add_tooltip(self.extract_config_combo,
+            "Select extraction config. 'ExecSum' is optimized for finance newsletters with trained filters.")
+        add_tooltip(self.chk_grid_enrich,
+            "Enrich extracted items with additional data from The Grid database.\n(Not available with ExecSum config - uses separate processor)")
+        add_tooltip(self.chk_research_articles,
+            "Use AI to research and categorize each extracted article.\n(Not available with ExecSum config - uses separate processor)")
+        add_tooltip(self.btn_extract,
+            "Extract links and headlines from the pasted URL(s). Auto-detects URLs from any format - paste messy text, it will find them.")
+        add_tooltip(self.btn_export_csv,
+            "Save extracted items to a CSV file.")
+        add_tooltip(self.btn_export_sheets,
+            "Export extracted items directly to a Google Sheet.")
+        add_tooltip(self.btn_copy_text,
+            "Copy all extracted items to clipboard.")
+
+        # Transcription section
+        add_tooltip(self.transcription_toggle_btn,
+            "Expand or collapse the Transcription section (audio-to-text).")
+
+        # Missing controls from fetch options
+        add_tooltip(self.entry_value,
+            "Enter the number of hours, days, or videos to fetch summaries for.")
+        add_tooltip(self.combo_mode,
+            "Select the time unit: Hours (recent), Days (by date), or Videos (count per channel).")
+        add_tooltip(self.start_date_entry,
+            "Start date for date range filtering (format: YYYY-MM-DD).")
+        add_tooltip(self.end_date_entry,
+            "End date for date range filtering (format: YYYY-MM-DD).")
+
+        # Audio section
+        add_tooltip(self.combo_voices,
+            "Select the Kokoro TTS voice for quality audio generation.")
+
+        # URL banner buttons
+        add_tooltip(self.btn_toggle_view,
+            "Toggle between raw text and AI-cleaned text suitable for audio.")
+        add_tooltip(self.btn_fetch_urls,
+            "Fetch and summarize content from detected article URLs.")
+        add_tooltip(self.btn_ignore_urls,
+            "Keep URLs as plain text without fetching their content.")
+        add_tooltip(self.btn_extract_data,
+            "Extract structured data from newsletter URLs using the matching extraction config.")
+
+        # Data Extractor extras
+        add_tooltip(self.btn_manage_configs,
+            "Open the Config Manager to create, edit, or delete extraction configurations.")
+
+        # Bottom buttons
+        add_tooltip(self.btn_open,
+            "Open the folder where generated audio files and summaries are saved.")
 
     def _update_status(self, message, color="gray"):
         """Callback for status updates from managers.
@@ -479,33 +1206,33 @@ class AudioBriefingApp(ctk.CTk):
         self.after(0, lambda: self.label_status.configure(text=message, text_color=color))
     
     def on_mode_changed(self, *args):
-        """Handle mode dropdown changes (Days/Videos/Specific URLs)."""
-        mode = self.mode_var.get()
-        
-        if mode == "Specific URLs":
-            # Disable date range controls for Specific URLs mode
-            self.range_var.set(False)
-            self.chk_range.configure(state="disabled")
-            self.start_date_entry.configure(state="disabled")
-            self.end_date_entry.configure(state="disabled")
-            self.btn_start_cal.configure(state="disabled")
-            self.btn_end_cal.configure(state="disabled")
-            
-            # Change entry placeholder to indicate URL input
-            self.entry_value.delete(0, "end")
-            self.entry_value.configure(placeholder_text="Enter video URLs, one per line (or click to expand)")
-        else:
-            # Re-enable date range controls for Days/Videos modes
-            self.chk_range.configure(state="normal")
-            if not self.range_var.get():
-                self.entry_value.configure(state="normal")
-                self.combo_mode.configure(state="normal")
+        """Handle mode dropdown changes (Hours/Days/Videos)."""
+        # Re-enable date range controls
+        self.chk_range.configure(state="normal")
+        if not self.range_var.get():
+            self.entry_value.configure(state="normal")
+            self.combo_mode.configure(state="normal")
             
             # Restore normal placeholder
             self.entry_value.configure(placeholder_text="")
             if not self.entry_value.get():
                 self.entry_value.insert(0, "7")
-    
+
+    def on_extract_config_changed(self, config_name):
+        """Handle extraction config dropdown changes. Disable Grid/Research checkboxes for ExecSum."""
+        is_execsum = config_name.lower() == "execsum"
+
+        if is_execsum:
+            # Disable and uncheck the checkboxes for ExecSum
+            self.grid_enrich_var.set(False)
+            self.research_articles_var.set(False)
+            self.chk_grid_enrich.configure(state="disabled")
+            self.chk_research_articles.configure(state="disabled")
+        else:
+            # Re-enable checkboxes for other configs
+            self.chk_grid_enrich.configure(state="normal")
+            self.chk_research_articles.configure(state="normal")
+
     def on_toggle_range(self):
         use_range = bool(self.range_var.get())
         state = "disabled" if use_range else "normal"
@@ -523,6 +1250,7 @@ class AudioBriefingApp(ctk.CTk):
         dlg = ctk.CTkToplevel(self)
         dlg.title("Select Date")
         dlg.geometry("360x340")
+        dlg.grab_set()  # Make modal - prevents events from passing to underlying widgets
         body = ctk.CTkFrame(dlg); body.pack(fill="both", expand=True, padx=10, pady=10)
         top = ctk.CTkFrame(body); top.pack(fill="x")
         today = datetime.date.today()
@@ -735,6 +1463,7 @@ class AudioBriefingApp(ctk.CTk):
         settings_path = os.path.join(os.path.dirname(__file__), "settings.json")
         default_settings = {
             "auto_fetch_urls": False,  # Auto-fetch URLs in Direct Audio mode
+            "text_scale": 100,  # Text scaling percentage (50-150%)
         }
         try:
             if os.path.exists(settings_path):
@@ -745,6 +1474,37 @@ class AudioBriefingApp(ctk.CTk):
         except Exception:
             pass
         return default_settings
+
+    def _apply_text_scale(self, scale_percent: int = None):
+        """Apply text scaling to the entire application."""
+        if scale_percent is None:
+            scale_percent = self.settings.get("text_scale", 100)
+
+        # Calculate scale factor
+        scale = scale_percent / 100.0
+
+        # Base font sizes
+        base_sizes = {
+            "tiny": 9,
+            "small": 11,
+            "normal": 13,
+            "medium": 14,
+            "large": 16,
+            "xlarge": 18,
+            "header": 20,
+        }
+
+        # Apply scaled font to CustomTkinter default
+        try:
+            # Update default font scaling
+            scaled_default = int(13 * scale)
+            ctk.set_widget_scaling(scale)
+            ctk.set_window_scaling(scale)
+        except Exception as e:
+            print(f"Error applying widget scaling: {e}")
+
+        # Store current scale for use in dialogs
+        self._current_text_scale = scale
 
     def _save_settings(self):
         """Save app settings to settings.json."""
@@ -759,49 +1519,153 @@ class AudioBriefingApp(ctk.CTk):
         """Open the settings dialog."""
         dialog = ctk.CTkToplevel(self)
         dialog.title("Settings")
-        dialog.geometry("400x300")
+        dialog.geometry("450x400")
         dialog.transient(self)
         dialog.lift()
         dialog.grab_set()
 
-        dialog.grid_columnconfigure(0, weight=1)
+        # Use pack for auto-sizing
+        main_frame = ctk.CTkFrame(dialog, fg_color="transparent")
+        main_frame.pack(padx=20, pady=20, fill="both", expand=True)
 
         # Header
-        ctk.CTkLabel(dialog, text="App Settings", font=ctk.CTkFont(size=16, weight="bold")).grid(
-            row=0, column=0, padx=20, pady=(20, 10), sticky="w"
+        ctk.CTkLabel(main_frame, text="App Settings", font=ctk.CTkFont(size=16, weight="bold")).pack(
+            anchor="w", pady=(0, 15)
         )
 
-        # Settings frame
-        settings_frame = ctk.CTkFrame(dialog, fg_color="transparent")
-        settings_frame.grid(row=1, column=0, padx=20, pady=10, sticky="ew")
-        settings_frame.grid_columnconfigure(0, weight=1)
-
-        # Auto-fetch URLs toggle
-        auto_fetch_var = ctk.BooleanVar(value=self.settings.get("auto_fetch_urls", False))
-        chk_auto_fetch = ctk.CTkCheckBox(
-            settings_frame,
-            text="Auto-fetch URLs in Direct Audio mode",
-            variable=auto_fetch_var
-        )
-        chk_auto_fetch.grid(row=0, column=0, pady=5, sticky="w")
+        # === Text Scaling Section ===
+        scale_frame = ctk.CTkFrame(main_frame, fg_color="transparent")
+        scale_frame.pack(fill="x", pady=(0, 20))
 
         ctk.CTkLabel(
-            settings_frame,
-            text="When enabled, if the textbox contains just a URL,\nDirect Audio will automatically fetch the article.",
-            font=ctk.CTkFont(size=11),
+            scale_frame,
+            text="Text Size:",
+            font=ctk.CTkFont(size=13, weight="bold")
+        ).pack(anchor="w", pady=(0, 5))
+
+        # Scale slider row
+        slider_row = ctk.CTkFrame(scale_frame, fg_color="transparent")
+        slider_row.pack(fill="x")
+
+        # Current scale value
+        current_scale = self.settings.get("text_scale", 100)
+        scale_value_var = ctk.StringVar(value=f"{current_scale}%")
+
+        ctk.CTkLabel(slider_row, text="50%", font=ctk.CTkFont(size=11), text_color="gray").pack(side="left")
+
+        def on_scale_change(value):
+            scale_int = int(value)
+            scale_value_var.set(f"{scale_int}%")
+
+        scale_slider = ctk.CTkSlider(
+            slider_row,
+            from_=50,
+            to=150,
+            number_of_steps=20,  # 5% increments
+            command=on_scale_change,
+            width=200
+        )
+        scale_slider.set(current_scale)
+        scale_slider.pack(side="left", padx=10, expand=True, fill="x")
+
+        ctk.CTkLabel(slider_row, text="150%", font=ctk.CTkFont(size=11), text_color="gray").pack(side="left")
+
+        # Scale value display
+        scale_label = ctk.CTkLabel(slider_row, textvariable=scale_value_var, font=ctk.CTkFont(size=13, weight="bold"), width=50)
+        scale_label.pack(side="left", padx=(10, 0))
+
+        # Apply button for immediate preview
+        def apply_scale():
+            new_scale = int(scale_slider.get())
+            self.settings["text_scale"] = new_scale
+            self._apply_text_scale(new_scale)
+            self.label_status.configure(text=f"Text scale set to {new_scale}%", text_color="green")
+
+        ctk.CTkButton(
+            scale_frame,
+            text="Apply Scale",
+            command=apply_scale,
+            width=100,
+            fg_color="gray"
+        ).pack(anchor="w", pady=(10, 0))
+
+        ctk.CTkLabel(
+            scale_frame,
+            text="Note: Scaling applies to the entire app. You may need to restart for full effect.",
+            font=ctk.CTkFont(size=10),
             text_color="gray"
-        ).grid(row=1, column=0, pady=(0, 15), sticky="w")
+        ).pack(anchor="w", pady=(5, 0))
+
+        # Separator
+        ctk.CTkFrame(main_frame, height=2, fg_color="gray50").pack(fill="x", pady=15)
+
+        # === Audio Generation Behavior Section ===
+        ctk.CTkLabel(
+            main_frame,
+            text="Audio Generation Behavior:",
+            font=ctk.CTkFont(size=13, weight="bold")
+        ).pack(anchor="w", pady=(0, 5))
+
+        info_text = (
+            "• Text is automatically cleaned for audio when you click Generate\n"
+            "• URLs are auto-detected and can be fetched via the yellow banner\n"
+            "• Use the toggle button below the text area to switch between raw/cleaned views"
+        )
+        ctk.CTkLabel(
+            main_frame,
+            text=info_text,
+            font=ctk.CTkFont(size=11),
+            text_color="gray",
+            justify="left"
+        ).pack(anchor="w", pady=(0, 20))
+
+        # Separator
+        ctk.CTkFrame(main_frame, height=2, fg_color="gray50").pack(fill="x", pady=15)
+
+        # === Tutorial Section ===
+        tutorial_frame = ctk.CTkFrame(main_frame, fg_color="transparent")
+        tutorial_frame.pack(fill="x", pady=(0, 10))
+
+        ctk.CTkLabel(
+            tutorial_frame,
+            text="Need Help?",
+            font=ctk.CTkFont(size=13, weight="bold")
+        ).pack(anchor="w", pady=(0, 5))
+
+        def start_tutorial_from_settings():
+            dialog.destroy()
+            self.start_tutorial()
+
+        ctk.CTkButton(
+            tutorial_frame,
+            text="? Start Tutorial",
+            command=start_tutorial_from_settings,
+            width=140,
+            fg_color=("gray70", "gray30"),
+            hover_color=("gray60", "gray40")
+        ).pack(anchor="w")
+
+        ctk.CTkLabel(
+            tutorial_frame,
+            text="Walk through the main features of the app step by step.",
+            font=ctk.CTkFont(size=10),
+            text_color="gray"
+        ).pack(anchor="w", pady=(5, 0))
 
         # Save button
         def save_and_close():
-            self.settings["auto_fetch_urls"] = auto_fetch_var.get()
+            # Save the current slider value
+            self.settings["text_scale"] = int(scale_slider.get())
             self._save_settings()
+            self._apply_text_scale()
             dialog.destroy()
             self.label_status.configure(text="Settings saved", text_color="green")
 
-        ctk.CTkButton(dialog, text="Save", command=save_and_close, fg_color="green").grid(
-            row=2, column=0, padx=20, pady=20
-        )
+        ctk.CTkButton(main_frame, text="Save & Close", command=save_and_close, fg_color="green", width=120).pack(pady=(10, 0))
+
+        # Let dialog auto-size based on content
+        dialog.update_idletasks()
+        dialog.minsize(450, 480)
 
     def open_fetch_article_dialog(self):
         """Open dialog to fetch article content from URLs."""
@@ -895,7 +1759,7 @@ class AudioBriefingApp(ctk.CTk):
                         self._placeholder.place_forget()
                         dialog.destroy()
                         self.label_status.configure(
-                            text=f"Fetched {success_count} article(s) ({len(combined)} chars). Use Direct Audio to clean and convert.",
+                            text=f"Fetched {success_count} article(s) ({len(combined)} chars). Click Generate to convert to audio.",
                             text_color="green"
                         )
                     self.after(0, update_ui)
@@ -913,6 +1777,486 @@ class AudioBriefingApp(ctk.CTk):
         ctk.CTkButton(btn_frame, text="Fetch All", fg_color="green", command=fetch_articles).grid(
             row=0, column=1, padx=5, sticky="ew"
         )
+
+    def _detect_content_type(self, text: str) -> dict:
+        """Analyze text content and detect URLs by type.
+
+        Returns dict with:
+            - youtube_urls: list of YouTube video URLs
+            - article_urls: list of non-YouTube URLs
+            - plain_text: text content excluding URLs
+            - is_pure_urls: True if content is only URLs (no surrounding text)
+            - has_embedded_urls: True if URLs are embedded in text content
+        """
+        import re
+
+        # URL patterns
+        url_pattern = r'https?://[^\s<>"\')(\]\[}]+'
+        youtube_pattern = r'(?:youtube\.com/watch\?v=|youtu\.be/|youtube\.com/shorts/)[\w-]+'
+
+        # Find all URLs
+        all_urls = re.findall(url_pattern, text)
+
+        # Categorize URLs
+        youtube_urls = []
+        article_urls = []
+
+        for url in all_urls:
+            # Clean up URL (remove trailing punctuation)
+            url = re.sub(r'[.,;:!?]+$', '', url)
+            if re.search(youtube_pattern, url):
+                youtube_urls.append(url)
+            else:
+                article_urls.append(url)
+
+        # Remove duplicates while preserving order
+        youtube_urls = list(dict.fromkeys(youtube_urls))
+        article_urls = list(dict.fromkeys(article_urls))
+
+        # Get plain text by removing URLs
+        plain_text = re.sub(url_pattern, '', text).strip()
+        # Clean up multiple spaces/newlines
+        plain_text = re.sub(r'\n\s*\n+', '\n\n', plain_text)
+        plain_text = re.sub(r' +', ' ', plain_text)
+
+        # Determine if content is "pure URLs" (just URLs, maybe with whitespace)
+        # vs "embedded URLs" (URLs within substantive text)
+        text_without_urls = plain_text.strip()
+        is_pure_urls = len(text_without_urls) < 50  # Less than 50 chars of non-URL text
+        has_embedded_urls = (youtube_urls or article_urls) and len(text_without_urls) >= 50
+
+        return {
+            'youtube_urls': youtube_urls,
+            'article_urls': article_urls,
+            'plain_text': plain_text,
+            'is_pure_urls': is_pure_urls,
+            'has_embedded_urls': has_embedded_urls,
+            'total_urls': len(youtube_urls) + len(article_urls)
+        }
+
+    def _load_extraction_configs(self) -> list:
+        """Load all extraction configs from extraction_instructions/ folder.
+
+        Returns list of dicts with config info:
+            - name: config display name
+            - filename: config filename (without .json)
+            - source_domains: list of domains this config handles
+            - config: full config dict
+        """
+        configs = []
+        instructions_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'extraction_instructions')
+
+        if not os.path.exists(instructions_dir):
+            return configs
+
+        for filename in os.listdir(instructions_dir):
+            if not filename.endswith('.json') or filename.startswith('_'):
+                continue
+
+            config_path = os.path.join(instructions_dir, filename)
+            try:
+                with open(config_path, 'r', encoding='utf-8') as f:
+                    config = json.load(f)
+
+                # Determine which domains this config should handle
+                # Look for source_url_patterns first, then infer from config name
+                source_domains = config.get('source_url_patterns', [])
+
+                # If no explicit patterns, try to infer from config name
+                if not source_domains:
+                    config_name = filename.replace('.json', '').lower()
+                    # Common newsletter domain patterns based on config names
+                    domain_map = {
+                        'execsum': ['execsum.co'],
+                        'cryptosum': ['cryptosum.beehiiv.com', 'crypto-sum.beehiiv.com'],
+                        'rwa': ['rwaxyz.com', 'rwanews.com'],
+                    }
+                    source_domains = domain_map.get(config_name, [])
+
+                if source_domains:
+                    configs.append({
+                        'name': config.get('name', filename.replace('.json', '')),
+                        'filename': filename.replace('.json', ''),
+                        'source_domains': source_domains,
+                        'config': config
+                    })
+            except Exception as e:
+                print(f"[Config] Error loading {filename}: {e}")
+
+        return configs
+
+    def _match_url_to_config(self, url: str, configs: list = None) -> dict:
+        """Check if a URL matches any extraction config's source domains.
+
+        Returns dict with:
+            - matched: bool
+            - config_name: name of matching config (if matched)
+            - config_filename: filename of matching config (if matched)
+            - config: full config dict (if matched)
+        """
+        from urllib.parse import urlparse
+
+        if configs is None:
+            configs = self._load_extraction_configs()
+
+        try:
+            parsed = urlparse(url)
+            domain = parsed.netloc.lower().replace('www.', '')
+
+            for config_info in configs:
+                for source_domain in config_info['source_domains']:
+                    if source_domain.lower() in domain or domain in source_domain.lower():
+                        return {
+                            'matched': True,
+                            'config_name': config_info['name'],
+                            'config_filename': config_info['filename'],
+                            'config': config_info['config']
+                        }
+        except Exception:
+            pass
+
+        return {'matched': False}
+
+    def _categorize_urls_by_config(self, article_urls: list) -> dict:
+        """Categorize article URLs by whether they match extraction configs.
+
+        Returns dict with:
+            - config_urls: dict mapping config_filename -> list of URLs
+            - regular_urls: list of URLs that don't match any config
+        """
+        configs = self._load_extraction_configs()
+        config_urls = {}  # config_filename -> [urls]
+        regular_urls = []
+
+        for url in article_urls:
+            match = self._match_url_to_config(url, configs)
+            if match['matched']:
+                config_name = match['config_filename']
+                if config_name not in config_urls:
+                    config_urls[config_name] = {
+                        'urls': [],
+                        'display_name': match['config_name']
+                    }
+                config_urls[config_name]['urls'].append(url)
+            else:
+                regular_urls.append(url)
+
+        return {
+            'config_urls': config_urls,
+            'regular_urls': regular_urls
+        }
+
+    def _fetch_youtube_transcript(self, url: str) -> dict:
+        """Fetch YouTube video transcript and metadata.
+
+        Returns dict with:
+            - success: bool
+            - title: video title
+            - transcript: transcript text
+            - url: original URL
+            - error: error message if failed
+        """
+        import re
+        import yt_dlp
+
+        # Extract video ID
+        video_id_match = re.search(r'(?:v=|youtu\.be/|shorts/)([a-zA-Z0-9_-]{11})', url)
+        if not video_id_match:
+            return {'success': False, 'url': url, 'error': 'Invalid YouTube URL'}
+
+        video_id = video_id_match.group(1)
+        temp_prefix = f"temp_sub_{video_id}"
+
+        # Clean up any existing temp files
+        import glob
+        for f in glob.glob(f"{temp_prefix}*"):
+            try:
+                os.remove(f)
+            except:
+                pass
+
+        # Get video info first
+        title = "Unknown Video"
+        try:
+            with yt_dlp.YoutubeDL({'quiet': True, 'no_warnings': True}) as ydl:
+                info = ydl.extract_info(url, download=False)
+                title = info.get('title', 'Unknown Video')
+        except Exception as e:
+            print(f"[YouTube] Could not get video info: {e}")
+
+        # Download subtitles
+        ydl_opts = {
+            "skip_download": True,
+            "writesubtitles": True,
+            "writeautomaticsub": True,
+            "subtitleslangs": ["en"],
+            "outtmpl": temp_prefix,
+            "quiet": True,
+            "no_warnings": True,
+        }
+
+        try:
+            with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+                ydl.download([url])
+        except Exception as e:
+            return {'success': False, 'url': url, 'title': title, 'error': f'Download error: {e}'}
+
+        # Find subtitle file
+        files = glob.glob(f"{temp_prefix}*.vtt")
+        if not files:
+            files = glob.glob(f"{temp_prefix}*")
+            files = [f for f in files if f.endswith((".vtt", ".ttml", ".srv1", ".srt"))]
+
+        if not files:
+            return {'success': False, 'url': url, 'title': title, 'error': 'No transcript available'}
+
+        # Read and clean transcript
+        filename = files[0]
+        try:
+            with open(filename, "r", encoding="utf-8") as f:
+                content = f.read()
+        except Exception as e:
+            return {'success': False, 'url': url, 'title': title, 'error': f'Read error: {e}'}
+
+        # Clean up temp files
+        for f in files:
+            try:
+                os.remove(f)
+            except:
+                pass
+
+        # Clean VTT content (remove timestamps, duplicates)
+        transcript = self._clean_vtt_transcript(content)
+
+        return {
+            'success': True,
+            'url': url,
+            'title': title,
+            'transcript': transcript,
+            'video_id': video_id
+        }
+
+    def _clean_vtt_transcript(self, content: str) -> str:
+        """Clean VTT subtitle content to plain text."""
+        import re
+        lines = content.split("\n")
+        cleaned = []
+        last_line = ""
+
+        for line in lines:
+            line = line.strip()
+            # Skip VTT header, timestamps, and metadata
+            if not line or line.startswith("WEBVTT") or line.startswith("Kind:"):
+                continue
+            if re.match(r"^\d+$", line):  # Line numbers
+                continue
+            if re.match(r"^[\d:.,\->]+\s*$", line):  # Timestamps
+                continue
+            if "-->" in line:
+                continue
+
+            # Remove HTML tags and timestamp tags
+            line = re.sub(r"<[^>]+>", "", line)
+            line = re.sub(r"\[.*?\]", "", line)
+
+            # Skip duplicates (auto-generated subs often repeat)
+            if line and line != last_line:
+                cleaned.append(line)
+                last_line = line
+
+        return "\n".join(cleaned)
+
+    def _process_mixed_content(self, text: str, api_key: str, progress_callback=None) -> str:
+        """Process mixed content (YouTube URLs, article URLs, plain text).
+
+        Returns combined content organized by source and date.
+        """
+        import datetime
+
+        detection = self._detect_content_type(text)
+        results = []
+        today = datetime.date.today().strftime("%Y-%m-%d")
+
+        total_items = detection['total_urls']
+        processed = 0
+
+        # Process YouTube URLs
+        if detection['youtube_urls']:
+            if progress_callback:
+                progress_callback(f"Processing {len(detection['youtube_urls'])} YouTube video(s)...", "orange")
+
+            for url in detection['youtube_urls']:
+                processed += 1
+                if progress_callback:
+                    progress_callback(f"Fetching YouTube {processed}/{total_items}...", "orange")
+
+                result = self._fetch_youtube_transcript(url)
+                if result['success']:
+                    # Summarize the transcript
+                    summary = self._summarize_youtube_transcript(result, api_key)
+                    if summary:
+                        results.append({
+                            'type': 'youtube',
+                            'title': result['title'],
+                            'url': url,
+                            'content': summary,
+                            'date': today
+                        })
+                else:
+                    print(f"[Process] YouTube failed: {result.get('error', 'Unknown error')}")
+
+        # Process Article URLs
+        if detection['article_urls']:
+            if progress_callback:
+                progress_callback(f"Processing {len(detection['article_urls'])} article(s)...", "orange")
+
+            for url in detection['article_urls']:
+                processed += 1
+                if progress_callback:
+                    progress_callback(f"Fetching article {processed}/{total_items}...", "orange")
+
+                raw_content = self._fetch_article_content(url)
+                if raw_content and len(raw_content) > 100:
+                    # Extract domain for source attribution
+                    import re
+                    domain_match = re.search(r'https?://(?:www\.)?([^/]+)', url)
+                    source = domain_match.group(1) if domain_match else 'Unknown'
+
+                    # Clean and summarize the article using AI
+                    if progress_callback:
+                        progress_callback(f"Cleaning article {processed}/{total_items}...", "orange")
+
+                    cleaned_content = self._clean_article_content(raw_content, url, api_key)
+
+                    results.append({
+                        'type': 'article',
+                        'title': source,
+                        'url': url,
+                        'content': cleaned_content,
+                        'raw_content': raw_content,  # Store raw for toggle
+                        'date': today
+                    })
+
+        # Include plain text if substantial
+        if detection['plain_text'] and len(detection['plain_text']) > 100:
+            results.append({
+                'type': 'text',
+                'title': 'Pasted Text',
+                'url': None,
+                'content': detection['plain_text'],
+                'date': today
+            })
+
+        # Format output with clear separation
+        output_parts = []
+        for item in results:
+            header = f"=== {item['title']} ({item['date']}) ==="
+            if item['url']:
+                header += f"\nSource: {item['url']}"
+            output_parts.append(f"{header}\n\n{item['content']}")
+
+        return "\n\n" + "\n\n---\n\n".join(output_parts) if output_parts else ""
+
+    def _clean_article_content(self, raw_content: str, url: str, api_key: str) -> str:
+        """Clean and summarize article content using Gemini with custom instructions."""
+        try:
+            import google.generativeai as genai
+            genai.configure(api_key=api_key)
+
+            model_name = self.model_var.get().split(" (")[0]
+            model = genai.GenerativeModel(model_name)
+
+            # Get custom instructions from active profile
+            custom_instructions = self._get_active_youtube_instructions()  # Reuse same instructions
+
+            # Base prompt for article cleaning
+            base_prompt = """Clean and summarize this article content for an audio news briefing.
+
+IMPORTANT CLEANING RULES:
+1. REMOVE all marketing, ads, CTAs, sponsored content, newsletter signup prompts
+2. REMOVE social media share buttons, related article links, author bios with social links
+3. REMOVE any "Subscribe", "Sign up", "Follow us", "Click here" type content
+4. REMOVE navigation elements, footer content, sidebar content that got captured
+5. KEEP only the actual article content - the main story/information
+
+FORMAT FOR AUDIO:
+- Write in flowing sentences suitable for listening (no bullet points unless essential)
+- Keep it concise but comprehensive - focus on key points and insights
+- Maintain the article's core message and important details
+- Start directly with the content (no "This article discusses..." intros)"""
+
+            # Add custom instructions if present
+            if custom_instructions:
+                prompt = f"""{base_prompt}
+
+USER PREFERENCES:
+{custom_instructions}
+
+ARTICLE URL: {url}
+
+RAW CONTENT:
+{raw_content[:20000]}"""  # Limit content length
+            else:
+                prompt = f"""{base_prompt}
+
+ARTICLE URL: {url}
+
+RAW CONTENT:
+{raw_content[:20000]}"""  # Limit content length
+
+            response = model.generate_content(prompt)
+            cleaned = response.text.strip()
+
+            # Ensure we got meaningful content back
+            if len(cleaned) > 50:
+                return cleaned
+            else:
+                print(f"[Clean Article] AI returned too short response, using original")
+                return raw_content[:5000]
+
+        except Exception as e:
+            print(f"[Clean Article] Error: {e}")
+            return raw_content[:5000]  # Return truncated raw content as fallback
+
+    def _summarize_youtube_transcript(self, video_result: dict, api_key: str) -> str:
+        """Summarize a YouTube transcript using Gemini with optional custom instructions."""
+        try:
+            import google.generativeai as genai
+            genai.configure(api_key=api_key)
+
+            model_name = self.model_var.get().split(" (")[0]
+            model = genai.GenerativeModel(model_name)
+
+            # Get custom YouTube instructions from active profile
+            custom_instructions = self._get_active_youtube_instructions()
+
+            # Base prompt for YouTube summarization
+            base_prompt = f"""Summarize this YouTube video transcript for an audio news briefing.
+Keep it concise but comprehensive. Focus on the key points and insights.
+Format for listening (no bullet points, write in flowing sentences).
+
+Video: {video_result['title']}"""
+
+            # Add custom instructions if present
+            if custom_instructions:
+                prompt = f"""{base_prompt}
+
+USER PREFERENCES:
+{custom_instructions}
+
+Transcript:
+{video_result['transcript'][:15000]}"""  # Limit transcript length
+            else:
+                prompt = f"""{base_prompt}
+
+Transcript:
+{video_result['transcript'][:15000]}"""  # Limit transcript length
+
+            response = model.generate_content(prompt)
+            return response.text.strip()
+        except Exception as e:
+            print(f"[Summarize] Error: {e}")
+            return video_result['transcript'][:2000]  # Return truncated transcript as fallback
 
     def _fetch_article_content(self, url: str) -> str:
         """Fetch and extract article body from URL."""
@@ -1420,181 +2764,1280 @@ class AudioBriefingApp(ctk.CTk):
             return ""
 
     def open_sources_editor(self):
+        """Open the sources editor dialog with type badges and multi-source support."""
+        from source_fetcher import SourceConfig, SourceType
+
         editor = ctk.CTkToplevel(self)
-        editor.title("Edit News Sources")
-        editor.geometry("750x600")
-        editor.minsize(750, 520)
+        editor.title("Edit Content Sources")
+        editor.geometry("850x650")
+        editor.minsize(850, 550)
         editor.transient(self)
         editor.lift()
-        
-        lbl = ctk.CTkLabel(editor, text="Enable/disable sources and edit URLs:", font=ctk.CTkFont(weight="bold"))
-        lbl.pack(pady=10, padx=10, anchor="w")
 
-        container = ctk.CTkScrollableFrame(editor, width=700, height=350)
-        container.pack(padx=10, pady=(10, 5), fill="both", expand=True)
-        container.grid_columnconfigure(0, weight=1)
+        # Header with legend
+        header_frame = ctk.CTkFrame(editor, fg_color="transparent")
+        header_frame.pack(fill="x", padx=10, pady=(10, 5))
 
-        sources_json = os.path.join(os.path.dirname(__file__), "sources.json")
-        channels_file = os.path.join(os.path.dirname(__file__), "channels.txt")
+        ctk.CTkLabel(
+            header_frame,
+            text="Manage your content sources (YouTube, RSS, Article Archives):",
+            font=ctk.CTkFont(weight="bold")
+        ).pack(side="left")
+
+        # Legend for type badges
+        legend_frame = ctk.CTkFrame(header_frame, fg_color="transparent")
+        legend_frame.pack(side="right")
+        ctk.CTkLabel(legend_frame, text="YT", fg_color="#FF0000", text_color="white",
+                    corner_radius=4, width=30, font=ctk.CTkFont(size=10)).pack(side="left", padx=2)
+        ctk.CTkLabel(legend_frame, text="YouTube", font=ctk.CTkFont(size=10)).pack(side="left", padx=(0, 8))
+        ctk.CTkLabel(legend_frame, text="NL", fg_color="#9932CC", text_color="white",
+                    corner_radius=4, width=30, font=ctk.CTkFont(size=10)).pack(side="left", padx=2)
+        ctk.CTkLabel(legend_frame, text="Newsletter", font=ctk.CTkFont(size=10)).pack(side="left", padx=(0, 8))
+        ctk.CTkLabel(legend_frame, text="RSS", fg_color="#FF8C00", text_color="white",
+                    corner_radius=4, width=30, font=ctk.CTkFont(size=10)).pack(side="left", padx=2)
+        ctk.CTkLabel(legend_frame, text="Feed", font=ctk.CTkFont(size=10)).pack(side="left", padx=(0, 8))
+        ctk.CTkLabel(legend_frame, text="ARC", fg_color="#4169E1", text_color="white",
+                    corner_radius=4, width=30, font=ctk.CTkFont(size=10)).pack(side="left", padx=2)
+        ctk.CTkLabel(legend_frame, text="Archive", font=ctk.CTkFont(size=10)).pack(side="left")
+
+        container = ctk.CTkScrollableFrame(editor, width=800, height=400)
+        container.pack(padx=10, pady=(5, 5), fill="both", expand=True)
+        container.grid_columnconfigure(1, weight=1)
+
+        # Check user data directory first, then bundled resources
+        data_dir = get_data_directory()
+        sources_json_user = os.path.join(data_dir, "sources.json")
+        sources_json_bundled = get_resource_path("sources.json")
+        channels_file_user = os.path.join(data_dir, "channels.txt")
+        channels_file_bundled = get_resource_path("channels.txt")
         import json
         sources = []
-        if os.path.exists(sources_json):
+
+        # Try user's customized sources first
+        if os.path.exists(sources_json_user):
             try:
-                data = json.load(open(sources_json))
+                data = json.load(open(sources_json_user))
                 sources = data.get("sources", [])
             except Exception:
                 sources = []
-        if not sources:
-            # fallback to channels.txt
-            if os.path.exists(channels_file):
-                with open(channels_file, "r", encoding="utf-8") as f:
-                    sources = [{"url": ln.strip(), "enabled": True} for ln in f if ln.strip()]
+
+        # Fall back to bundled sources.json
+        if not sources and os.path.exists(sources_json_bundled):
+            try:
+                data = json.load(open(sources_json_bundled))
+                sources = data.get("sources", [])
+            except Exception:
+                sources = []
+
+        # Fall back to user's channels.txt
+        if not sources and os.path.exists(channels_file_user):
+            with open(channels_file_user, "r", encoding="utf-8") as f:
+                sources = [{"url": ln.strip(), "enabled": True} for ln in f if ln.strip()]
+
+        # Fall back to bundled channels.txt
+        if not sources and os.path.exists(channels_file_bundled):
+            with open(channels_file_bundled, "r", encoding="utf-8") as f:
+                sources = [{"url": ln.strip(), "enabled": True} for ln in f if ln.strip()]
+
+        def get_type_badge_config(url: str, explicit_type: str = None):
+            """Get badge text, color for a source type."""
+            # Handle newsletter type explicitly (not in SourceType enum)
+            if explicit_type == "newsletter":
+                return ("NL", "#9932CC", "white")
+
+            if explicit_type:
+                try:
+                    src_type = SourceType(explicit_type)
+                except ValueError:
+                    src_type = SourceConfig._infer_type(url)
+            else:
+                src_type = SourceConfig._infer_type(url)
+
+            if src_type == SourceType.YOUTUBE:
+                return ("YT", "#FF0000", "white")
+            elif src_type == SourceType.RSS:
+                return ("RSS", "#FF8C00", "white")
+            else:
+                return ("ARC", "#4169E1", "white")
 
         widgets = []
+        # Store original source data to preserve extra fields like 'config', 'name'
+        original_sources = {src.get("url", ""): src for src in sources}
+
+        # Load available extraction configs for newsletter dropdown
+        config_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), "extraction_instructions")
+        available_configs = ["(none)"]
+        if os.path.exists(config_dir):
+            for f in os.listdir(config_dir):
+                if f.endswith('.json'):
+                    available_configs.append(f.replace('.json', ''))
+
+        # Type options with display names
+        type_options = ["YouTube", "Newsletter", "RSS", "Archive"]
+        type_to_value = {"YouTube": "youtube", "Newsletter": "newsletter", "RSS": "rss", "Archive": "article_archive"}
+        value_to_type = {v: k for k, v in type_to_value.items()}
+
+        def add_source_row(idx, url="", enabled=True, source_type=None, config=None, name=None):
+            """Add a row for editing a source."""
+            row_frame = ctk.CTkFrame(container, fg_color="transparent")
+            row_frame.grid(row=idx, column=0, columnspan=4, sticky="ew", pady=2)
+            row_frame.grid_columnconfigure(1, weight=1)
+
+            # Type dropdown (replaces static badge)
+            current_type = value_to_type.get(source_type, "Archive") if source_type else "Archive"
+            # Auto-detect type from URL if not specified
+            if not source_type and url:
+                if "youtube.com" in url.lower() or "youtu.be" in url.lower():
+                    current_type = "YouTube"
+                elif any(p in url.lower() for p in ['.rss', '.xml', '/feed', '/rss']):
+                    current_type = "RSS"
+
+            type_var = ctk.StringVar(value=current_type)
+            type_dropdown = ctk.CTkOptionMenu(
+                row_frame, values=type_options, variable=type_var,
+                width=90, height=28, font=ctk.CTkFont(size=11),
+                dynamic_resizing=False
+            )
+            type_dropdown.grid(row=0, column=0, padx=(5, 5), pady=3)
+
+            # Config dropdown (for newsletters) - initially hidden
+            config_var = ctk.StringVar(value=config if config else "(none)")
+            config_dropdown = ctk.CTkOptionMenu(
+                row_frame, values=available_configs, variable=config_var,
+                width=80, height=28, font=ctk.CTkFont(size=11),
+                dynamic_resizing=False
+            )
+
+            # URL entry
+            entry = ctk.CTkEntry(row_frame)
+            entry.insert(0, url)
+            entry.grid(row=0, column=1, sticky="ew", padx=(0, 5), pady=3)
+
+            # Store extra metadata on the entry widget
+            entry._source_name = name
+
+            # Show/hide config dropdown based on type
+            def on_type_change(choice):
+                if choice == "Newsletter":
+                    config_dropdown.grid(row=0, column=2, padx=(0, 5), pady=3)
+                else:
+                    config_dropdown.grid_forget()
+                    config_var.set("(none)")
+
+            type_dropdown.configure(command=on_type_change)
+
+            # Initial visibility
+            if current_type == "Newsletter":
+                config_dropdown.grid(row=0, column=2, padx=(0, 5), pady=3)
+
+            # Enabled checkbox
+            var_enabled = ctk.BooleanVar(value=enabled)
+            chk = ctk.CTkCheckBox(row_frame, text="", variable=var_enabled, width=24)
+            chk.grid(row=0, column=3, padx=(0, 5), pady=3)
+
+            widgets.append((entry, var_enabled, type_var, config_var))
+            return row_frame
+
         for idx, src in enumerate(sources):
-            var_enabled = ctk.BooleanVar(value=src.get("enabled", True))
-            entry = ctk.CTkEntry(container)
-            entry.insert(0, src.get("url", ""))
-            chk = ctk.CTkCheckBox(container, text="Enabled", variable=var_enabled)
-            entry.grid(row=idx, column=0, padx=5, pady=5, sticky="ew")
-            chk.grid(row=idx, column=1, padx=5, pady=5)
-            widgets.append((entry, var_enabled))
+            add_source_row(
+                idx,
+                src.get("url", ""),
+                src.get("enabled", True),
+                src.get("type"),
+                src.get("config"),
+                src.get("name")
+            )
 
         def add_source():
             idx = len(widgets)
-            var_enabled = ctk.BooleanVar(value=True)
-            entry = ctk.CTkEntry(container)
-            chk = ctk.CTkCheckBox(container, text="Enabled", variable=var_enabled)
-            entry.grid(row=idx, column=0, padx=5, pady=5, sticky="ew")
-            chk.grid(row=idx, column=1, padx=5, pady=5)
-            widgets.append((entry, var_enabled))
+            add_source_row(idx)
 
         def bulk_import():
             dlg = ctk.CTkToplevel(editor)
             dlg.title("Bulk Import Sources")
             dlg.geometry("500x400")
-            ctk.CTkLabel(dlg, text="Paste one URL per line:").pack(pady=10)
+            dlg.transient(editor)
+            dlg.lift()
+            ctk.CTkLabel(dlg, text="Paste one URL per line (type auto-detected):").pack(pady=10)
             txt = ctk.CTkTextbox(dlg, width=460, height=280)
             txt.pack(padx=10, pady=10, fill="both", expand=True)
+
             def apply_import():
                 lines = [ln.strip() for ln in txt.get("0.0", "end-1c").splitlines()]
                 for ln in lines:
-                    if not ln: continue
+                    if not ln:
+                        continue
                     idx = len(widgets)
-                    var_enabled = ctk.BooleanVar(value=True)
-                    entry = ctk.CTkEntry(container)
-                    entry.insert(0, ln)
-                    chk = ctk.CTkCheckBox(container, text="Enabled", variable=var_enabled)
-                    entry.grid(row=idx, column=0, padx=5, pady=5, sticky="ew")
-                    chk.grid(row=idx, column=1, padx=5, pady=5)
-                    widgets.append((entry, var_enabled))
+                    add_source_row(idx, ln, True)
                 dlg.destroy()
+
             ctk.CTkButton(dlg, text="Import", command=apply_import).pack(pady=10)
 
         def select_all():
-            for entry, var_enabled in widgets:
+            for entry, var_enabled, type_var, config_var in widgets:
                 var_enabled.set(True)
-        
+
         def deselect_all():
-            for entry, var_enabled in widgets:
+            for entry, var_enabled, type_var, config_var in widgets:
                 var_enabled.set(False)
-        
+
         def save_sources():
             new_sources = []
-            for entry, var_enabled in widgets:
+            for entry, var_enabled, type_var, config_var in widgets:
                 url = entry.get().strip()
                 if url:
-                    new_sources.append({"url": url, "enabled": bool(var_enabled.get())})
+                    # Get type from dropdown
+                    type_display = type_var.get()
+                    source_type = type_to_value.get(type_display, "article_archive")
+
+                    # Build source dict
+                    source_dict = {
+                        "url": url,
+                        "enabled": bool(var_enabled.get()),
+                        "type": source_type,
+                    }
+
+                    # Add config for newsletter sources
+                    if source_type == "newsletter":
+                        config_name = config_var.get()
+                        if config_name and config_name != "(none)":
+                            source_dict["config"] = config_name
+
+                    # Preserve name if available
+                    if hasattr(entry, '_source_name') and entry._source_name:
+                        source_dict["name"] = entry._source_name
+
+                    new_sources.append(source_dict)
             try:
-                json.dump({"sources": new_sources}, open(sources_json, "w"), indent=2)
+                # Save to user data directory (not bundled resources)
+                json.dump({"sources": new_sources}, open(sources_json_user, "w"), indent=2)
                 # also write channels.txt for compatibility
-                with open(channels_file, "w", encoding="utf-8") as f:
+                with open(channels_file_user, "w", encoding="utf-8") as f:
                     f.write("\n".join([s["url"] for s in new_sources]))
                 editor.destroy()
                 self.label_status.configure(text="Sources updated.", text_color="green")
             except Exception as e:
                 self.label_status.configure(text=f"Error saving sources: {e}", text_color="red")
 
+        def export_csv():
+            """Export sources to a CSV file for backup."""
+            from tkinter import filedialog
+            import csv
+
+            # Gather current sources from widgets
+            current_sources = []
+            for entry, var_enabled, type_var, config_var in widgets:
+                url = entry.get().strip()
+                if url:
+                    type_display = type_var.get()
+                    source_type = type_to_value.get(type_display, "article_archive")
+                    config_name = config_var.get() if source_type == "newsletter" else ""
+                    current_sources.append({
+                        "url": url,
+                        "type": source_type,
+                        "config": config_name if config_name != "(none)" else "",
+                        "enabled": "Yes" if var_enabled.get() else "No"
+                    })
+
+            if not current_sources:
+                self.label_status.configure(text="No sources to export.", text_color="orange")
+                return
+
+            # Ask user for save location
+            filepath = filedialog.asksaveasfilename(
+                parent=editor,
+                defaultextension=".csv",
+                filetypes=[("CSV files", "*.csv"), ("All files", "*.*")],
+                initialfile="news_sources_backup.csv"
+            )
+
+            if not filepath:
+                return  # User cancelled
+
+            try:
+                with open(filepath, "w", newline="", encoding="utf-8") as f:
+                    writer = csv.DictWriter(f, fieldnames=["url", "type", "config", "enabled"])
+                    writer.writeheader()
+                    writer.writerows(current_sources)
+                self.label_status.configure(text=f"Exported {len(current_sources)} sources to CSV.", text_color="green")
+            except Exception as e:
+                self.label_status.configure(text=f"Export error: {e}", text_color="red")
+
         # Button row - always visible at bottom, stacked in two rows if needed
         btn_row = ctk.CTkFrame(editor, fg_color="transparent")
         btn_row.pack(fill="x", padx=10, pady=(5, 15), side="bottom")
-        
+
         # First row of buttons
         btn_row1 = ctk.CTkFrame(btn_row, fg_color="transparent")
         btn_row1.pack(fill="x", pady=(0, 5))
-        
-        ctk.CTkButton(btn_row1, text="Add Source", command=add_source, width=110).pack(side="left", padx=5)
-        ctk.CTkButton(btn_row1, text="Bulk Import", command=bulk_import, width=110).pack(side="left", padx=5)
-        ctk.CTkButton(btn_row1, text="Select All", command=select_all, fg_color="green", width=110).pack(side="left", padx=5)
-        ctk.CTkButton(btn_row1, text="Deselect All", command=deselect_all, fg_color="gray", width=110).pack(side="left", padx=5)
-        
+
+        ctk.CTkButton(btn_row1, text="Add Source", command=add_source, width=100).pack(side="left", padx=4)
+        ctk.CTkButton(btn_row1, text="Bulk Import", command=bulk_import, width=100).pack(side="left", padx=4)
+        ctk.CTkButton(btn_row1, text="Export CSV", command=export_csv, fg_color="#2E86AB", width=100).pack(side="left", padx=4)
+        ctk.CTkButton(btn_row1, text="Select All", command=select_all, fg_color="green", width=90).pack(side="left", padx=4)
+        ctk.CTkButton(btn_row1, text="Deselect All", command=deselect_all, fg_color="gray", width=100).pack(side="left", padx=4)
+
         # Second row with Save button prominently placed
         btn_row2 = ctk.CTkFrame(btn_row, fg_color="transparent")
         btn_row2.pack(fill="x")
-        
-        ctk.CTkButton(btn_row2, text="Save Changes", command=save_sources, width=200, height=35, 
+
+        ctk.CTkButton(btn_row2, text="Save Changes", command=save_sources, width=200, height=35,
                      font=ctk.CTkFont(size=14, weight="bold")).pack(side="right", padx=5)
 
+    def open_config_manager(self):
+        """Open the extraction config manager dialog."""
+        import json
+
+        config_dir = os.path.join(os.path.dirname(__file__), "extraction_instructions")
+        os.makedirs(config_dir, exist_ok=True)
+
+        manager = ctk.CTkToplevel(self)
+        manager.title("Manage Extraction Configs")
+        manager.geometry("900x650")
+        manager.minsize(800, 550)
+        manager.transient(self)
+        manager.lift()
+
+        # Main container with two panes
+        main_frame = ctk.CTkFrame(manager, fg_color="transparent")
+        main_frame.pack(fill="both", expand=True, padx=10, pady=10)
+        main_frame.grid_columnconfigure(1, weight=1)
+        main_frame.grid_rowconfigure(0, weight=1)
+
+        # Left pane - config list
+        left_frame = ctk.CTkFrame(main_frame, width=200)
+        left_frame.grid(row=0, column=0, sticky="ns", padx=(0, 10))
+        left_frame.grid_propagate(False)
+
+        ctk.CTkLabel(left_frame, text="Configs", font=ctk.CTkFont(weight="bold")).pack(pady=(10, 5))
+
+        # Scrollable list of configs
+        config_list_frame = ctk.CTkScrollableFrame(left_frame, width=180)
+        config_list_frame.pack(fill="both", expand=True, padx=5, pady=5)
+
+        # Right pane - config editor
+        right_frame = ctk.CTkFrame(main_frame)
+        right_frame.grid(row=0, column=1, sticky="nsew")
+        right_frame.grid_columnconfigure(0, weight=1)
+        right_frame.grid_rowconfigure(1, weight=1)
+
+        # Editor header
+        editor_header = ctk.CTkFrame(right_frame, fg_color="transparent")
+        editor_header.grid(row=0, column=0, sticky="ew", padx=10, pady=10)
+        editor_header.grid_columnconfigure(1, weight=1)
+
+        ctk.CTkLabel(editor_header, text="Name:").grid(row=0, column=0, sticky="w", padx=(0, 10))
+        name_entry = ctk.CTkEntry(editor_header, width=300)
+        name_entry.grid(row=0, column=1, sticky="w")
+
+        ctk.CTkLabel(editor_header, text="Description:").grid(row=1, column=0, sticky="w", padx=(0, 10), pady=(10, 0))
+        desc_entry = ctk.CTkEntry(editor_header, width=500)
+        desc_entry.grid(row=1, column=1, columnspan=2, sticky="ew", pady=(10, 0))
+
+        # Editor content - scrollable
+        editor_scroll = ctk.CTkScrollableFrame(right_frame)
+        editor_scroll.grid(row=1, column=0, sticky="nsew", padx=10, pady=5)
+        editor_scroll.grid_columnconfigure(0, weight=1)
+
+        # Include Patterns
+        ctk.CTkLabel(editor_scroll, text="Include Patterns (one per line):", font=ctk.CTkFont(weight="bold")).grid(row=0, column=0, sticky="w", pady=(5, 2))
+        ctk.CTkLabel(editor_scroll, text="Items must match at least one pattern to be included. Leave empty to include all.", text_color="gray").grid(row=1, column=0, sticky="w")
+        include_text = ctk.CTkTextbox(editor_scroll, height=80)
+        include_text.grid(row=2, column=0, sticky="ew", pady=(2, 10))
+
+        # Exclude Patterns
+        ctk.CTkLabel(editor_scroll, text="Exclude Patterns (one per line):", font=ctk.CTkFont(weight="bold")).grid(row=3, column=0, sticky="w", pady=(5, 2))
+        ctk.CTkLabel(editor_scroll, text="Items matching any pattern are excluded, even if they match include patterns.", text_color="gray").grid(row=4, column=0, sticky="w")
+        exclude_text = ctk.CTkTextbox(editor_scroll, height=80)
+        exclude_text.grid(row=5, column=0, sticky="ew", pady=(2, 10))
+
+        # Blocked Domains
+        ctk.CTkLabel(editor_scroll, text="Blocked Domains (one per line):", font=ctk.CTkFont(weight="bold")).grid(row=6, column=0, sticky="w", pady=(5, 2))
+        ctk.CTkLabel(editor_scroll, text="Links to these domains are never extracted.", text_color="gray").grid(row=7, column=0, sticky="w")
+        blocked_text = ctk.CTkTextbox(editor_scroll, height=60)
+        blocked_text.grid(row=8, column=0, sticky="ew", pady=(2, 10))
+
+        # Allowed Domains
+        ctk.CTkLabel(editor_scroll, text="Allowed Domains (one per line, optional):", font=ctk.CTkFont(weight="bold")).grid(row=9, column=0, sticky="w", pady=(5, 2))
+        ctk.CTkLabel(editor_scroll, text="If specified, only links to these domains are extracted. Leave empty to allow all.", text_color="gray").grid(row=10, column=0, sticky="w")
+        allowed_text = ctk.CTkTextbox(editor_scroll, height=60)
+        allowed_text.grid(row=11, column=0, sticky="ew", pady=(2, 10))
+
+        # Exclude Sections
+        ctk.CTkLabel(editor_scroll, text="Exclude Sections (one per line):", font=ctk.CTkFont(weight="bold")).grid(row=12, column=0, sticky="w", pady=(5, 2))
+        ctk.CTkLabel(editor_scroll, text="Section headers to skip entirely (e.g., 'Sponsored', 'Ads').", text_color="gray").grid(row=13, column=0, sticky="w")
+        exclude_sections_text = ctk.CTkTextbox(editor_scroll, height=60)
+        exclude_sections_text.grid(row=14, column=0, sticky="ew", pady=(2, 10))
+
+        # Source URL Patterns (for URL detection in Audio Content section)
+        ctk.CTkLabel(editor_scroll, text="Source URL Patterns (one per line):", font=ctk.CTkFont(weight="bold")).grid(row=15, column=0, sticky="w", pady=(5, 2))
+        ctk.CTkLabel(editor_scroll, text="Domains that match this config for URL detection (e.g., 'execsum.co', 'newsletter.example.com').", text_color="gray").grid(row=16, column=0, sticky="w")
+        source_url_text = ctk.CTkTextbox(editor_scroll, height=60)
+        source_url_text.grid(row=17, column=0, sticky="ew", pady=(2, 10))
+
+        # CSV Columns (for Google Sheets export)
+        ctk.CTkLabel(editor_scroll, text="CSV Columns (one per line):", font=ctk.CTkFont(weight="bold")).grid(row=18, column=0, sticky="w", pady=(5, 2))
+        ctk.CTkLabel(editor_scroll, text="Column headers for Sheets export (e.g., 'title', 'url', 'date_published'). Order determines column order.", text_color="gray").grid(row=19, column=0, sticky="w")
+        csv_columns_text = ctk.CTkTextbox(editor_scroll, height=60)
+        csv_columns_text.grid(row=20, column=0, sticky="ew", pady=(2, 10))
+
+        # State tracking
+        current_config = {"filename": None}
+        config_buttons = {}
+
+        def load_configs():
+            """Load all config files and populate the list."""
+            # Clear existing buttons
+            for widget in config_list_frame.winfo_children():
+                widget.destroy()
+            config_buttons.clear()
+
+            configs = []
+            if os.path.exists(config_dir):
+                for f in os.listdir(config_dir):
+                    if f.endswith(".json") and not f.startswith("_"):
+                        configs.append(f)
+
+            configs.sort()
+
+            for cfg_file in configs:
+                display_name = cfg_file.replace(".json", "").replace("_", " ").title()
+                btn = ctk.CTkButton(
+                    config_list_frame,
+                    text=display_name,
+                    fg_color="transparent",
+                    text_color=("gray10", "gray90"),
+                    hover_color=("gray70", "gray30"),
+                    anchor="w",
+                    command=lambda f=cfg_file: select_config(f)
+                )
+                btn.pack(fill="x", pady=2)
+                config_buttons[cfg_file] = btn
+
+            # Add "New Config" button at the bottom
+            ctk.CTkButton(
+                config_list_frame,
+                text="+ New Config",
+                fg_color="green",
+                command=create_new_config
+            ).pack(fill="x", pady=(10, 2))
+
+        def select_config(filename):
+            """Load a config into the editor."""
+            # Update button highlighting
+            for f, btn in config_buttons.items():
+                if f == filename:
+                    btn.configure(fg_color=("gray75", "gray25"))
+                else:
+                    btn.configure(fg_color="transparent")
+
+            current_config["filename"] = filename
+            filepath = os.path.join(config_dir, filename)
+
+            try:
+                with open(filepath, 'r', encoding='utf-8') as f:
+                    config = json.load(f)
+            except Exception as e:
+                self.label_status.configure(text=f"Error loading config: {e}", text_color="red")
+                return
+
+            # Populate editor fields
+            name_entry.delete(0, "end")
+            name_entry.insert(0, config.get("name", ""))
+
+            desc_entry.delete(0, "end")
+            desc_entry.insert(0, config.get("description", ""))
+
+            include_text.delete("0.0", "end")
+            include_patterns = config.get("include_patterns", [])
+            if include_patterns:
+                include_text.insert("0.0", "\n".join(include_patterns))
+
+            exclude_text.delete("0.0", "end")
+            exclude_patterns = config.get("exclude_patterns", [])
+            if exclude_patterns:
+                exclude_text.insert("0.0", "\n".join(exclude_patterns))
+
+            blocked_text.delete("0.0", "end")
+            blocked_domains = config.get("blocked_domains", [])
+            if blocked_domains:
+                blocked_text.insert("0.0", "\n".join(blocked_domains))
+
+            allowed_text.delete("0.0", "end")
+            allowed_domains = config.get("allowed_domains", [])
+            if allowed_domains:
+                allowed_text.insert("0.0", "\n".join(allowed_domains))
+
+            exclude_sections_text.delete("0.0", "end")
+            exclude_sections = config.get("exclude_sections", [])
+            if exclude_sections:
+                exclude_sections_text.insert("0.0", "\n".join(exclude_sections))
+
+            source_url_text.delete("0.0", "end")
+            source_url_patterns = config.get("source_url_patterns", [])
+            if source_url_patterns:
+                source_url_text.insert("0.0", "\n".join(source_url_patterns))
+
+            csv_columns_text.delete("0.0", "end")
+            csv_columns = config.get("csv_columns", [])
+            if csv_columns:
+                csv_columns_text.insert("0.0", "\n".join(csv_columns))
+
+        def create_new_config():
+            """Create a new config from template."""
+            # Dialog for config name
+            dialog = ctk.CTkToplevel(manager)
+            dialog.title("New Config")
+            dialog.geometry("400x150")
+            dialog.transient(manager)
+            dialog.lift()
+
+            ctk.CTkLabel(dialog, text="Config Name:").pack(pady=(20, 5))
+            new_name_entry = ctk.CTkEntry(dialog, width=300)
+            new_name_entry.pack(pady=5)
+            new_name_entry.focus()
+
+            def create():
+                name = new_name_entry.get().strip()
+                if not name:
+                    return
+
+                # Create filename from name
+                filename = name.lower().replace(" ", "_").replace("-", "_") + ".json"
+                filepath = os.path.join(config_dir, filename)
+
+                if os.path.exists(filepath):
+                    self.label_status.configure(text=f"Config '{name}' already exists!", text_color="red")
+                    dialog.destroy()
+                    return
+
+                # Create new config with template structure
+                new_config = {
+                    "name": name,
+                    "description": f"Custom extraction config for {name}",
+                    "include_patterns": [],
+                    "exclude_patterns": ["subscribe", "unsubscribe", "advertisement", "sponsored"],
+                    "exclude_sections": [],
+                    "allowed_domains": [],
+                    "blocked_domains": ["twitter.com", "x.com", "facebook.com", "linkedin.com"],
+                    "source_url_patterns": [],
+                    "csv_columns": ["title", "url", "date_published"],
+                    "require_url": False,
+                    "require_include_pattern": False,
+                    "notes": ""
+                }
+
+                try:
+                    with open(filepath, 'w', encoding='utf-8') as f:
+                        json.dump(new_config, f, indent=2)
+                    dialog.destroy()
+                    load_configs()
+                    select_config(filename)
+                    self.refresh_config_dropdown()
+                    self.label_status.configure(text=f"Created config: {name}", text_color="green")
+                except Exception as e:
+                    self.label_status.configure(text=f"Error creating config: {e}", text_color="red")
+
+            ctk.CTkButton(dialog, text="Create", command=create).pack(pady=20)
+
+        def save_current_config():
+            """Save the current config."""
+            if not current_config["filename"]:
+                self.label_status.configure(text="No config selected", text_color="orange")
+                return
+
+            filepath = os.path.join(config_dir, current_config["filename"])
+
+            # Read existing config to preserve extra fields
+            try:
+                with open(filepath, 'r', encoding='utf-8') as f:
+                    config = json.load(f)
+            except Exception:
+                config = {}
+
+            # Update with editor values
+            config["name"] = name_entry.get().strip()
+            config["description"] = desc_entry.get().strip()
+
+            # Parse text areas into lists
+            def text_to_list(textbox):
+                content = textbox.get("0.0", "end-1c").strip()
+                if not content:
+                    return []
+                return [line.strip() for line in content.split("\n") if line.strip()]
+
+            config["include_patterns"] = text_to_list(include_text)
+            config["exclude_patterns"] = text_to_list(exclude_text)
+            config["blocked_domains"] = text_to_list(blocked_text)
+            config["allowed_domains"] = text_to_list(allowed_text)
+            config["exclude_sections"] = text_to_list(exclude_sections_text)
+            config["source_url_patterns"] = text_to_list(source_url_text)
+            config["csv_columns"] = text_to_list(csv_columns_text)
+
+            try:
+                with open(filepath, 'w', encoding='utf-8') as f:
+                    json.dump(config, f, indent=2)
+                self.label_status.configure(text=f"Saved: {current_config['filename']}", text_color="green")
+            except Exception as e:
+                self.label_status.configure(text=f"Error saving: {e}", text_color="red")
+
+        def duplicate_config():
+            """Duplicate the current config."""
+            if not current_config["filename"]:
+                return
+
+            # Dialog for new name
+            dialog = ctk.CTkToplevel(manager)
+            dialog.title("Duplicate Config")
+            dialog.geometry("400x150")
+            dialog.transient(manager)
+            dialog.lift()
+
+            original_name = current_config["filename"].replace(".json", "").replace("_", " ").title()
+            ctk.CTkLabel(dialog, text=f"Duplicating: {original_name}").pack(pady=(10, 5))
+            ctk.CTkLabel(dialog, text="New Config Name:").pack(pady=5)
+            new_name_entry = ctk.CTkEntry(dialog, width=300)
+            new_name_entry.pack(pady=5)
+            new_name_entry.insert(0, f"{original_name} Copy")
+            new_name_entry.focus()
+
+            def duplicate():
+                name = new_name_entry.get().strip()
+                if not name:
+                    return
+
+                new_filename = name.lower().replace(" ", "_").replace("-", "_") + ".json"
+                new_filepath = os.path.join(config_dir, new_filename)
+
+                if os.path.exists(new_filepath):
+                    self.label_status.configure(text=f"Config '{name}' already exists!", text_color="red")
+                    dialog.destroy()
+                    return
+
+                # Read original
+                original_path = os.path.join(config_dir, current_config["filename"])
+                try:
+                    with open(original_path, 'r', encoding='utf-8') as f:
+                        config = json.load(f)
+                    config["name"] = name
+                    with open(new_filepath, 'w', encoding='utf-8') as f:
+                        json.dump(config, f, indent=2)
+                    dialog.destroy()
+                    load_configs()
+                    select_config(new_filename)
+                    self.refresh_config_dropdown()
+                    self.label_status.configure(text=f"Duplicated as: {name}", text_color="green")
+                except Exception as e:
+                    self.label_status.configure(text=f"Error duplicating: {e}", text_color="red")
+
+            ctk.CTkButton(dialog, text="Duplicate", command=duplicate).pack(pady=15)
+
+        def delete_config():
+            """Delete the current config."""
+            if not current_config["filename"]:
+                return
+
+            # Confirmation dialog
+            dialog = ctk.CTkToplevel(manager)
+            dialog.title("Delete Config")
+            dialog.geometry("400x150")
+            dialog.transient(manager)
+            dialog.lift()
+
+            config_name = current_config["filename"].replace(".json", "").replace("_", " ").title()
+            ctk.CTkLabel(dialog, text=f"Delete '{config_name}'?", font=ctk.CTkFont(weight="bold")).pack(pady=(20, 10))
+            ctk.CTkLabel(dialog, text="This cannot be undone.", text_color="red").pack()
+
+            btn_frame = ctk.CTkFrame(dialog, fg_color="transparent")
+            btn_frame.pack(pady=20)
+
+            def confirm_delete():
+                filepath = os.path.join(config_dir, current_config["filename"])
+                try:
+                    os.remove(filepath)
+                    dialog.destroy()
+                    current_config["filename"] = None
+                    load_configs()
+                    # Clear editor
+                    name_entry.delete(0, "end")
+                    desc_entry.delete(0, "end")
+                    include_text.delete("0.0", "end")
+                    exclude_text.delete("0.0", "end")
+                    blocked_text.delete("0.0", "end")
+                    allowed_text.delete("0.0", "end")
+                    exclude_sections_text.delete("0.0", "end")
+                    self.refresh_config_dropdown()
+                    self.label_status.configure(text=f"Deleted: {config_name}", text_color="green")
+                except Exception as e:
+                    self.label_status.configure(text=f"Error deleting: {e}", text_color="red")
+
+            ctk.CTkButton(btn_frame, text="Cancel", fg_color="gray", command=dialog.destroy).pack(side="left", padx=10)
+            ctk.CTkButton(btn_frame, text="Delete", fg_color="red", command=confirm_delete).pack(side="left", padx=10)
+
+        # Bottom button row
+        btn_row = ctk.CTkFrame(right_frame, fg_color="transparent")
+        btn_row.grid(row=2, column=0, sticky="ew", padx=10, pady=10)
+
+        ctk.CTkButton(btn_row, text="Save", width=100, command=save_current_config).pack(side="left", padx=5)
+        ctk.CTkButton(btn_row, text="Duplicate", width=100, fg_color="gray", command=duplicate_config).pack(side="left", padx=5)
+        ctk.CTkButton(btn_row, text="Delete", width=100, fg_color="red", command=delete_config).pack(side="left", padx=5)
+
+        # Load initial configs
+        load_configs()
+
+    def refresh_config_dropdown(self):
+        """Refresh the extraction config dropdown with current configs."""
+        config_values = self._get_extraction_configs()
+        self.extract_config_combo.configure(values=config_values)
+
+    # Default instructions template for YouTube summarization
+    DEFAULT_INSTRUCTIONS_TEMPLATE = """# Custom Instructions Template (YouTube)
+# These instructions are added to the AI summarization prompt under "USER PROFILE & PREFERENCES"
+# The system already includes rules for deduplication, audio formatting, comprehensive coverage, etc.
+# Use this section to add your personal preferences and focus areas.
+
+# Example custom instructions (uncomment and modify as needed):
+
+# FOCUS AREAS:
+# - Prioritize coverage of: [your topics, e.g., "AI/ML developments", "crypto market analysis"]
+# - De-emphasize or skip: [topics you don't care about]
+
+# STYLE PREFERENCES:
+# - Keep summaries [concise/detailed]
+# - Include specific price levels and technical analysis when available
+# - Highlight contrarian or unique perspectives
+
+# PERSONAL CONTEXT:
+# - I am a [role, e.g., "software engineer", "trader", "analyst"]
+# - I'm particularly interested in [specific interests]
+# - I prefer [any formatting preferences]"""
+
+    # Default instructions template for Article cleaning/summarization
+    DEFAULT_ARTICLE_INSTRUCTIONS_TEMPLATE = """# Article Processing Instructions
+# These instructions customize how articles are cleaned and prepared for audio.
+# The system already handles removing ads, navigation, and formatting for speech.
+# Use this section to add your personal preferences.
+
+# CONTENT FOCUS:
+# - Prioritize sections about: [your topics]
+# - Skip or minimize: [sections you don't need, e.g., "author bios", "related articles"]
+
+# SUMMARIZATION STYLE:
+# - Level of detail: [full article / key points only / executive summary]
+# - Preserve: [quotes, statistics, specific data points]
+# - Expand abbreviations: [yes/no, or specific ones]
+
+# OUTPUT FORMAT:
+# - Length preference: [concise / moderate / comprehensive]
+# - Include source attribution: [yes/no]
+# - Separate multiple articles with: [clear breaks / transitions]
+
+# PERSONAL CONTEXT:
+# - I'm reading for: [research, news briefing, learning, entertainment]
+# - My background: [helps AI calibrate technical depth]"""
+
+    def _load_instruction_profiles(self):
+        """Load instruction profiles from JSON file in persistent data directory."""
+        data_dir = get_data_directory()
+        profiles_file = os.path.join(data_dir, "instruction_profiles.json")
+
+        default_profiles = {
+            "active_profile": "Default",
+            "profiles": {
+                "Default": {
+                    "name": "Default",
+                    "description": "Default profile with template",
+                    "instructions": self.DEFAULT_INSTRUCTIONS_TEMPLATE,
+                    "article_instructions": self.DEFAULT_ARTICLE_INSTRUCTIONS_TEMPLATE
+                }
+            }
+        }
+
+        # Try to load existing profiles from user data directory
+        if os.path.exists(profiles_file):
+            try:
+                with open(profiles_file, "r", encoding="utf-8") as f:
+                    loaded = json.load(f)
+                    # Ensure all profiles have article_instructions (migration for existing profiles)
+                    for profile_name, profile_data in loaded.get("profiles", {}).items():
+                        if not profile_data.get("article_instructions", "").strip():
+                            profile_data["article_instructions"] = self.DEFAULT_ARTICLE_INSTRUCTIONS_TEMPLATE
+                        # Also ensure YouTube instructions have template if empty
+                        if profile_name == "Default" and not profile_data.get("instructions", "").strip():
+                            profile_data["instructions"] = self.DEFAULT_INSTRUCTIONS_TEMPLATE
+                    return loaded
+            except Exception:
+                pass
+
+        # Try to migrate from old location (bundled app directory) - one-time migration
+        old_profiles_file = os.path.join(os.path.dirname(__file__), "instruction_profiles.json")
+        if os.path.exists(old_profiles_file):
+            try:
+                with open(old_profiles_file, "r", encoding="utf-8") as f:
+                    migrated = json.load(f)
+                # Save to new location
+                self._save_instruction_profiles(migrated)
+                return migrated
+            except Exception:
+                pass
+
+        # Try to migrate from custom_instructions.txt (old or new location)
+        for instructions_file in [
+            os.path.join(data_dir, "custom_instructions.txt"),
+            os.path.join(os.path.dirname(__file__), "custom_instructions.txt")
+        ]:
+            if os.path.exists(instructions_file):
+                try:
+                    with open(instructions_file, "r", encoding="utf-8") as f:
+                        content = f.read().strip()
+                    if content:
+                        default_profiles["profiles"]["Default"]["instructions"] = content
+                        break
+                except Exception:
+                    pass
+
+        return default_profiles
+
+    def _save_instruction_profiles(self, profiles_data):
+        """Save instruction profiles to JSON file in persistent data directory."""
+        data_dir = get_data_directory()
+        profiles_file = os.path.join(data_dir, "instruction_profiles.json")
+        try:
+            with open(profiles_file, "w", encoding="utf-8") as f:
+                json.dump(profiles_data, f, indent=2)
+            return True
+        except Exception as e:
+            self.label_status.configure(text=f"Error saving profiles: {e}", text_color="red")
+            return False
+
+    def _sync_active_instructions(self, profiles_data):
+        """Sync the active profile's instructions to custom_instructions.txt for compatibility."""
+        # Save to both data directory and script directory for compatibility
+        data_dir = get_data_directory()
+        instructions_files = [
+            os.path.join(data_dir, "custom_instructions.txt"),
+            os.path.join(os.path.dirname(__file__), "custom_instructions.txt")
+        ]
+        active_name = profiles_data.get("active_profile", "Default")
+        profiles = profiles_data.get("profiles", {})
+
+        if active_name in profiles:
+            instructions = profiles[active_name].get("instructions", "")
+            for instructions_file in instructions_files:
+                try:
+                    with open(instructions_file, "w", encoding="utf-8") as f:
+                        f.write(instructions)
+                except Exception:
+                    pass  # May fail for bundled location, which is fine
+
+    def _get_active_article_instructions(self):
+        """Get the article instructions from the active profile."""
+        profiles_data = self._load_instruction_profiles()
+        active_name = profiles_data.get("active_profile", "Default")
+        profiles = profiles_data.get("profiles", {})
+
+        if active_name in profiles:
+            instructions = profiles[active_name].get("article_instructions", "")
+            # Filter out comment lines (starting with #) and empty lines
+            if instructions:
+                lines = instructions.split('\n')
+                content_lines = [line for line in lines if line.strip() and not line.strip().startswith('#')]
+                return '\n'.join(content_lines).strip()
+        return ""
+
+    def _get_active_youtube_instructions(self):
+        """Get the YouTube instructions from the active profile."""
+        profiles_data = self._load_instruction_profiles()
+        active_name = profiles_data.get("active_profile", "Default")
+        profiles = profiles_data.get("profiles", {})
+
+        if active_name in profiles:
+            instructions = profiles[active_name].get("instructions", "")
+            # Filter out comment lines (starting with #) and empty lines
+            if instructions:
+                lines = instructions.split('\n')
+                content_lines = [line for line in lines if line.strip() and not line.strip().startswith('#')]
+                return '\n'.join(content_lines).strip()
+        return ""
+
     def open_instructions_editor(self):
-        """Open editor for custom summarization instructions."""
+        """Open editor for custom summarization instructions with profile management."""
         editor = ctk.CTkToplevel(self)
-        editor.title("Edit Custom Instructions")
-        editor.geometry("800x650")
-        editor.minsize(700, 500)
+        editor.title("Custom Instructions")
+        editor.geometry("850x720")
+        editor.minsize(750, 600)
         editor.transient(self)
         editor.lift()
-        
+
+        # Load profiles
+        profiles_data = self._load_instruction_profiles()
+        current_profile = [profiles_data.get("active_profile", "Default")]  # Use list for closure mutability
+
+        # Header
+        header_frame = ctk.CTkFrame(editor, fg_color="transparent")
+        header_frame.pack(fill="x", padx=15, pady=(15, 5))
+
         lbl = ctk.CTkLabel(
-            editor, 
-            text="Customize how summaries are generated:", 
-            font=ctk.CTkFont(weight="bold", size=14)
+            header_frame,
+            text="Custom Instructions",
+            font=ctk.CTkFont(weight="bold", size=16)
         )
-        lbl.pack(pady=(15, 5), padx=15, anchor="w")
-        
+        lbl.pack(side="left")
+
+        # Profile selector row
+        profile_frame = ctk.CTkFrame(editor, fg_color="transparent")
+        profile_frame.pack(fill="x", padx=15, pady=(10, 5))
+
+        ctk.CTkLabel(profile_frame, text="Profile:", font=ctk.CTkFont(size=13)).pack(side="left", padx=(0, 10))
+
+        profile_names = list(profiles_data.get("profiles", {}).keys())
+        if not profile_names:
+            profile_names = ["Default"]
+
+        profile_var = ctk.StringVar(value=current_profile[0])
+        profile_dropdown = ctk.CTkComboBox(
+            profile_frame,
+            variable=profile_var,
+            values=profile_names,
+            width=200,
+            state="readonly"
+        )
+        profile_dropdown.pack(side="left", padx=(0, 10))
+
+        # Profile action buttons
+        btn_new = ctk.CTkButton(profile_frame, text="New", width=70, fg_color="gray")
+        btn_new.pack(side="left", padx=2)
+
+        btn_duplicate = ctk.CTkButton(profile_frame, text="Duplicate", width=80, fg_color="gray")
+        btn_duplicate.pack(side="left", padx=2)
+
+        btn_rename = ctk.CTkButton(profile_frame, text="Rename", width=80, fg_color="gray")
+        btn_rename.pack(side="left", padx=2)
+
+        btn_delete = ctk.CTkButton(profile_frame, text="Delete", width=70, fg_color="#8B0000")
+        btn_delete.pack(side="left", padx=2)
+
+        # Active indicator
+        active_label = ctk.CTkLabel(
+            profile_frame,
+            text="✓ Active" if current_profile[0] == profiles_data.get("active_profile") else "",
+            text_color="green",
+            font=ctk.CTkFont(size=12)
+        )
+        active_label.pack(side="right", padx=10)
+
+        # Description row
+        desc_frame = ctk.CTkFrame(editor, fg_color="transparent")
+        desc_frame.pack(fill="x", padx=15, pady=(5, 5))
+
+        ctk.CTkLabel(desc_frame, text="Description:", font=ctk.CTkFont(size=12)).pack(side="left", padx=(0, 10))
+
+        desc_entry = ctk.CTkEntry(desc_frame, width=600, placeholder_text="Brief description of this profile...")
+        desc_entry.pack(side="left", fill="x", expand=True)
+
+        # Load initial description
+        if current_profile[0] in profiles_data.get("profiles", {}):
+            desc = profiles_data["profiles"][current_profile[0]].get("description", "")
+            if desc:
+                desc_entry.insert(0, desc)
+
+        # Help text
         help_text = ctk.CTkLabel(
             editor,
-            text="Example: \"I'm a crypto trader interested in Bitcoin, DeFi, and AI. Include all price levels, technical indicators, and alpha.\"",
+            text="Define your interests and preferences to customize how AI summaries are generated.",
             font=ctk.CTkFont(size=11),
             text_color="gray",
-            wraplength=750
+            wraplength=800
         )
-        help_text.pack(pady=(0, 10), padx=15, anchor="w")
-        
-        # Text area for custom instructions
-        txt_frame = ctk.CTkFrame(editor)
-        txt_frame.pack(padx=15, pady=10, fill="both", expand=True)
-        
-        instructions_text = ctk.CTkTextbox(txt_frame, width=750, height=400, font=ctk.CTkFont(size=13))
-        instructions_text.pack(padx=10, pady=10, fill="both", expand=True)
-        
-        # Load existing instructions
-        instructions_file = os.path.join(os.path.dirname(__file__), "custom_instructions.txt")
-        if os.path.exists(instructions_file):
-            try:
-                with open(instructions_file, "r", encoding="utf-8") as f:
-                    instructions_text.insert("1.0", f.read())
-            except Exception as e:
-                self.label_status.configure(text=f"Error loading instructions: {e}", text_color="red")
-        
-        def save_instructions():
-            content = instructions_text.get("1.0", "end-1c")
-            try:
-                with open(instructions_file, "w", encoding="utf-8") as f:
-                    f.write(content)
-                editor.destroy()
-                self.label_status.configure(text="Custom instructions saved.", text_color="green")
-            except Exception as e:
-                self.label_status.configure(text=f"Error saving instructions: {e}", text_color="red")
-        
-        def clear_instructions():
+        help_text.pack(pady=(5, 5), padx=15, anchor="w")
+
+        # Tabview for YouTube vs Article instructions
+        tabview = ctk.CTkTabview(editor, height=400)
+        tabview.pack(padx=15, pady=10, fill="both", expand=True)
+
+        # Create tabs
+        tab_youtube = tabview.add("📺 YouTube")
+        tab_article = tabview.add("📄 Articles")
+
+        # YouTube instructions tab
+        youtube_help = ctk.CTkLabel(
+            tab_youtube,
+            text="Instructions for summarizing YouTube video transcripts. Applied when processing videos from channels or pasted YouTube URLs.",
+            font=ctk.CTkFont(size=11),
+            text_color="gray",
+            wraplength=780
+        )
+        youtube_help.pack(pady=(5, 5), padx=10, anchor="w")
+
+        instructions_text = ctk.CTkTextbox(tab_youtube, width=780, height=300, font=ctk.CTkFont(size=13))
+        instructions_text.pack(padx=10, pady=5, fill="both", expand=True)
+
+        # Article instructions tab
+        article_help = ctk.CTkLabel(
+            tab_article,
+            text="Instructions for cleaning and processing articles. Applied when generating audio from article URLs or text content.",
+            font=ctk.CTkFont(size=11),
+            text_color="gray",
+            wraplength=780
+        )
+        article_help.pack(pady=(5, 5), padx=10, anchor="w")
+
+        article_instructions_text = ctk.CTkTextbox(tab_article, width=780, height=300, font=ctk.CTkFont(size=13))
+        article_instructions_text.pack(padx=10, pady=5, fill="both", expand=True)
+
+        # Load initial instructions for both tabs
+        if current_profile[0] in profiles_data.get("profiles", {}):
+            profile = profiles_data["profiles"][current_profile[0]]
+            youtube_content = profile.get("instructions", "")
+            if youtube_content:
+                instructions_text.insert("1.0", youtube_content)
+            article_content = profile.get("article_instructions", "")
+            if article_content:
+                article_instructions_text.insert("1.0", article_content)
+
+        def refresh_dropdown():
+            """Refresh the profile dropdown with current profiles."""
+            names = list(profiles_data.get("profiles", {}).keys())
+            profile_dropdown.configure(values=names)
+
+        def load_profile(name):
+            """Load a profile into the editor."""
             instructions_text.delete("1.0", "end")
-        
+            article_instructions_text.delete("1.0", "end")
+            desc_entry.delete(0, "end")
+
+            if name in profiles_data.get("profiles", {}):
+                profile = profiles_data["profiles"][name]
+                # Load YouTube instructions
+                youtube_content = profile.get("instructions", "")
+                if youtube_content:
+                    instructions_text.insert("1.0", youtube_content)
+                # Load Article instructions
+                article_content = profile.get("article_instructions", "")
+                if article_content:
+                    article_instructions_text.insert("1.0", article_content)
+                # Load description
+                desc = profile.get("description", "")
+                if desc:
+                    desc_entry.insert(0, desc)
+
+            current_profile[0] = name
+
+            # Update active indicator
+            if name == profiles_data.get("active_profile"):
+                active_label.configure(text="✓ Active")
+            else:
+                active_label.configure(text="")
+
+        def on_profile_change(choice):
+            """Handle profile dropdown change."""
+            # Save current profile first
+            save_current_to_memory()
+            # Load new profile
+            load_profile(choice)
+
+        profile_dropdown.configure(command=on_profile_change)
+
+        def save_current_to_memory():
+            """Save current editor state to profiles_data in memory."""
+            name = current_profile[0]
+            if name not in profiles_data["profiles"]:
+                profiles_data["profiles"][name] = {"name": name}
+
+            profiles_data["profiles"][name]["instructions"] = instructions_text.get("1.0", "end-1c")
+            profiles_data["profiles"][name]["article_instructions"] = article_instructions_text.get("1.0", "end-1c")
+            profiles_data["profiles"][name]["description"] = desc_entry.get()
+
+        def create_new_profile():
+            """Create a new profile."""
+            dialog = ctk.CTkInputDialog(
+                text="Enter name for new profile:",
+                title="New Profile"
+            )
+            name = dialog.get_input()
+
+            if name and name.strip():
+                name = name.strip()
+                if name in profiles_data["profiles"]:
+                    self.label_status.configure(text=f"Profile '{name}' already exists.", text_color="orange")
+                    return
+
+                # Save current first
+                save_current_to_memory()
+
+                # Create new profile with default templates
+                profiles_data["profiles"][name] = {
+                    "name": name,
+                    "description": "",
+                    "instructions": "",
+                    "article_instructions": self.DEFAULT_ARTICLE_INSTRUCTIONS_TEMPLATE
+                }
+
+                refresh_dropdown()
+                profile_var.set(name)
+                load_profile(name)
+                self.label_status.configure(text=f"Profile '{name}' created.", text_color="green")
+
+        def duplicate_profile():
+            """Duplicate the current profile."""
+            dialog = ctk.CTkInputDialog(
+                text=f"Enter name for duplicate of '{current_profile[0]}':",
+                title="Duplicate Profile"
+            )
+            name = dialog.get_input()
+
+            if name and name.strip():
+                name = name.strip()
+                if name in profiles_data["profiles"]:
+                    self.label_status.configure(text=f"Profile '{name}' already exists.", text_color="orange")
+                    return
+
+                # Save current first
+                save_current_to_memory()
+
+                # Duplicate (include article_instructions)
+                source = profiles_data["profiles"].get(current_profile[0], {})
+                profiles_data["profiles"][name] = {
+                    "name": name,
+                    "description": source.get("description", "") + " (copy)",
+                    "instructions": source.get("instructions", ""),
+                    "article_instructions": source.get("article_instructions", self.DEFAULT_ARTICLE_INSTRUCTIONS_TEMPLATE)
+                }
+
+                refresh_dropdown()
+                profile_var.set(name)
+                load_profile(name)
+                self.label_status.configure(text=f"Profile '{name}' created from '{current_profile[0]}'.", text_color="green")
+
+        def rename_profile():
+            """Rename the current profile."""
+            if current_profile[0] == "Default":
+                self.label_status.configure(text="Cannot rename the Default profile.", text_color="orange")
+                return
+
+            dialog = ctk.CTkInputDialog(
+                text=f"Enter new name for '{current_profile[0]}':",
+                title="Rename Profile"
+            )
+            name = dialog.get_input()
+
+            if name and name.strip():
+                name = name.strip()
+                if name in profiles_data["profiles"]:
+                    self.label_status.configure(text=f"Profile '{name}' already exists.", text_color="orange")
+                    return
+
+                # Save current first
+                save_current_to_memory()
+
+                old_name = current_profile[0]
+
+                # Rename
+                profiles_data["profiles"][name] = profiles_data["profiles"].pop(old_name)
+                profiles_data["profiles"][name]["name"] = name
+
+                # Update active if needed
+                if profiles_data.get("active_profile") == old_name:
+                    profiles_data["active_profile"] = name
+
+                refresh_dropdown()
+                profile_var.set(name)
+                current_profile[0] = name
+
+                # Update active indicator
+                if name == profiles_data.get("active_profile"):
+                    active_label.configure(text="✓ Active")
+
+                self.label_status.configure(text=f"Profile renamed to '{name}'.", text_color="green")
+
+        def delete_profile():
+            """Delete the current profile."""
+            if current_profile[0] == "Default":
+                self.label_status.configure(text="Cannot delete the Default profile.", text_color="orange")
+                return
+
+            if len(profiles_data["profiles"]) <= 1:
+                self.label_status.configure(text="Cannot delete the last profile.", text_color="orange")
+                return
+
+            # Confirm deletion
+            confirm = ctk.CTkInputDialog(
+                text=f"Type 'DELETE' to confirm deletion of '{current_profile[0]}':",
+                title="Confirm Delete"
+            )
+            response = confirm.get_input()
+
+            if response and response.strip().upper() == "DELETE":
+                old_name = current_profile[0]
+                del profiles_data["profiles"][old_name]
+
+                # If deleted profile was active, switch to Default or first available
+                if profiles_data.get("active_profile") == old_name:
+                    if "Default" in profiles_data["profiles"]:
+                        profiles_data["active_profile"] = "Default"
+                    else:
+                        profiles_data["active_profile"] = list(profiles_data["profiles"].keys())[0]
+
+                refresh_dropdown()
+                new_profile = profiles_data.get("active_profile", list(profiles_data["profiles"].keys())[0])
+                profile_var.set(new_profile)
+                load_profile(new_profile)
+                self.label_status.configure(text=f"Profile '{old_name}' deleted.", text_color="green")
+
+        # Wire up buttons
+        btn_new.configure(command=create_new_profile)
+        btn_duplicate.configure(command=duplicate_profile)
+        btn_rename.configure(command=rename_profile)
+        btn_delete.configure(command=delete_profile)
+
+        def clear_instructions():
+            """Clear the instructions text area for the current tab."""
+            current_tab = tabview.get()
+            if "YouTube" in current_tab:
+                instructions_text.delete("1.0", "end")
+            else:
+                article_instructions_text.delete("1.0", "end")
+
+        def reset_to_template():
+            """Reset instructions to the default template for the current tab."""
+            current_tab = tabview.get()
+            if "YouTube" in current_tab:
+                instructions_text.delete("1.0", "end")
+                instructions_text.insert("1.0", self.DEFAULT_INSTRUCTIONS_TEMPLATE)
+                self.label_status.configure(text="YouTube instructions reset to template.", text_color="green")
+            else:
+                article_instructions_text.delete("1.0", "end")
+                article_instructions_text.insert("1.0", self.DEFAULT_ARTICLE_INSTRUCTIONS_TEMPLATE)
+                self.label_status.configure(text="Article instructions reset to template.", text_color="green")
+
+        def save_and_close():
+            """Save all profiles and close the editor."""
+            save_current_to_memory()
+
+            if self._save_instruction_profiles(profiles_data):
+                # Sync active profile to custom_instructions.txt for compatibility
+                self._sync_active_instructions(profiles_data)
+                editor.destroy()
+                self.label_status.configure(
+                    text=f"Profiles saved. Active: {profiles_data.get('active_profile', 'Default')}",
+                    text_color="green"
+                )
+
+        def set_as_active():
+            """Set the current profile as the active profile."""
+            save_current_to_memory()
+            profiles_data["active_profile"] = current_profile[0]
+            active_label.configure(text="✓ Active")
+            self.label_status.configure(text=f"'{current_profile[0]}' is now the active profile.", text_color="green")
+
         # Button row
         btn_frame = ctk.CTkFrame(editor, fg_color="transparent")
         btn_frame.pack(fill="x", padx=15, pady=(5, 15), side="bottom")
-        
-        ctk.CTkButton(btn_frame, text="Clear", command=clear_instructions, fg_color="gray", width=120).pack(side="left", padx=5)
-        ctk.CTkButton(btn_frame, text="Save Instructions", command=save_instructions, width=200, height=35,
+
+        ctk.CTkButton(btn_frame, text="Clear", command=clear_instructions, fg_color="gray", width=70).pack(side="left", padx=3)
+        ctk.CTkButton(btn_frame, text="Reset to Template", command=reset_to_template, fg_color="#8B4513", width=130).pack(side="left", padx=3)
+        ctk.CTkButton(btn_frame, text="Set as Active", command=set_as_active, fg_color="#1f538d", width=110).pack(side="left", padx=3)
+        ctk.CTkButton(btn_frame, text="Save & Close", command=save_and_close, width=180, height=35,
                      font=ctk.CTkFont(size=14, weight="bold")).pack(side="right", padx=5)
 
     def _clear_selected_file(self):
@@ -1606,32 +4049,57 @@ class AudioBriefingApp(ctk.CTk):
             self.files_combo.set("No files selected")
 
     def upload_text_file(self):
-        """Open file dialog and upload one or more text/audio files."""
-        script_dir = os.path.dirname(__file__)
+        """Open file dialog and upload a text file to load into the News Summary textbox."""
+        data_dir = get_data_directory()
+        file_path = filedialog.askopenfilename(
+            initialdir=data_dir,
+            filetypes=(("Text files", "*.txt"), ("All files", "*.*"))
+        )
+
+        if not file_path:
+            return
+
+        try:
+            with open(file_path, 'r', encoding='utf-8') as f:
+                content = f.read()
+
+            # Load content into the main textbox
+            self.textbox.delete("0.0", "end")
+            self.textbox.insert("0.0", content)
+            self._placeholder.place_forget()
+
+            filename = os.path.basename(file_path)
+            self.label_status.configure(text=f"Loaded: {filename}", text_color="green")
+        except Exception as e:
+            self.label_status.configure(text=f"Error loading file: {e}", text_color="red")
+
+    def upload_audio_file(self):
+        """Open file dialog and upload audio/video files for transcription (Advanced section)."""
+        data_dir = get_data_directory()
         file_paths = filedialog.askopenfilenames(
-            initialdir=script_dir,
-            filetypes=(("Supported files", "*.txt *.mp3 *.wav *.m4a"), ("Text files", "*.txt"), ("Audio files", "*.mp3 *.wav *.m4a"), ("All files", "*.*"))
+            initialdir=data_dir,
+            filetypes=(("Audio files", "*.mp3 *.wav *.m4a"), ("All files", "*.*"))
         )
 
         if not file_paths:
             return
 
         self.selected_file_paths = list(file_paths)
-        
-        # Update combo
+
+        # Update combo in Advanced section
         count = len(file_paths)
         filenames = [os.path.basename(fp) for fp in file_paths]
-        
+
         if count == 1:
             self.files_combo.configure(values=filenames)
             self.files_combo.set(filenames[0])
-            self.label_status.configure(text="1 file selected. Press Transcribe.", text_color="blue")
+            self.label_status.configure(text="1 audio file selected. Press Transcribe.", text_color="blue")
         else:
             header = f"{count} files selected"
             self.files_combo.configure(values=[header] + filenames)
             self.files_combo.set(header)
-            self.label_status.configure(text=f"{count} files selected. Press Transcribe.", text_color="blue")
-            
+            self.label_status.configure(text=f"{count} audio files selected. Press Transcribe.", text_color="blue")
+
         # Enable transcribe button
         self.btn_transcribe.configure(state="normal")
 
@@ -1650,7 +4118,8 @@ class AudioBriefingApp(ctk.CTk):
                 return
 
         self.btn_transcribe.configure(state="disabled")
-        self.btn_upload_file.configure(state="disabled")
+        if hasattr(self, "btn_upload_audio"):
+            self.btn_upload_audio.configure(state="disabled")
         
         # Create output directory
         out_dir = os.path.join(os.path.dirname(__file__), "Transcriptions")
@@ -1697,7 +4166,8 @@ class AudioBriefingApp(ctk.CTk):
             
             def finish():
                 self.btn_transcribe.configure(state="normal")
-                self.btn_upload_file.configure(state="normal")
+                if hasattr(self, "btn_upload_audio"):
+                    self.btn_upload_audio.configure(state="normal")
                 if processed_count > 0:
                     self.label_status.configure(text=f"Done! {processed_count} files saved to 'Transcriptions/'", text_color="green")
                     # Optionally open the folder?
@@ -1777,6 +4247,10 @@ class AudioBriefingApp(ctk.CTk):
         voice = self.voice_var.get()
         self.audio_generator.play_sample(voice)
 
+    def play_gtts_sample(self):
+        """Play a gTTS sample to demonstrate the fast voice quality."""
+        self.audio_generator.play_gtts_sample()
+
     def run_script(self, script_name, output_name, extra_args=None, env_vars=None):
         """Run a script using the audio generator.
         
@@ -1791,7 +4265,7 @@ class AudioBriefingApp(ctk.CTk):
         # Disable buttons during execution
         self.btn_fast.configure(state="disabled")
         self.btn_quality.configure(state="disabled")
-        self.btn_get_yt_news.configure(state="disabled")
+        self.btn_get_summaries.configure(state="disabled")
         self.btn_edit_sources.configure(state="disabled")
         self.btn_upload_file.configure(state="disabled")
         self.label_status.configure(text=f"Running {script_name}...", text_color="orange")
@@ -1815,182 +4289,373 @@ class AudioBriefingApp(ctk.CTk):
             completion_callback=completion_handler
         )
 
-    def open_url_input_dialog(self, api_key):
-        """Open dialog for entering specific video URLs."""
-        dialog = ctk.CTkToplevel(self)
-        dialog.title("Summarize Specific Videos")
-        dialog.geometry("700x500")
-        dialog.transient(self)
-        dialog.geometry("800x600")
-        dialog.minsize(800, 600)
+    # Note: open_url_input_dialog and open_specific_urls_dialog removed
+    # YouTube URL processing is now handled directly in the News Summary textbox
+    # via smart content detection in show_direct_audio_dialog
 
-        dialog.lift()
-        dialog.grab_set()
-        
-        # Header
-        header = ctk.CTkLabel(
-            dialog, 
-            text="📹 Enter YouTube Video URLs", 
-            font=ctk.CTkFont(size=18, weight="bold")
-        )
-        header.pack(pady=(20, 10))
-        
-        # Instructions
-        instructions = ctk.CTkLabel(
-            dialog,
-            text="Enter one or more YouTube video URLs (one per line):",
-            font=ctk.CTkFont(size=12)
-        )
-        instructions.pack(pady=(0, 10))
-        
-        # URL text area
-        url_frame = ctk.CTkFrame(dialog)
-        url_frame.pack(padx=20, pady=10, fill="both", expand=True)
-        
-        url_textbox = ctk.CTkTextbox(url_frame, width=650, height=300, font=ctk.CTkFont(size=12))
-        url_textbox.pack(padx=10, pady=10, fill="both", expand=True)
-        url_textbox.insert("0.0", "https://www.youtube.com/watch?v=")
-        
-        # Info label
-        info_text = "Each video will be summarized using the selected AI model. Videos without transcripts will be skipped."
-        info_label = ctk.CTkLabel(dialog, text=info_text, font=ctk.CTkFont(size=10), text_color="gray", wraplength=650)
-        info_label.pack(pady=(0, 10))
-        
-        # Button frame
-        btn_frame = ctk.CTkFrame(dialog, fg_color="transparent")
-        btn_frame.pack(pady=10)
-        
-        def process_urls():
-            urls_text = url_textbox.get("0.0", "end").strip()
-            if not urls_text:
-                return
-            
-            # Parse URLs (one per line)
-            urls = [line.strip() for line in urls_text.split('\n') if line.strip() and ('youtube.com' in line or 'youtu.be' in line)]
-            
-            if not urls:
-                self.label_status.configure(text="Error: No valid YouTube URLs found.", text_color="red")
-                dialog.destroy()
-                return
-            
-            # Map user-friendly model name to API model name
-            model_mapping = {
-                "Fast (FREE)": "gemini-2.5-flash",
-                "Balanced (FREE)": "gemini-2.5-flash",
-                "Best (FREE, 50/day)": "gemini-2.5-pro"
-            }
-            selected_model = model_mapping.get(self.model_var.get(), "gemini-2.5-flash")
-            
-            # Save API key
-            self.save_api_key(api_key)
-            
-            # Build args for get_youtube_news.py with --urls
-            extra = ["--urls"] + urls + ["--model", selected_model]
-            output_desc = f"specific video list for {len(urls)} URL(s)"
-            
-            dialog.destroy()
-            
-            # Run the script
-            env_vars = {"GEMINI_API_KEY": api_key}
-            self.run_script("get_youtube_news.py", "specific-video-list.txt", extra_args=extra, env_vars=env_vars)
-        
-        def cancel():
-            dialog.destroy()
-        
-        btn_cancel = ctk.CTkButton(btn_frame, text="Cancel", command=cancel, fg_color="gray", width=120)
-        btn_cancel.pack(side="left", padx=10)
-        
-        btn_process = ctk.CTkButton(btn_frame, text="Summarize Videos", command=process_urls, width=150)
-        btn_process.pack(side="left", padx=10)
-    
     def enable_buttons(self):
         """Re-enable all control buttons and reset status."""
         self.btn_fast.configure(state="normal")
         self.btn_quality.configure(state="normal")
-        self.btn_get_yt_news.configure(state="normal")
+        self.btn_get_summaries.configure(state="normal")
         self.btn_edit_sources.configure(state="normal")
         self.btn_upload_file.configure(state="normal")
         self.label_status.configure(text="Ready", text_color="green")
 
-    def open_specific_urls_dialog(self):
-        api_key = self.gemini_key_entry.get().strip()
-        if not api_key:
-            self.label_status.configure(text="Error: Gemini API Key is required.", text_color="red")
-            return
-        self.open_url_input_dialog(api_key)
-
     def start_fast_generation(self):
-        if self.direct_audio_var.get():
-            self.show_direct_audio_dialog("fast")
+        """Generate fast audio with inline cleaning."""
+        text = self.textbox.get("0.0", "end-1c").strip()
+        if not text:
+            self.label_status.configure(text="No text to convert", text_color="red")
+            return
+
+        api_key = self.gemini_key_entry.get().strip()
+
+        # Check cache first
+        raw_hash = hash(text)
+        if (self._cleaned_text_cache is not None and
+            self._cleaned_text_cache.get("raw_hash") == raw_hash):
+            # Cache hit - use cached cleaned text
+            cleaned_text = self._cleaned_text_cache["cleaned_text"]
+            self._start_audio_generation_fast(cleaned_text)
+            return
+
+        # Need to clean - do it inline
+        if api_key:
+            self._clean_and_generate_inline(text, api_key, "fast")
         else:
-            text = self.textbox.get("0.0", "end-1c").strip()
-            filename = self.generate_audio_filename(text, "mp3")
-            self.run_script("make_audio_fast.py", filename, extra_args=["--output", filename])
+            # No API key - use raw text directly
+            self._start_audio_generation_fast(text)
 
     def start_quality_generation(self):
-        if self.direct_audio_var.get():
-            self.show_direct_audio_dialog("quality")
+        """Generate quality audio with inline cleaning."""
+        text = self.textbox.get("0.0", "end-1c").strip()
+        if not text:
+            self.label_status.configure(text="No text to convert", text_color="red")
+            return
+
+        api_key = self.gemini_key_entry.get().strip()
+
+        # Check cache first
+        raw_hash = hash(text)
+        if (self._cleaned_text_cache is not None and
+            self._cleaned_text_cache.get("raw_hash") == raw_hash):
+            # Cache hit - use cached cleaned text
+            cleaned_text = self._cleaned_text_cache["cleaned_text"]
+            self._start_audio_generation_quality(cleaned_text)
+            return
+
+        # Need to clean - do it inline
+        if api_key:
+            self._clean_and_generate_inline(text, api_key, "quality")
         else:
-            text = self.textbox.get("0.0", "end-1c").strip()
-            filename = self.generate_audio_filename(text, "wav")
-            voice = self.voice_var.get()
-            self.run_script("make_audio_quality.py", filename, extra_args=["--voice", voice, "--output", filename])
+            # No API key - use raw text directly
+            self._start_audio_generation_quality(text)
+
+    def _clean_and_generate_inline(self, raw_text: str, api_key: str, gen_type: str):
+        """Clean text inline (no popup) and then generate audio."""
+        # Show inline status
+        self.inline_status_label.configure(
+            text="Cleaning text for audio...",
+            text_color="orange"
+        )
+        self.btn_toggle_view.configure(state="disabled")
+
+        # Disable generate buttons during processing
+        self.btn_fast.configure(state="disabled")
+        self.btn_quality.configure(state="disabled")
+
+        def clean_async():
+            # Check for URLs and fetch if needed
+            detection = self._detect_content_type(raw_text)
+
+            if detection['total_urls'] > 0:
+                self.after(0, lambda: self.inline_status_label.configure(
+                    text=f"Fetching {detection['total_urls']} URL(s)...",
+                    text_color="orange"
+                ))
+                processed = self._process_mixed_content(raw_text, api_key)
+                text_to_clean = processed if processed else raw_text
+            else:
+                text_to_clean = raw_text
+
+            # Clean the text
+            self.after(0, lambda: self.inline_status_label.configure(
+                text="Cleaning text...",
+                text_color="orange"
+            ))
+            cleaned = self.clean_text_for_listening(text_to_clean, api_key)
+
+            # Update cache
+            raw_hash = hash(raw_text)
+            self._cleaned_text_cache = {
+                "raw_hash": raw_hash,
+                "cleaned_text": cleaned
+            }
+
+            # Store for toggle
+            self._raw_text_backup = raw_text
+            self._cleaned_text_backup = cleaned
+
+            def update_ui_and_generate():
+                # Update textbox with cleaned text
+                self.textbox.delete("0.0", "end")
+                self.textbox.insert("0.0", cleaned)
+                self._placeholder.place_forget()
+                self._placeholder_visible = False
+                self._editor_showing_raw = False
+
+                # Reset URL banner to inactive
+                self._set_url_banner_inactive("Content processed")
+
+                # Enable toggle
+                self.btn_toggle_view.configure(
+                    state="normal",
+                    text="Show Raw",
+                    fg_color="orange"
+                )
+                self.inline_status_label.configure(
+                    text="Text cleaned - generating audio...",
+                    text_color="green"
+                )
+
+                # Re-enable buttons
+                self.btn_fast.configure(state="normal")
+                self.btn_quality.configure(state="normal")
+
+                # Start audio generation
+                if gen_type == "fast":
+                    self._start_audio_generation_fast(cleaned)
+                else:
+                    self._start_audio_generation_quality(cleaned)
+
+            self.after(0, update_ui_and_generate)
+
+        threading.Thread(target=clean_async, daemon=True).start()
+
+    def _start_audio_generation_fast(self, cleaned_text: str):
+        """Start fast audio generation with the given cleaned text."""
+        # Save to textbox (in case it's not already there)
+        current = self.textbox.get("0.0", "end-1c").strip()
+        if current != cleaned_text:
+            self.textbox.delete("0.0", "end")
+            self.textbox.insert("0.0", cleaned_text)
+
+        filename = self.generate_audio_filename(cleaned_text, "mp3")
+        self.run_script("make_audio_fast.py", filename, extra_args=["--output", filename])
+
+    def _start_audio_generation_quality(self, cleaned_text: str):
+        """Start quality audio generation with the given cleaned text."""
+        # Save to textbox (in case it's not already there)
+        current = self.textbox.get("0.0", "end-1c").strip()
+        if current != cleaned_text:
+            self.textbox.delete("0.0", "end")
+            self.textbox.insert("0.0", cleaned_text)
+
+        filename = self.generate_audio_filename(cleaned_text, "wav")
+        voice = self.voice_var.get()
+        self.run_script("make_audio_quality.py", filename, extra_args=["--voice", voice, "--output", filename])
+
+    # ========== DEPRECATED METHODS (popup-based flow replaced by inline editor) ==========
+    # These methods are kept for backward compatibility but are no longer called.
+    # The new flow uses _clean_and_generate_inline() and inline status/toggle instead.
+
+    def _show_url_processing_for_non_direct(self, generation_type: str, text: str, detection: dict):
+        """DEPRECATED: Show URL processing confirmation when Direct Audio is unchecked but URLs are present."""
+        dialog = ctk.CTkToplevel(self)
+        dialog.title("URLs Detected")
+        dialog.geometry("500x300")
+        dialog.transient(self)
+        dialog.lift()
+        dialog.grab_set()
+
+        dialog.grid_columnconfigure(0, weight=1)
+
+        # Header
+        ctk.CTkLabel(
+            dialog,
+            text="URLs Found in Text",
+            font=ctk.CTkFont(size=18, weight="bold")
+        ).grid(row=0, column=0, padx=20, pady=(20, 10))
+
+        # Build description
+        parts = []
+        if detection['youtube_urls']:
+            parts.append(f"{len(detection['youtube_urls'])} YouTube video(s)")
+        if detection['article_urls']:
+            parts.append(f"{len(detection['article_urls'])} article URL(s)")
+
+        desc_text = f"Found {' and '.join(parts)}.\n\nURLs will be read as text unless you fetch them.\nFetch article/video content for audio?"
+
+        ctk.CTkLabel(
+            dialog,
+            text=desc_text,
+            font=ctk.CTkFont(size=13),
+            wraplength=450,
+            justify="center"
+        ).grid(row=1, column=0, padx=20, pady=20)
+
+        # Buttons
+        btn_frame = ctk.CTkFrame(dialog, fg_color="transparent")
+        btn_frame.grid(row=2, column=0, padx=20, pady=(10, 20), sticky="ew")
+        btn_frame.grid_columnconfigure((0, 1, 2), weight=1)
+
+        def generate_as_is():
+            """Generate audio with URLs as literal text."""
+            dialog.destroy()
+            if generation_type == "fast":
+                filename = self.generate_audio_filename(text, "mp3")
+                self.run_script("make_audio_fast.py", filename, extra_args=["--output", filename])
+            else:
+                filename = self.generate_audio_filename(text, "wav")
+                voice = self.voice_var.get()
+                self.run_script("make_audio_quality.py", filename, extra_args=["--voice", voice, "--output", filename])
+
+        def fetch_and_generate():
+            """Fetch URLs and generate audio (uses Direct Audio flow)."""
+            dialog.destroy()
+            # Use Direct Audio flow which handles URL fetching
+            self.show_direct_audio_dialog(generation_type)
+
+        def cancel():
+            dialog.destroy()
+
+        ctk.CTkButton(btn_frame, text="Cancel", fg_color="gray", command=cancel).grid(row=0, column=0, padx=5, sticky="ew")
+        ctk.CTkButton(btn_frame, text="Generate As-Is", fg_color="orange", command=generate_as_is).grid(row=0, column=1, padx=5, sticky="ew")
+        ctk.CTkButton(btn_frame, text="Fetch & Generate", fg_color="green", command=fetch_and_generate).grid(row=0, column=2, padx=5, sticky="ew")
 
     def show_direct_audio_dialog(self, generation_type):
-        """Show dialog to preview and edit cleaned text before audio generation."""
+        """Show dialog to preview and edit cleaned text before audio generation.
+
+        Smart detection flow:
+        1. Check cache FIRST - if valid cache exists, skip URL confirmation
+        2. Pure URLs (no surrounding text) → Process directly
+        3. Embedded URLs (URLs within text) → Show confirmation dialog first
+        4. Plain text → Process directly
+        """
         raw_text = self.textbox.get("0.0", "end-1c").strip()
         if not raw_text:
             self.label_status.configure(text="No text to convert", text_color="red")
             return
 
-        # Check if auto-fetch URLs is enabled and text contains URLs
-        if self.settings.get("auto_fetch_urls", False):
-            # Extract all URLs from the text (one per line or space-separated)
-            import re
-            url_pattern = r'https?://[^\s]+'
-            urls = re.findall(url_pattern, raw_text)
+        # FIRST: Check if we have valid cache for this text
+        # If cache exists, skip the URL confirmation dialog entirely
+        raw_hash = hash(raw_text)
+        has_cache = (self._cleaned_text_cache is not None and
+                     self._cleaned_text_cache.get("raw_hash") == raw_hash)
 
-            if urls:
-                self.label_status.configure(text=f"Fetching {len(urls)} article(s)...", text_color="orange")
-                self.update()
+        if has_cache:
+            # Cache hit - go directly to preview dialog (skip URL confirmation)
+            detection = self._detect_content_type(raw_text)
+            self._process_and_show_preview(raw_text, detection, generation_type)
+            return
 
-                # Fetch all articles
-                all_content = []
-                for i, url in enumerate(urls):
-                    self.label_status.configure(text=f"Fetching article {i+1}/{len(urls)}...", text_color="orange")
-                    self.update()
-                    print(f"[Fetch] Fetching URL {i+1}/{len(urls)}: {url[:60]}...")
+        # No cache - detect content type and handle accordingly
+        detection = self._detect_content_type(raw_text)
 
-                    fetched_content = self._fetch_article_content(url)
-                    if fetched_content and len(fetched_content) > 100:
-                        # Add separator between articles
-                        if all_content:
-                            all_content.append("\n\n---\n\n")
-                        all_content.append(fetched_content)
-                        print(f"[Fetch] Success: {len(fetched_content)} chars")
-                    else:
-                        print(f"[Fetch] Failed to fetch: {url[:60]}")
+        # If embedded URLs detected, show confirmation dialog
+        if detection['has_embedded_urls'] and detection['total_urls'] > 0:
+            self._show_embedded_url_confirmation(raw_text, detection, generation_type)
+            return
 
-                if all_content:
-                    raw_text = "".join(all_content)
-                    self.textbox.delete("0.0", "end")
-                    self.textbox.insert("0.0", raw_text)
-                    self._placeholder.place_forget()
-                    separator = "\n\n---\n\n"
-                    article_count = len([c for c in all_content if c != separator])
-                    self.label_status.configure(
-                        text=f"Fetched {article_count} article(s). Processing...",
-                        text_color="green"
-                    )
-                else:
-                    self.label_status.configure(
-                        text="Failed to fetch articles. Paste content manually or use Fetch Article button.",
-                        text_color="red"
-                    )
-                    return
+        # If pure URLs or plain text, process directly
+        self._process_and_show_preview(raw_text, detection, generation_type)
 
+    def _show_embedded_url_confirmation(self, raw_text: str, detection: dict, generation_type: str):
+        """Show confirmation dialog when URLs are detected embedded in text."""
+        dialog = ctk.CTkToplevel(self)
+        dialog.title("URLs Detected in Text")
+        dialog.geometry("500x350")
+        dialog.transient(self)
+        dialog.lift()
+        dialog.grab_set()
+
+        dialog.grid_columnconfigure(0, weight=1)
+
+        # Header
+        ctk.CTkLabel(
+            dialog,
+            text="URLs Detected",
+            font=ctk.CTkFont(size=18, weight="bold")
+        ).grid(row=0, column=0, padx=20, pady=(20, 10))
+
+        # Build description
+        parts = []
+        if detection['youtube_urls']:
+            parts.append(f"{len(detection['youtube_urls'])} YouTube video(s)")
+        if detection['article_urls']:
+            parts.append(f"{len(detection['article_urls'])} article URL(s)")
+
+        desc_text = f"Found {' and '.join(parts)} embedded in your text.\n\nWould you like to fetch and process these as well?"
+
+        ctk.CTkLabel(
+            dialog,
+            text=desc_text,
+            font=ctk.CTkFont(size=13),
+            wraplength=450,
+            justify="center"
+        ).grid(row=1, column=0, padx=20, pady=10)
+
+        # Show detected URLs in a small preview
+        url_preview = ctk.CTkTextbox(dialog, height=120, font=ctk.CTkFont(size=11))
+        url_preview.grid(row=2, column=0, padx=20, pady=10, sticky="ew")
+
+        preview_text = ""
+        if detection['youtube_urls']:
+            preview_text += "YouTube:\n" + "\n".join(f"  • {url[:60]}..." if len(url) > 60 else f"  • {url}" for url in detection['youtube_urls'][:5])
+            if len(detection['youtube_urls']) > 5:
+                preview_text += f"\n  ... and {len(detection['youtube_urls']) - 5} more"
+        if detection['article_urls']:
+            if preview_text:
+                preview_text += "\n\n"
+            preview_text += "Articles:\n" + "\n".join(f"  • {url[:60]}..." if len(url) > 60 else f"  • {url}" for url in detection['article_urls'][:5])
+            if len(detection['article_urls']) > 5:
+                preview_text += f"\n  ... and {len(detection['article_urls']) - 5} more"
+
+        url_preview.insert("0.0", preview_text)
+        url_preview.configure(state="disabled")
+
+        # Buttons
+        btn_frame = ctk.CTkFrame(dialog, fg_color="transparent")
+        btn_frame.grid(row=3, column=0, padx=20, pady=(10, 20), sticky="ew")
+        btn_frame.grid_columnconfigure((0, 1, 2), weight=1)
+
+        def process_all():
+            dialog.destroy()
+            # Process with URL fetching enabled
+            self._process_and_show_preview(raw_text, detection, generation_type, fetch_urls=True)
+
+        def text_only():
+            dialog.destroy()
+            # Process text only, ignore URLs - but keep original raw_text for cache lookup
+            text_only_detection = {
+                'youtube_urls': [],
+                'article_urls': [],
+                'plain_text': detection['plain_text'],
+                'is_pure_urls': False,
+                'has_embedded_urls': False,
+                'total_urls': 0
+            }
+            # Pass original raw_text to preserve cache, but don't fetch URLs
+            self._process_and_show_preview(raw_text, text_only_detection, generation_type, fetch_urls=False)
+
+        def cancel():
+            dialog.destroy()
+            self.label_status.configure(text="Ready", text_color="gray")
+
+        ctk.CTkButton(btn_frame, text="Cancel", fg_color="gray", command=cancel).grid(row=0, column=0, padx=5, sticky="ew")
+        ctk.CTkButton(btn_frame, text="Text Only", fg_color="orange", command=text_only).grid(row=0, column=1, padx=5, sticky="ew")
+        ctk.CTkButton(btn_frame, text="Process All", fg_color="green", command=process_all).grid(row=0, column=2, padx=5, sticky="ew")
+
+    def _process_and_show_preview(self, raw_text: str, detection: dict, generation_type: str, fetch_urls: bool = True):
+        """Process content and show the preview dialog."""
         # Clear status when opening dialog
         self.label_status.configure(text="Ready", text_color="gray")
+
+        # Check if we have cached cleaned text for this raw text
+        raw_hash = hash(raw_text)
+        has_cache = (self._cleaned_text_cache is not None and
+                     self._cleaned_text_cache.get("raw_hash") == raw_hash)
 
         # Create dialog
         dialog = ctk.CTkToplevel(self)
@@ -2012,21 +4677,27 @@ class AudioBriefingApp(ctk.CTk):
         ctk.CTkLabel(header_frame, text="Preview Text for Audio", font=ctk.CTkFont(size=16, weight="bold")).grid(row=0, column=0, sticky="w")
 
         # Status label
-        status_label = ctk.CTkLabel(header_frame, text="Cleaning text for listening...", text_color="orange")
+        if has_cache:
+            status_label = ctk.CTkLabel(header_frame, text="Loaded from cache (edit or re-clean)", text_color="green")
+        else:
+            status_label = ctk.CTkLabel(header_frame, text="Cleaning text for listening...", text_color="orange")
         status_label.grid(row=0, column=1, padx=20, sticky="e")
 
         # Text editor
         text_editor = ctk.CTkTextbox(dialog, font=ctk.CTkFont(size=13))
         text_editor.grid(row=1, column=0, padx=20, pady=10, sticky="nsew")
 
-        # Insert raw text initially (will be replaced with cleaned version)
-        text_editor.insert("0.0", "Cleaning text for audio... please wait...")
-        text_editor.configure(state="disabled")
+        # If cached, show cached text immediately; otherwise show loading message
+        if has_cache:
+            text_editor.insert("0.0", self._cleaned_text_cache["cleaned_text"])
+        else:
+            text_editor.insert("0.0", "Cleaning text for audio... please wait...")
+            text_editor.configure(state="disabled")
 
-        # Button frame
+        # Button frame - 4 buttons now
         btn_frame = ctk.CTkFrame(dialog, fg_color="transparent")
         btn_frame.grid(row=2, column=0, padx=20, pady=(10, 20), sticky="ew")
-        btn_frame.grid_columnconfigure((0, 1, 2), weight=1)
+        btn_frame.grid_columnconfigure((0, 1, 2, 3), weight=1)
 
         def on_convert():
             """Convert the edited text to audio."""
@@ -2038,6 +4709,12 @@ class AudioBriefingApp(ctk.CTk):
             # Save the cleaned text to the main textbox for audio generation
             self.textbox.delete("0.0", "end")
             self.textbox.insert("0.0", cleaned_text)
+
+            # Update cache with any edits the user made
+            self._cleaned_text_cache = {
+                "raw_hash": raw_hash,
+                "cleaned_text": cleaned_text
+            }
 
             dialog.destroy()
 
@@ -2051,46 +4728,202 @@ class AudioBriefingApp(ctk.CTk):
                 self.run_script("make_audio_quality.py", filename, extra_args=["--voice", voice, "--output", filename])
 
         def on_cancel():
+            # Save current text to cache before closing (in case user edited it)
+            current_text = text_editor.get("0.0", "end-1c").strip()
+            if current_text and current_text != "Cleaning text for audio... please wait...":
+                self._cleaned_text_cache = {
+                    "raw_hash": raw_hash,
+                    "cleaned_text": current_text
+                }
             self.label_status.configure(text="Ready", text_color="gray")
             dialog.destroy()
+
+        # Track whether we're showing raw or cleaned text (for toggle)
+        showing_raw = [False]  # Use list for mutability in nested function
+        # Initialize with cached cleaned text if available (so toggle works immediately)
+        saved_cleaned_text = [self._cleaned_text_cache["cleaned_text"] if has_cache else None]
+
+        def toggle_raw_cleaned():
+            """Toggle between raw text and cleaned text."""
+            text_editor.configure(state="normal")
+            current_text = text_editor.get("0.0", "end-1c").strip()
+
+            if showing_raw[0]:
+                # Currently showing raw, switch to cleaned
+                if saved_cleaned_text[0]:
+                    text_editor.delete("0.0", "end")
+                    text_editor.insert("0.0", saved_cleaned_text[0])
+                    status_label.configure(text="Showing cleaned text", text_color="green")
+                    btn_toggle_raw.configure(text="Use Raw Text", fg_color="orange")
+                    showing_raw[0] = False
+                else:
+                    status_label.configure(text="No cleaned text available yet", text_color="red")
+            else:
+                # Currently showing cleaned, switch to raw
+                # Save current cleaned text before switching
+                if current_text and current_text != "Cleaning text for audio... please wait...":
+                    saved_cleaned_text[0] = current_text
+                text_editor.delete("0.0", "end")
+                text_editor.insert("0.0", raw_text)
+                status_label.configure(text="Showing raw text (toggle to return to cleaned)", text_color="orange")
+                btn_toggle_raw.configure(text="Use Cleaned", fg_color="green")
+                showing_raw[0] = True
+
+            btn_convert.configure(state="normal")
+            btn_reclean.configure(state="normal")
+
+        def reclean_text():
+            """Re-run AI cleaning on the current textbox content."""
+            # Get text from main textbox (in case user updated it)
+            current_raw = self.textbox.get("0.0", "end-1c").strip()
+            if not current_raw:
+                status_label.configure(text="No text to clean", text_color="red")
+                return
+
+            # Disable buttons and show loading
+            text_editor.configure(state="normal")
+            text_editor.delete("0.0", "end")
+            text_editor.insert("0.0", "Re-cleaning text for audio... please wait...")
+            text_editor.configure(state="disabled")
+            status_label.configure(text="Re-cleaning text...", text_color="orange")
+            btn_convert.configure(state="disabled")
+            btn_reclean.configure(state="disabled")
+
+            def reclean_async():
+                api_key = self.gemini_key_entry.get().strip()
+                if not api_key:
+                    def show_raw_no_key():
+                        text_editor.configure(state="normal")
+                        text_editor.delete("0.0", "end")
+                        text_editor.insert("0.0", raw_text)
+                        status_label.configure(text="No API key - using raw text", text_color="orange")
+                        btn_toggle_raw.configure(text="Use Cleaned", fg_color="green")
+                        showing_raw[0] = True
+                        btn_convert.configure(state="normal")
+                        btn_reclean.configure(state="normal")
+                    dialog.after(0, show_raw_no_key)
+                    return
+
+                cleaned = self.clean_text_for_listening(current_raw, api_key)
+
+                # Update cache with new hash for current raw text
+                new_hash = hash(current_raw)
+                self._cleaned_text_cache = {
+                    "raw_hash": new_hash,
+                    "cleaned_text": cleaned
+                }
+
+                def update_ui():
+                    text_editor.configure(state="normal")
+                    text_editor.delete("0.0", "end")
+                    text_editor.insert("0.0", cleaned)
+                    # Also update the saved_cleaned_text for toggle
+                    saved_cleaned_text[0] = cleaned
+                    showing_raw[0] = False
+                    btn_toggle_raw.configure(text="Use Raw Text", fg_color="orange")
+                    status_label.configure(text="Text re-cleaned and ready for review", text_color="green")
+                    btn_convert.configure(state="normal")
+                    btn_reclean.configure(state="normal")
+
+                dialog.after(0, update_ui)
+
+            threading.Thread(target=reclean_async, daemon=True).start()
 
         btn_cancel = ctk.CTkButton(btn_frame, text="Cancel", fg_color="gray", command=on_cancel)
         btn_cancel.grid(row=0, column=0, padx=5, sticky="ew")
 
-        btn_use_raw = ctk.CTkButton(btn_frame, text="Use Raw Text", fg_color="orange", command=lambda: use_raw_text())
-        btn_use_raw.grid(row=0, column=1, padx=5, sticky="ew")
+        btn_toggle_raw = ctk.CTkButton(btn_frame, text="Use Raw Text", fg_color="orange", command=toggle_raw_cleaned)
+        btn_toggle_raw.grid(row=0, column=1, padx=5, sticky="ew")
 
-        btn_convert = ctk.CTkButton(btn_frame, text="Convert to Audio", fg_color="green", command=on_convert, state="disabled")
-        btn_convert.grid(row=0, column=2, padx=5, sticky="ew")
+        btn_reclean = ctk.CTkButton(btn_frame, text="Re-clean", fg_color="#5a5a5a", command=reclean_text)
+        btn_reclean.grid(row=0, column=2, padx=5, sticky="ew")
+        if has_cache:
+            btn_reclean.configure(state="normal")
+        else:
+            btn_reclean.configure(state="disabled")
 
-        def use_raw_text():
-            """Use the original raw text without cleaning."""
-            text_editor.configure(state="normal")
-            text_editor.delete("0.0", "end")
-            text_editor.insert("0.0", raw_text)
-            status_label.configure(text="Using raw text (no cleaning)", text_color="orange")
+        btn_convert = ctk.CTkButton(btn_frame, text="Convert to Audio", fg_color="green", command=on_convert)
+        btn_convert.grid(row=0, column=3, padx=5, sticky="ew")
+        if has_cache:
             btn_convert.configure(state="normal")
+        else:
+            btn_convert.configure(state="disabled")
 
-        # Start cleaning in background
-        def clean_async():
-            api_key = self.gemini_key_entry.get().strip()
-            if not api_key:
-                dialog.after(0, lambda: status_label.configure(text="No API key - using raw text", text_color="orange"))
-                dialog.after(0, lambda: use_raw_text())
-                return
+        # If no cache, start processing in background
+        if not has_cache:
+            def process_async():
+                api_key = self.gemini_key_entry.get().strip()
+                if not api_key:
+                    def show_raw_no_key():
+                        text_editor.configure(state="normal")
+                        text_editor.delete("0.0", "end")
+                        text_editor.insert("0.0", raw_text)
+                        status_label.configure(text="No API key - using raw text", text_color="orange")
+                        btn_toggle_raw.configure(text="Use Cleaned", fg_color="green")
+                        showing_raw[0] = True
+                        btn_convert.configure(state="normal")
+                        btn_reclean.configure(state="normal")
+                    dialog.after(0, show_raw_no_key)
+                    return
 
-            cleaned = self.clean_text_for_listening(raw_text, api_key)
+                # Check if we need to fetch URLs
+                needs_url_fetch = fetch_urls and detection['total_urls'] > 0
 
-            def update_ui():
-                text_editor.configure(state="normal")
-                text_editor.delete("0.0", "end")
-                text_editor.insert("0.0", cleaned)
-                status_label.configure(text="Text cleaned and ready for review", text_color="green")
-                btn_convert.configure(state="normal")
+                if needs_url_fetch:
+                    # Update status to show we're fetching
+                    def update_fetching():
+                        text_editor.configure(state="normal")
+                        text_editor.delete("0.0", "end")
+                        text_editor.insert("0.0", "Fetching and processing content... please wait...")
+                        text_editor.configure(state="disabled")
+                        status_label.configure(text=f"Processing {detection['total_urls']} URL(s)...", text_color="orange")
+                    dialog.after(0, update_fetching)
 
-            dialog.after(0, update_ui)
+                    # Process all content (YouTube, articles, text)
+                    def progress_cb(msg, color):
+                        dialog.after(0, lambda m=msg, c=color: status_label.configure(text=m, text_color=c))
 
-        threading.Thread(target=clean_async, daemon=True).start()
+                    processed_content = self._process_mixed_content(raw_text, api_key, progress_callback=progress_cb)
+
+                    if processed_content:
+                        # Update textbox with fetched content
+                        def update_textbox():
+                            self.textbox.delete("0.0", "end")
+                            self.textbox.insert("0.0", processed_content)
+                            self._placeholder.place_forget()
+                        dialog.after(0, update_textbox)
+
+                        # Now clean the processed content for audio
+                        dialog.after(0, lambda: status_label.configure(text="Cleaning text for audio...", text_color="orange"))
+                        cleaned = self.clean_text_for_listening(processed_content, api_key)
+                    else:
+                        # Fall back to raw text if fetching failed
+                        cleaned = self.clean_text_for_listening(raw_text, api_key)
+                else:
+                    # No URLs to fetch, just clean the text
+                    cleaned = self.clean_text_for_listening(raw_text, api_key)
+
+                # Cache the cleaned text
+                self._cleaned_text_cache = {
+                    "raw_hash": raw_hash,
+                    "cleaned_text": cleaned
+                }
+
+                def update_ui():
+                    text_editor.configure(state="normal")
+                    text_editor.delete("0.0", "end")
+                    text_editor.insert("0.0", cleaned)
+                    # Also update the saved_cleaned_text for toggle
+                    saved_cleaned_text[0] = cleaned
+                    showing_raw[0] = False
+                    btn_toggle_raw.configure(text="Use Raw Text", fg_color="orange")
+                    status_label.configure(text="Text cleaned and ready for review", text_color="green")
+                    btn_convert.configure(state="normal")
+                    btn_reclean.configure(state="normal")
+
+                dialog.after(0, update_ui)
+
+            threading.Thread(target=process_async, daemon=True).start()
 
     def clean_text_for_listening(self, text, api_key):
         """Use Gemini to clean and format text for audio listening."""
@@ -2099,14 +4932,8 @@ class AudioBriefingApp(ctk.CTk):
         try:
             genai.configure(api_key=api_key)
 
-            # Use the selected model
-            model_choice = self.model_var.get()
-            if "Best" in model_choice:
-                model_name = "gemini-1.5-pro"
-            elif "Balanced" in model_choice:
-                model_name = "gemini-1.5-flash"
-            else:
-                model_name = "gemini-2.0-flash-exp"
+            # Extract model name from dropdown (format: "gemini-2.0-flash (Fast)")
+            model_name = self.model_var.get().split(" (")[0]
 
             model = genai.GenerativeModel(model_name)
 
@@ -2139,8 +4966,12 @@ class AudioBriefingApp(ctk.CTk):
             return text  # Return original text on error
 
     def _clean_single_article(self, model, text):
-        """Clean a single article using Gemini."""
-        prompt = """Clean and format this text for audio listening. Your task:
+        """Clean a single article using Gemini with optional custom instructions."""
+        # Get custom article instructions from active profile
+        custom_instructions = self._get_active_article_instructions()
+
+        # Base prompt for article cleaning
+        base_prompt = """Clean and format this text for audio listening. Your task:
 
 1. EXTRACT only the main article/content body
 2. REMOVE all of the following:
@@ -2159,7 +4990,14 @@ class AudioBriefingApp(ctk.CTk):
 4. FORMAT for natural speech:
    - Expand common abbreviations (e.g., "approx." → "approximately")
    - Keep paragraph breaks for natural pauses
-   - Ensure sentences flow naturally when spoken
+   - Ensure sentences flow naturally when spoken"""
+
+        # Add custom instructions if present
+        if custom_instructions:
+            prompt = f"""{base_prompt}
+
+5. ADDITIONAL USER PREFERENCES:
+{custom_instructions}
 
 Return ONLY the cleaned text, nothing else.
 
@@ -2167,7 +5005,17 @@ TEXT TO CLEAN:
 \"\"\"
 {text}
 \"\"\"
-""".format(text=text)
+"""
+        else:
+            prompt = f"""{base_prompt}
+
+Return ONLY the cleaned text, nothing else.
+
+TEXT TO CLEAN:
+\"\"\"
+{text}
+\"\"\"
+"""
 
         try:
             response = model.generate_content(prompt)
@@ -2247,21 +5095,38 @@ TEXT TO CLEAN:
 
     def estimate_api_usage(self):
         """Estimate API requests and cost based on current settings."""
-        # Count enabled channels
+        # Count enabled channels - check user data dir first, then bundled
         import json
-        sources_json = os.path.join(os.path.dirname(__file__), "sources.json")
+        data_dir = get_data_directory()
+        sources_json_user = os.path.join(data_dir, "sources.json")
+        sources_json_bundled = get_resource_path("sources.json")
         enabled_channels = 0
-        
-        if os.path.exists(sources_json):
+
+        # Try user's customized sources first
+        if os.path.exists(sources_json_user):
             try:
-                data = json.load(open(sources_json))
+                data = json.load(open(sources_json_user))
+                enabled_channels = sum(1 for s in data.get("sources", []) if s.get("enabled", True))
+            except:
+                enabled_channels = 0
+
+        # Fall back to bundled sources
+        if enabled_channels == 0 and os.path.exists(sources_json_bundled):
+            try:
+                data = json.load(open(sources_json_bundled))
                 enabled_channels = sum(1 for s in data.get("sources", []) if s.get("enabled", True))
             except:
                 enabled_channels = 1
-        else:
-            channels_file = os.path.join(os.path.dirname(__file__), "channels.txt")
-            if os.path.exists(channels_file):
-                with open(channels_file, "r") as f:
+
+        # Fall back to channels.txt
+        if enabled_channels == 0:
+            channels_file_user = os.path.join(data_dir, "channels.txt")
+            channels_file_bundled = get_resource_path("channels.txt")
+            if os.path.exists(channels_file_user):
+                with open(channels_file_user, "r") as f:
+                    enabled_channels = sum(1 for line in f if line.strip())
+            elif os.path.exists(channels_file_bundled):
+                with open(channels_file_bundled, "r") as f:
                     enabled_channels = sum(1 for line in f if line.strip())
         
         # Calculate days based on mode
@@ -2292,11 +5157,11 @@ TEXT TO CLEAN:
         estimated_requests = int(enabled_channels * days * avg_videos_per_channel_per_day)
         
         # Get model limits and costs
-        model_name = self.model_var.get()
-        if "50/day" in model_name:  # Pro model
+        model_choice = self.model_var.get()
+        if "gemini-1.5-pro" in model_choice:  # Pro model
             free_limit = 50
             cost_per_1k = 1.25  # $1.25 per 1000 requests for Pro
-        else:  # Flash
+        else:  # Flash models
             free_limit = 1500
             cost_per_1k = 0.075  # $0.075 per 1000 requests for Flash
         
@@ -2314,65 +5179,364 @@ TEXT TO CLEAN:
             "model": model_name
         }
     
-    def get_youtube_news_from_channels(self):
+    def get_summaries_from_sources(self):
+        """Get summaries from all configured sources (YouTube, RSS, Article Archives).
+
+        This is the new unified method that replaces get_youtube_news_from_channels.
+        It uses source_fetcher.py to handle multiple source types.
+        """
         api_key = self.gemini_key_entry.get().strip()
         if not api_key:
             self.label_status.configure(text="Error: Gemini API Key is required.", text_color="red")
             return
-        
+
         mode = self.mode_var.get()
         value = self.entry_value.get().strip()
-        
-        # Specific URLs moved to dedicated button dialog
-        
+
         # Handle Hours/Days/Videos modes
         if not value.isdigit():
             value = "7"
-            
+
         self.save_api_key(api_key)
-        
-        # Map user-friendly model name to API model name
-        model_mapping = {
-            "Fast (FREE)": "gemini-2.5-flash",
-            "Balanced (FREE)": "gemini-2.5-flash",
-            "Best (FREE, 50/day)": "gemini-2.5-pro"
-        }
-        selected_model = model_mapping.get(self.model_var.get(), "gemini-2.5-flash")
-        
-        # Build args based on range checkbox and mode
-        extra = []
-        output_desc = ""
+
+        # Calculate cutoff date (start) and end_date
+        from datetime import datetime, timedelta
+        end_date = None  # None means "up to now"
         if self.range_var.get():
             start = self.start_date_entry.get().strip()
             end = self.end_date_entry.get().strip()
-            if start and end:
-                extra = ["--start", start, "--end", end, "--model", selected_model]
-                output_desc = f"summaries from {start} to {end}"
+            if start:
+                try:
+                    cutoff_date = datetime.strptime(start, "%Y-%m-%d")
+                except ValueError:
+                    cutoff_date = datetime.now() - timedelta(days=7)
             else:
-                # Fallback to hours/days
-                if mode == "Hours":
-                    hours = int(value) if value.isdigit() else 24
-                    extra = ["--hours", str(hours), "--model", selected_model]
-                    output_desc = f"summary for last {hours} hour(s)"
-                else:
-                    days = int(value) if value.isdigit() else 1
-                    extra = ["--days", str(days), "--model", selected_model]
-                    output_desc = f"summary for last {days} day(s)"
+                cutoff_date = datetime.now() - timedelta(days=7)
+            # Parse end date if provided
+            if end:
+                try:
+                    end_date = datetime.strptime(end, "%Y-%m-%d")
+                except ValueError:
+                    end_date = None  # Invalid end date, don't filter
         else:
             if mode == "Hours":
                 hours = int(value) if value.isdigit() else 24
-                extra = ["--hours", str(hours), "--model", selected_model]
-                output_desc = f"summary for last {hours} hour(s)"
+                cutoff_date = datetime.now() - timedelta(hours=hours)
             else:
-                days = int(value) if value.isdigit() else 1
-                extra = ["--days", str(days), "--model", selected_model]
-                output_desc = f"summary for last {days} day(s)"
-        
-        # Estimate usage and show confirmation dialog
-        usage = self.estimate_api_usage()
-        
-        # Show confirmation dialog with usage estimate
-        self.show_usage_confirmation(usage, extra, output_desc, api_key, selected_model)
+                days = int(value) if value.isdigit() else 7
+                cutoff_date = datetime.now() - timedelta(days=days)
+
+        # Import source fetcher
+        try:
+            from source_fetcher import (
+                load_sources, SourceFetcher, SourceType,
+                format_items_for_audio, FetchedItem
+            )
+        except ImportError as e:
+            self.label_status.configure(text=f"Error importing source_fetcher: {e}", text_color="red")
+            return
+
+        # Load sources
+        data_dir = get_data_directory()
+        sources_json = os.path.join(data_dir, "sources.json")
+        channels_txt = os.path.join(data_dir, "channels.txt")
+
+        # Fall back to bundled files if user files don't exist
+        if not os.path.exists(sources_json):
+            sources_json = get_resource_path("sources.json")
+        if not os.path.exists(channels_txt):
+            channels_txt = get_resource_path("channels.txt")
+
+        sources = load_sources(sources_json, channels_txt)
+
+        if not sources:
+            self.label_status.configure(text="No sources configured. Click 'Edit Sources' to add some.", text_color="orange")
+            return
+
+        enabled_sources = [s for s in sources if s.enabled]
+        if not enabled_sources:
+            self.label_status.configure(text="All sources are disabled. Enable at least one.", text_color="orange")
+            return
+
+        # Check for article archives that need selection
+        archive_sources = [s for s in enabled_sources if s.source_type == SourceType.ARTICLE_ARCHIVE]
+        other_sources = [s for s in enabled_sources if s.source_type != SourceType.ARTICLE_ARCHIVE]
+
+        # Load custom instructions
+        youtube_instructions = self._load_custom_instructions("youtube")
+        article_instructions = self._load_custom_instructions("article")
+
+        # If there are article archives, process them first with selection dialogs
+        if archive_sources:
+            self._process_sources_with_archives(
+                archive_sources, other_sources, cutoff_date, api_key,
+                youtube_instructions, article_instructions, end_date
+            )
+        else:
+            # No archives, just fetch everything directly
+            self._fetch_and_display_sources(
+                other_sources, [], cutoff_date, api_key,
+                youtube_instructions, article_instructions, end_date
+            )
+
+    def _load_custom_instructions(self, instruction_type: str) -> str:
+        """Load custom instructions for a given type (youtube or article)."""
+        try:
+            data_dir = get_data_directory()
+            if instruction_type == "youtube":
+                path = os.path.join(data_dir, "custom_instructions.txt")
+            else:
+                path = os.path.join(data_dir, "article_instructions.txt")
+
+            if os.path.exists(path):
+                with open(path, 'r', encoding='utf-8') as f:
+                    content = f.read().strip()
+                    # Filter out comment lines
+                    lines = [l for l in content.split('\n') if l.strip() and not l.strip().startswith('#')]
+                    return '\n'.join(lines)
+        except Exception as e:
+            print(f"Error loading {instruction_type} instructions: {e}")
+        return ""
+
+    def _process_sources_with_archives(self, archive_sources, other_sources, cutoff_date,
+                                       api_key, youtube_instructions, article_instructions,
+                                       end_date=None):
+        """Process sources, showing selection dialogs for article archives."""
+        from source_fetcher import SourceFetcher, FetchedItem
+
+        fetcher = SourceFetcher(api_key)
+        selected_articles = []  # Accumulate selected articles from all archives
+        remaining_archives = list(archive_sources)
+
+        def process_next_archive():
+            if not remaining_archives:
+                # All archives processed, now fetch everything
+                self._fetch_and_display_sources(
+                    other_sources, selected_articles, cutoff_date, api_key,
+                    youtube_instructions, article_instructions, end_date
+                )
+                return
+
+            source = remaining_archives.pop(0)
+            self.label_status.configure(
+                text=f"Extracting links from {source.name or source.url[:40]}...",
+                text_color="orange"
+            )
+
+            def extract_and_show():
+                try:
+                    links = fetcher.extract_archive_links(source.url, source.selector)
+
+                    if not links:
+                        self.after(0, lambda: self.label_status.configure(
+                            text=f"No articles found at {source.url[:40]}",
+                            text_color="orange"
+                        ))
+                        self.after(0, process_next_archive)
+                        return
+
+                    def on_selection(selected_links):
+                        # Add selected links to our list
+                        for link in selected_links:
+                            selected_articles.append({
+                                'url': link.url,
+                                'title': link.title,
+                                'source_name': source.name or source.url[:30],
+                                'date': link.date
+                            })
+                        # Process next archive
+                        process_next_archive()
+
+                    # Show selection dialog on main thread
+                    self.after(0, lambda: self._show_article_selector(
+                        source.name or source.url[:30],
+                        links,
+                        cutoff_date,
+                        on_selection
+                    ))
+
+                except Exception as e:
+                    print(f"Error extracting links from {source.url}: {e}")
+                    self.after(0, lambda: self.label_status.configure(
+                        text=f"Error extracting links: {str(e)[:40]}",
+                        text_color="red"
+                    ))
+                    self.after(0, process_next_archive)
+
+            threading.Thread(target=extract_and_show, daemon=True).start()
+
+        process_next_archive()
+
+    def _fetch_and_display_sources(self, sources, selected_articles, cutoff_date,
+                                   api_key, youtube_instructions, article_instructions,
+                                   end_date=None):
+        """Fetch content from sources and display in text area, and save to file."""
+        from source_fetcher import SourceFetcher, SourceType, FetchedItem, format_items_for_audio
+        from datetime import datetime
+        import traceback
+
+        self.label_status.configure(text="Fetching content from sources...", text_color="orange")
+        self.btn_get_summaries.configure(state="disabled")
+
+        print(f"[Get Summaries] Starting fetch: {len(sources)} sources, {len(selected_articles)} selected articles")
+
+        def fetch_thread():
+            try:
+                fetcher = SourceFetcher(api_key)
+                all_items = []
+
+                # Fetch from YouTube and RSS sources
+                if sources:
+                    print(f"[Get Summaries] Fetching from {len(sources)} YouTube/RSS sources...")
+                    def progress_cb(msg, color):
+                        self.after(0, lambda: self.label_status.configure(text=msg, text_color=color))
+
+                    items = fetcher.fetch_all_sources(
+                        sources=sources,
+                        cutoff_date=cutoff_date,
+                        max_items_per_source=10,
+                        progress_callback=progress_cb,
+                        youtube_instructions=youtube_instructions,
+                        article_instructions=article_instructions,
+                        end_date=end_date
+                    )
+                    all_items.extend(items)
+                    print(f"[Get Summaries] Got {len(items)} items from YouTube/RSS sources")
+
+                # Fetch selected articles from archives
+                print(f"[Get Summaries] Fetching {len(selected_articles)} selected articles...")
+                for i, article in enumerate(selected_articles):
+                    try:
+                        self.after(0, lambda a=article, idx=i: self.label_status.configure(
+                            text=f"Fetching article {idx+1}/{len(selected_articles)}: {a['title'][:35]}...",
+                            text_color="orange"
+                        ))
+
+                        print(f"[Get Summaries] Fetching article: {article['url']}")
+                        title, content = fetcher.fetch_article_content(article['url'])
+                        print(f"[Get Summaries] Got title='{title[:50] if title else 'None'}', content length={len(content) if content else 0}")
+
+                        if content:
+                            # Summarize the article content (like YouTube does)
+                            self.after(0, lambda a=article: self.label_status.configure(
+                                text=f"Summarizing: {a['title'][:40]}...",
+                                text_color="orange"
+                            ))
+                            summary = fetcher.summarize_article_content(
+                                title or article['title'],
+                                content,
+                                article_instructions
+                            )
+                            print(f"[Get Summaries] Article summarized: {len(content)} -> {len(summary) if summary else 0} chars")
+
+                            all_items.append(FetchedItem(
+                                title=title or article['title'],
+                                url=article['url'],
+                                content=content,
+                                source_name=article['source_name'],
+                                source_type=SourceType.ARTICLE_ARCHIVE,
+                                published_date=article.get('date'),
+                                summary=summary
+                            ))
+                    except Exception as e:
+                        print(f"[Get Summaries] Error fetching article {article['url']}: {e}")
+                        traceback.print_exc()
+
+                # Format output
+                print(f"[Get Summaries] Total items collected: {len(all_items)}")
+                if all_items:
+                    output = format_items_for_audio(all_items)
+                    print(f"[Get Summaries] Formatted output length: {len(output)}")
+
+                    # Save to file (like old get_youtube_news.py did)
+                    saved_file = None
+                    try:
+                        data_dir = get_data_directory()
+                        today = datetime.now().strftime("%Y-%m-%d")
+
+                        # Create week folder
+                        week_num = datetime.now().isocalendar()[1]
+                        year = datetime.now().year
+                        week_folder = os.path.join(data_dir, f"Week_{week_num}_{year}")
+                        os.makedirs(week_folder, exist_ok=True)
+
+                        # Save summary file
+                        filename = f"summary_{today}.txt"
+                        filepath = os.path.join(week_folder, filename)
+
+                        with open(filepath, 'w', encoding='utf-8') as f:
+                            f.write(output)
+
+                        saved_file = filepath
+                        print(f"[Get Summaries] Saved to: {filepath}")
+                    except Exception as save_err:
+                        print(f"[Get Summaries] Error saving file: {save_err}")
+
+                    # Count items by type for status message
+                    yt_count = sum(1 for i in all_items if i.source_type == SourceType.YOUTUBE)
+                    arc_count = sum(1 for i in all_items if i.source_type == SourceType.ARTICLE_ARCHIVE)
+                    rss_count = sum(1 for i in all_items if i.source_type == SourceType.RSS)
+
+                    def update_ui():
+                        self.textbox.delete("0.0", "end")
+                        self.textbox.insert("0.0", output)
+                        self._placeholder.place_forget()
+                        self._reset_editor_state()
+
+                        # Build detailed status message
+                        parts = []
+                        if yt_count > 0:
+                            parts.append(f"{yt_count} videos")
+                        if arc_count > 0:
+                            parts.append(f"{arc_count} articles")
+                        if rss_count > 0:
+                            parts.append(f"{rss_count} RSS items")
+
+                        detail = ", ".join(parts) if parts else "0 items"
+
+                        if saved_file:
+                            filename = os.path.basename(saved_file)
+                            self.label_status.configure(
+                                text=f"Loaded {detail} → saved to {filename}",
+                                text_color="green"
+                            )
+                        else:
+                            self.label_status.configure(
+                                text=f"Loaded {detail} from sources",
+                                text_color="green"
+                            )
+                        self.btn_get_summaries.configure(state="normal")
+                        print(f"[Get Summaries] UI updated with {len(all_items)} items ({yt_count} YouTube, {arc_count} articles, {rss_count} RSS)")
+
+                    self.after(0, update_ui)
+                else:
+                    def show_empty():
+                        self.label_status.configure(
+                            text="No content found for the selected date range",
+                            text_color="orange"
+                        )
+                        self.btn_get_summaries.configure(state="normal")
+                        print("[Get Summaries] No items found")
+
+                    self.after(0, show_empty)
+
+            except Exception as e:
+                print(f"[Get Summaries] Fatal error: {e}")
+                traceback.print_exc()
+                def show_error():
+                    self.label_status.configure(
+                        text=f"Error fetching sources: {str(e)[:50]}",
+                        text_color="red"
+                    )
+                    self.btn_get_summaries.configure(state="normal")
+
+                self.after(0, show_error)
+
+        threading.Thread(target=fetch_thread, daemon=True).start()
+
+    def get_youtube_news_from_channels(self):
+        """Legacy method - redirects to get_summaries_from_sources for backward compatibility."""
+        return self.get_summaries_from_sources()
     
     def show_usage_confirmation(self, usage, extra_args, output_desc, api_key, selected_model):
         """Show confirmation dialog with API usage estimate."""
@@ -2507,8 +5671,8 @@ This tutorial will guide you through everything step-by-step. By the end, you'll
 
 **Two Ways to Use It:**
 
-1. **YouTube Mode** - Summarize videos from channels you follow
-2. **Direct Audio Mode** - Convert any text or article to audio
+1. **Get Summaries** - Batch process from your configured sources
+2. **Paste & Generate** - Paste any text, URLs, or articles and convert to audio
 
 Let's start with the basics. Click 'Next' to continue.""",
                 "highlight": None  # No highlight for welcome
@@ -2560,80 +5724,99 @@ You can change this anytime - just pick from the dropdown!""",
                 "highlight": None
             },
             {
-                "title": "Step 3: YouTube News Mode",
-                "content": """**The 'Get YouTube News' Button** (highlighted)
+                "title": "Step 3: Get Summaries",
+                "content": """**The 'Get Summaries' Button** (highlighted)
 
-This is the traditional workflow for summarizing YouTube videos.
+Fetch and summarize content from multiple source types.
+
+**Supported Sources:**
+
+• **YouTube Channels** - Auto-fetches transcripts and summarizes
+• **RSS Feeds** - Pulls recent articles from any RSS/Atom feed
+• **Article Archives** - Extracts links from author/archive pages
 
 **How it works:**
 
-1. **Edit Sources** - Click this first to add YouTube channels you want to follow
+1. **Edit Sources** - Add your content sources (YouTube, RSS, or article pages)
 
 2. **Set the timeframe** - Use the number field and dropdown:
-   • "7 Days" = videos from the past week
-   • "24 Hours" = just today's videos
-   • "10 Videos" = the 10 most recent videos
+   • "7 Days" = content from the past week
+   • "24 Hours" = just today's content
+   • "10 Videos" = most recent items
 
-3. **Click 'Get YouTube News'** - The AI will:
-   • Find recent videos from your channels
-   • Fetch their transcripts
-   • Create a summary of all the content
+3. **Click 'Get Summaries'** - The AI will:
+   • Fetch content from all your sources
+   • For article archives, let you select which articles to include
+   • Summarize everything into one briefing
 
 4. The summary appears in the text area below
 
-**Tip:** Start with just 1-2 channels and a few days to test it out.""",
-                "highlight": "btn_get_yt_news"
+**Tip:** Start with just 1-2 sources and a few days to test it out.""",
+                "highlight": "btn_get_summaries"
             },
             {
                 "title": "Step 4: The Text Area",
                 "content": """**The Main Text Area** (highlighted)
 
-This is where all your content lives - summaries, articles, or text you paste in.
+This is your universal input area - paste anything and it will be processed intelligently!
 
-**What you can do here:**
+**What you can paste here:**
 
-• **View** summaries generated by the AI
-• **Edit** content before converting to audio
-• **Paste** your own text or article URLs
-• **Type** anything you want to convert to audio
+• **YouTube URLs** - Auto-detected and transcripts fetched
+• **Article URLs** - Content fetched automatically
+• **Mixed URLs** - YouTube + articles processed together
+• **Plain text** - Used as-is for audio
+• **Text with embedded links** - Yellow banner appears to fetch them
 
-**The buttons above the text area:**
+**Smart Detection:**
+When you paste content:
+• URLs detected → Yellow banner offers to fetch content
+• Click "Fetch Content" → Articles/videos are fetched
+• Click "Keep as Text" → URLs are kept as literal text
+• Generate → Text is auto-cleaned for audio
 
-• **Fetch Article** - Opens a window to fetch multiple article URLs at once
-• **Settings** - Configure options like auto-fetch for URLs
-• **Collapse** - Hide the text area to save space
-
-**Pro Tip:** You can paste multiple URLs in the Fetch Article dialog - one per line - and it will fetch all of them!""",
+**The buttons above:**
+• **Fetch Article** - Alternative way to fetch article URLs
+• **Settings** - Configure app options
+• **Collapse** - Hide the text area to save space""",
                 "highlight": "textbox"
             },
             {
-                "title": "Step 5: Direct Audio Mode (Easiest Way!)",
-                "content": """**The 'Direct Audio' Checkbox**
+                "title": "Step 5: Smart Audio Content Editor",
+                "content": """**The Unified Content Editor**
 
-This is the simplest way to use the app!
+The text area is now a smart editor that handles everything!
 
-**How Direct Audio works:**
+**How it works:**
 
-1. Check the **'Direct Audio'** checkbox (below the audio buttons)
-2. Paste text OR article URLs in the text area
-3. Click either audio button - done!
+1. Paste ANYTHING in the text area:
+   • YouTube URLs (one or more)
+   • Article URLs (one or more)
+   • Mixed URLs (YouTube + articles together)
+   • Plain text
+   • Text with embedded links
+2. URLs are **auto-detected** with a yellow banner
+3. Click **"Fetch Content"** to pull in articles/videos, or ignore
+4. Click either audio button - text is auto-cleaned for listening!
 
-**What's different from YouTube mode?**
+**Smart Features:**
 
-• No summarization - converts exactly what's in the text area
-• Perfect for articles you want to listen to in full
-• Works with plain text or fetched article content
+• **URL Detection** - Yellow banner appears when URLs are detected
+• **Toggle View** - Switch between raw and cleaned text
+• **Auto-Clean** - Text is automatically cleaned when you Generate
+• **Cached Results** - Cleaning is cached for instant regeneration
 
-**When to use Direct Audio:**
+**The Toggle Button:**
 
-• You have an article you want to listen to
-• You pasted text from somewhere
-• You want the full content, not a summary
+After generating, a toggle button lets you:
+• View the raw (original) text
+• View the cleaned (audio-ready) text
+• Switch back and forth to compare
 
-**When to use YouTube mode:**
+**When to use 'Get Summaries':**
 
-• You want AI to summarize multiple videos
-• You're catching up on channel content""",
+• Batch processing from configured sources
+• Catching up on multiple channels/feeds at once""",
                 "highlight": None
             },
             {
@@ -2720,24 +5903,23 @@ Example: `2024-12-28_bitcoin-market-analysis.wav`
 
 **Quick Start Recipe:**
 
-1. Paste your API key and click 💾 to save
-2. Check the 'Direct Audio' checkbox
-3. Click 'Fetch Article' and paste an article URL
-4. Click 'Fetch All'
-5. Click 'Generate Fast' or 'Generate Quality'
-6. Click 'Open Folder' to find your audio file
+1. Paste your API key and click Save
+2. Paste an article URL in the text area
+3. Click "Fetch Content" when the yellow banner appears
+4. Click 'Generate Fast' or 'Generate Quality'
+5. Click 'Open Folder' to find your audio file
 
 **Keyboard shortcuts:**
 • The app remembers your API key
 • Your last settings are preserved
 
 **Getting Help:**
-• Click **'? Tutorial'** anytime to restart this guide
+• Click **Settings** → **'? Start Tutorial'** to restart this guide
 • Check the terminal/console window for detailed logs
 • See README.md for full documentation
 
 **Need to see this again?**
-Click the '? Tutorial' button next to the status bar!""",
+Open Settings and click '? Start Tutorial'!""",
                 "highlight": None
             }
         ]
@@ -3115,12 +6297,12 @@ Click the '? Tutorial' button next to the status bar!""",
 
     def select_dates_to_audio(self):
         """Show dialog to select dates for audio conversion with archive options."""
-        script_dir = os.path.dirname(__file__)
-        archive_dir = os.path.join(script_dir, "Archive")
+        data_dir = get_data_directory()
+        archive_dir = os.path.join(data_dir, "Archive")
 
         # Find all summary files in Week_* folders (excluding Archive)
         files = []
-        for week_folder in sorted(glob.glob(os.path.join(script_dir, "Week_*"))):
+        for week_folder in sorted(glob.glob(os.path.join(data_dir, "Week_*"))):
             if os.path.isdir(week_folder):
                 week_summaries = sorted([
                     os.path.join(week_folder, f)
@@ -3253,7 +6435,7 @@ Click the '? Tutorial' button next to the status bar!""",
                         print(f"Error archiving {filepath}: {e}")
 
                 # Clean up empty week folders in main directory
-                for week_folder in glob.glob(os.path.join(script_dir, "Week_*")):
+                for week_folder in glob.glob(os.path.join(data_dir, "Week_*")):
                     if os.path.isdir(week_folder) and not os.listdir(week_folder):
                         os.rmdir(week_folder)
 
@@ -3275,89 +6457,151 @@ Click the '? Tutorial' button next to the status bar!""",
 
             def task():
                 import time
-                script_dir = os.path.dirname(__file__)
-                python_exe = sys.executable
-                log_path = os.path.join(script_dir, "gui_log.txt")
+                import importlib
+                data_dir = get_data_directory()
+                log_path = os.path.join(data_dir, "gui_log.txt")
+
+                # Set flag to prevent scheduler from overwriting our status updates
+                self._long_operation_in_progress = True
 
                 total = len(selected)
-                for idx, filepath in enumerate(selected, 1):
-                    try:
-                        filename = os.path.basename(filepath)
-                        date_str = filename.replace("summary_", "").replace(".txt", "")
-                        week_folder = os.path.dirname(filepath)
-                        output_file = os.path.join(week_folder, f"audio_quality_{date_str}.wav")
+                try:
+                    for idx, filepath in enumerate(selected, 1):
+                        try:
+                            filename = os.path.basename(filepath)
+                            date_str = filename.replace("summary_", "").replace(".txt", "")
+                            week_folder = os.path.dirname(filepath)
+                            output_file = os.path.join(week_folder, f"audio_quality_{date_str}.wav")
 
-                        # Update GUI frequently
-                        self.after(0, lambda d=date_str, i=idx, t=total: self.label_status.configure(
-                            text=f"Converting {i}/{t}: {d}...", text_color=("gray10", "#DCE4EE")))
+                            # Update GUI frequently
+                            self.after(0, lambda d=date_str, i=idx, t=total: self.label_status.configure(
+                                text=f"Converting {i}/{t}: {d}...", text_color=("gray10", "#DCE4EE")))
 
-                        cmd = [python_exe, os.path.join(script_dir, "make_audio_quality.py"),
-                               "--input", filepath, "--voice", voice, "--output", output_file]
-
-                        # Enhanced logging for debugging
-                        with open(log_path, "a", encoding="utf-8") as log:
-                            log.write(f"\n{'='*60}\n")
-                            log.write(f"[{time.strftime('%Y-%m-%d %H:%M:%S')}] Converting {idx}/{total}: {date_str}\n")
-                            log.write(f"Input: {filepath}\n")
-                            log.write(f"Output: {output_file}\n")
-                            log.write(f"Command: {' '.join(cmd)}\n")
-                            log.flush()
-
-                        start_time = time.time()
-                        result = subprocess.run(cmd, capture_output=True, text=True, cwd=script_dir, timeout=3600)
-                        elapsed = time.time() - start_time
-
-                        # Log result details
-                        with open(log_path, "a", encoding="utf-8") as log:
-                            log.write(f"Return code: {result.returncode}\n")
-                            log.write(f"Elapsed time: {elapsed:.1f}s\n")
-                            if result.stdout:
-                                log.write(f"STDOUT:\n{result.stdout}\n")
-                            if result.stderr:
-                                log.write(f"STDERR:\n{result.stderr}\n")
-                            log.write(f"Output file exists: {os.path.exists(output_file)}\n")
-                            if os.path.exists(output_file):
-                                log.write(f"Output file size: {os.path.getsize(output_file)} bytes\n")
-                            log.flush()
-
-                        if result.returncode != 0:
-                            error_msg = f"Error converting {date_str}: {result.stderr[:100]}"
-                            self.after(0, lambda m=error_msg: self.label_status.configure(
-                                text=m, text_color="red"))
+                            # Enhanced logging for debugging
                             with open(log_path, "a", encoding="utf-8") as log:
-                                log.write(f"ERROR: Conversion failed\n")
-                            continue  # Continue with next file instead of stopping
+                                log.write(f"\n{'='*60}\n")
+                                log.write(f"[{time.strftime('%Y-%m-%d %H:%M:%S')}] Converting {idx}/{total}: {date_str}\n")
+                                log.write(f"Input: {filepath}\n")
+                                log.write(f"Output: {output_file}\n")
+                                log.flush()
 
-                        # Success message
-                        with open(log_path, "a", encoding="utf-8") as log:
-                            log.write(f"SUCCESS: {date_str} converted in {elapsed:.1f}s\n")
+                            start_time = time.time()
 
-                    except subprocess.TimeoutExpired:
-                        # Check if file was actually created despite timeout
-                        if os.path.exists(output_file) and os.path.getsize(output_file) > 0:
-                            file_size_mb = os.path.getsize(output_file) / (1024*1024)
+                            if getattr(sys, "frozen", False):
+                                # FROZEN MODE: Run in-process with output capture
+                                import io
+                                from contextlib import redirect_stdout, redirect_stderr
+
+                                old_argv = sys.argv
+                                old_cwd = os.getcwd()
+                                stdout_capture = io.StringIO()
+                                stderr_capture = io.StringIO()
+
+                                sys.argv = ["make_audio_quality.py", "--input", filepath,
+                                           "--voice", voice, "--output", output_file]
+
+                                # Change to data directory for proper file access
+                                os.chdir(data_dir)
+
+                                try:
+                                    import make_audio_quality
+                                    importlib.reload(make_audio_quality)
+                                    with redirect_stdout(stdout_capture), redirect_stderr(stderr_capture):
+                                        make_audio_quality.main()
+                                    return_code = 0
+                                    stdout_text = stdout_capture.getvalue()
+                                    stderr_text = stderr_capture.getvalue()
+                                except SystemExit as e:
+                                    return_code = e.code if e.code else 0
+                                    stdout_text = stdout_capture.getvalue()
+                                    stderr_text = stderr_capture.getvalue()
+                                except Exception as e:
+                                    return_code = 1
+                                    stdout_text = stdout_capture.getvalue()
+                                    stderr_text = stderr_capture.getvalue() + f"\nException: {e}\n"
+                                    import traceback
+                                    stderr_text += traceback.format_exc()
+                                finally:
+                                    sys.argv = old_argv
+                                    os.chdir(old_cwd)
+                            else:
+                                # DEVELOPMENT MODE: Use subprocess
+                                script_dir = os.path.dirname(__file__)
+                                python_exe = sys.executable
+                                cmd = [python_exe, os.path.join(script_dir, "make_audio_quality.py"),
+                                       "--input", filepath, "--voice", voice, "--output", output_file]
+                                with open(log_path, "a", encoding="utf-8") as log:
+                                    log.write(f"Command: {' '.join(cmd)}\n")
+                                    log.flush()
+                                result = subprocess.run(cmd, capture_output=True, text=True, cwd=script_dir, timeout=3600)
+                                return_code = result.returncode
+                                stdout_text = result.stdout
+                                stderr_text = result.stderr
+                            elapsed = time.time() - start_time
+
+                            # Log result details
+                            # Check for both .wav and .mp3 (script converts to mp3 and deletes wav)
+                            mp3_output = os.path.splitext(output_file)[0] + ".mp3"
+                            actual_output = mp3_output if os.path.exists(mp3_output) else output_file
+
                             with open(log_path, "a", encoding="utf-8") as log:
-                                log.write(f"TIMEOUT but file created: {file_size_mb:.1f}MB\n")
-                            success_msg = f"✓ {date_str} completed (took >1hr)"
-                            self.after(0, lambda m=success_msg: self.label_status.configure(
-                                text=m, text_color="green"))
-                        else:
-                            error_msg = f"✗ Timeout on {date_str} - no output file"
-                            self.after(0, lambda m=error_msg: self.label_status.configure(
-                                text=m, text_color="red"))
-                            with open(log_path, "a", encoding="utf-8") as log:
-                                log.write(f"ERROR: Timeout after 3600s, no output file\n")
-                        continue  # Move to next file
-                    except Exception as e:
-                        self.after(0, lambda err=str(e): self.label_status.configure(
-                            text=f"Error: {err}", text_color="red"))
-                        with open(log_path, "a", encoding="utf-8") as log:
-                            log.write(f"EXCEPTION: {e}\n")
-                        continue  # Move to next file
+                                log.write(f"Return code: {return_code}\n")
+                                log.write(f"Elapsed time: {elapsed:.1f}s\n")
+                                if stdout_text:
+                                    log.write(f"STDOUT:\n{stdout_text}\n")
+                                if stderr_text:
+                                    log.write(f"STDERR:\n{stderr_text}\n")
+                                log.write(f"Output file exists: {os.path.exists(actual_output)}\n")
+                                if os.path.exists(actual_output):
+                                    file_size_mb = os.path.getsize(actual_output) / (1024*1024)
+                                    log.write(f"Output file: {actual_output} ({file_size_mb:.1f}MB)\n")
+                                log.flush()
 
-                # All conversions completed
-                self.after(0, lambda t=total: self.label_status.configure(
-                    text=f"✓ Converted {t} audio files! Check Week folders.", text_color="green"))
+                            if return_code != 0:
+                                error_msg = f"Error converting {date_str}: {stderr_text[:100] if stderr_text else 'Unknown error'}"
+                                self.after(0, lambda m=error_msg: self.label_status.configure(
+                                    text=m, text_color="red"))
+                                with open(log_path, "a", encoding="utf-8") as log:
+                                    log.write(f"ERROR: Conversion failed\n")
+                                continue  # Continue with next file instead of stopping
+
+                            # Success message
+                            with open(log_path, "a", encoding="utf-8") as log:
+                                log.write(f"SUCCESS: {date_str} converted in {elapsed:.1f}s\n")
+
+                        except subprocess.TimeoutExpired:
+                            # Check if file was actually created despite timeout
+                            # Also check for MP3 (script converts to mp3 and deletes wav)
+                            mp3_output = os.path.splitext(output_file)[0] + ".mp3"
+                            timeout_output = mp3_output if os.path.exists(mp3_output) else output_file
+
+                            if os.path.exists(timeout_output) and os.path.getsize(timeout_output) > 0:
+                                file_size_mb = os.path.getsize(timeout_output) / (1024*1024)
+                                with open(log_path, "a", encoding="utf-8") as log:
+                                    log.write(f"TIMEOUT but file created: {timeout_output} ({file_size_mb:.1f}MB)\n")
+                                success_msg = f"✓ {date_str} completed (took >1hr)"
+                                self.after(0, lambda m=success_msg: self.label_status.configure(
+                                    text=m, text_color="green"))
+                            else:
+                                error_msg = f"✗ Timeout on {date_str} - no output file"
+                                self.after(0, lambda m=error_msg: self.label_status.configure(
+                                    text=m, text_color="red"))
+                                with open(log_path, "a", encoding="utf-8") as log:
+                                    log.write(f"ERROR: Timeout after 3600s, no output file\n")
+                            continue  # Move to next file
+                        except Exception as e:
+                            self.after(0, lambda err=str(e): self.label_status.configure(
+                                text=f"Error: {err}", text_color="red"))
+                            with open(log_path, "a", encoding="utf-8") as log:
+                                log.write(f"EXCEPTION: {e}\n")
+                            continue  # Move to next file
+
+                    # All conversions completed
+                    self.after(0, lambda t=total: self.label_status.configure(
+                        text=f"✓ Converted {t} audio files! Check Week folders.", text_color="green"))
+                finally:
+                    # Clear the flag so scheduler can update status again
+                    self._long_operation_in_progress = False
 
             threading.Thread(target=task, daemon=True).start()
 
@@ -3368,8 +6612,8 @@ Click the '? Tutorial' button next to the status bar!""",
 
     def view_archive(self, parent_dlg=None):
         """Show dialog to view and unarchive files from the Archive."""
-        script_dir = os.path.dirname(__file__)
-        archive_dir = os.path.join(script_dir, "Archive")
+        data_dir = get_data_directory()
+        archive_dir = os.path.join(data_dir, "Archive")
 
         if not os.path.exists(archive_dir):
             os.makedirs(archive_dir, exist_ok=True)
@@ -3465,7 +6709,7 @@ Click the '? Tutorial' button next to the status bar!""",
                         # Get the week folder name to preserve structure
                         week_folder_name = os.path.basename(os.path.dirname(filepath))
                         filename = os.path.basename(filepath)
-                        dest_week_folder = os.path.join(script_dir, week_folder_name)
+                        dest_week_folder = os.path.join(data_dir, week_folder_name)
 
                         # Create week folder if needed
                         os.makedirs(dest_week_folder, exist_ok=True)
@@ -3504,21 +6748,38 @@ Click the '? Tutorial' button next to the status bar!""",
         voice = self.voice_var.get()
         def task():
             try:
-                script_dir = os.path.dirname(__file__)
-                python_exe = "/usr/bin/env python3" if getattr(sys, "frozen", False) else sys.executable
+                import importlib
+                data_dir = get_data_directory()
                 for f in files:
                     date = os.path.basename(f).split("_")[1].replace(".txt", "")
-                    out = os.path.join(script_dir, f"daily_{date}.wav")
-                    subprocess.run([python_exe, os.path.join(script_dir, "make_audio_quality.py"), "--voice", voice, "--textfile", f, "--output", out], capture_output=True, text=True, cwd=script_dir)
+                    out = os.path.join(data_dir, f"daily_{date}.wav")
+
+                    if getattr(sys, "frozen", False):
+                        # FROZEN MODE: Run in-process
+                        old_argv = sys.argv
+                        sys.argv = ["make_audio_quality.py", "--voice", voice, "--input", f, "--output", out]
+                        try:
+                            import make_audio_quality
+                            importlib.reload(make_audio_quality)
+                            make_audio_quality.main()
+                        finally:
+                            sys.argv = old_argv
+                    else:
+                        # DEVELOPMENT MODE: Use subprocess
+                        script_dir = os.path.dirname(__file__)
+                        python_exe = sys.executable
+                        subprocess.run([python_exe, os.path.join(script_dir, "make_audio_quality.py"),
+                                       "--voice", voice, "--input", f, "--output", out],
+                                      capture_output=True, text=True, cwd=script_dir)
                 self.after(0, lambda: self.label_status.configure(text="Audio conversion complete.", text_color="green"))
             except Exception as e:
                 self.after(0, lambda: self.label_status.configure(text=f"Error converting: {e}", text_color="red"))
         threading.Thread(target=task, daemon=True).start()
 
-        script_dir = os.path.dirname(__file__)
-        if sys.platform == "darwin": subprocess.run(["open", script_dir])
-        elif sys.platform == "win32": os.startfile(script_dir)
-        else: subprocess.run(["xdg-open", script_dir])
+        data_dir = get_data_directory()
+        if sys.platform == "darwin": subprocess.run(["open", data_dir])
+        elif sys.platform == "win32": os.startfile(data_dir)
+        else: subprocess.run(["xdg-open", data_dir])
 
     # =========================================================================
     # DATA EXTRACTION METHODS
@@ -3557,17 +6818,1149 @@ Click the '? Tutorial' button next to the status bar!""",
             self.extract_content.grid()
             self.extract_toggle_btn.configure(text="Collapse")
 
+    def toggle_advanced_section(self):
+        """Toggle the advanced section visibility."""
+        if self.advanced_content.winfo_ismapped():
+            self.advanced_content.grid_remove()
+            self.advanced_toggle_btn.configure(text="Expand")
+        else:
+            self.advanced_content.grid()
+            self.advanced_toggle_btn.configure(text="Collapse")
+
+    def toggle_transcription_section(self):
+        """Toggle the transcription section visibility."""
+        if self.transcription_content.winfo_ismapped():
+            self.transcription_content.grid_remove()
+            self.transcription_toggle_btn.configure(text="Expand")
+        else:
+            self.transcription_content.grid()
+            self.transcription_toggle_btn.configure(text="Collapse")
+
+    def toggle_scheduler_section(self):
+        """Toggle the scheduler section visibility."""
+        if self.scheduler_content.winfo_ismapped():
+            self.scheduler_content.grid_remove()
+            self.scheduler_toggle_btn.configure(text="Expand")
+        else:
+            self.scheduler_content.grid()
+            self.scheduler_toggle_btn.configure(text="Collapse")
+            # Refresh task list when expanding
+            self._refresh_scheduler_tasks()
+
+    # ========== Scheduler Methods ==========
+
+    def _init_scheduler(self):
+        """Initialize the scheduler backend."""
+        try:
+            from scheduler import get_scheduler
+            self._scheduler = get_scheduler(on_task_complete=self._on_scheduler_task_complete)
+            self._refresh_scheduler_tasks()
+        except Exception as e:
+            print(f"[Scheduler] Init error: {e}")
+            self._scheduler = None
+
+    def _toggle_scheduler(self):
+        """Toggle scheduler on/off."""
+        if not self._scheduler:
+            self._init_scheduler()
+            if not self._scheduler:
+                self.scheduler_enabled_var.set(False)
+                self.label_status.configure(text="Scheduler initialization failed", text_color="red")
+                return
+
+        if self.scheduler_enabled_var.get():
+            self._scheduler.start()
+            self.scheduler_status_label.configure(text="● Running", text_color="green")
+            self.label_status.configure(text="Scheduler started", text_color="green")
+        else:
+            self._scheduler.stop()
+            self.scheduler_status_label.configure(text="● Stopped", text_color="gray")
+            self.label_status.configure(text="Scheduler stopped", text_color="gray")
+
+    def _on_scheduler_task_complete(self, task, success, message):
+        """Callback when a scheduled task completes."""
+        color = "green" if success else "red"
+        # Don't overwrite status during long-running operations like audio conversion
+        if not self._long_operation_in_progress:
+            self.after(0, lambda: self.label_status.configure(text=f"Task '{task.name}': {message}", text_color=color))
+        else:
+            # Just print to console when a long operation is in progress
+            print(f"[Scheduler] Task '{task.name}': {message}")
+        self.after(0, self._refresh_scheduler_tasks)
+
+    # ========== Background Scheduler Methods ==========
+
+    def _init_background_scheduler_state(self):
+        """Initialize the background scheduler UI state based on current daemon status."""
+        try:
+            from scheduler_daemon import is_background_scheduler_running, is_launch_on_login_enabled
+
+            # Check if daemon is running
+            if is_background_scheduler_running():
+                self.bg_scheduler_var.set(True)
+                self.bg_scheduler_status.configure(text="● Running", text_color="green")
+            else:
+                self.bg_scheduler_var.set(False)
+                self.bg_scheduler_status.configure(text="● Not running", text_color="gray")
+
+            # Check launch on login status
+            if is_launch_on_login_enabled():
+                self.launch_on_login_var.set(True)
+            else:
+                self.launch_on_login_var.set(False)
+
+        except Exception as e:
+            print(f"[BackgroundScheduler] Init state error: {e}")
+
+    def _toggle_background_scheduler(self):
+        """Toggle the background scheduler daemon on/off."""
+        try:
+            from scheduler_daemon import start_background_scheduler, stop_background_scheduler, is_background_scheduler_running
+
+            if self.bg_scheduler_var.get():
+                # Start the daemon
+                success = start_background_scheduler()
+                if success:
+                    self.bg_scheduler_status.configure(text="● Running", text_color="green")
+                    self.label_status.configure(text="Background scheduler started", text_color="green")
+                else:
+                    self.bg_scheduler_var.set(False)
+                    self.bg_scheduler_status.configure(text="● Failed to start", text_color="red")
+                    self.label_status.configure(text="Failed to start background scheduler", text_color="red")
+            else:
+                # Stop the daemon
+                success = stop_background_scheduler()
+                if success:
+                    self.bg_scheduler_status.configure(text="● Not running", text_color="gray")
+                    self.label_status.configure(text="Background scheduler stopped", text_color="gray")
+                else:
+                    # Check if it's actually still running
+                    if is_background_scheduler_running():
+                        self.bg_scheduler_var.set(True)
+                        self.label_status.configure(text="Failed to stop background scheduler", text_color="red")
+
+        except Exception as e:
+            print(f"[BackgroundScheduler] Toggle error: {e}")
+            self.label_status.configure(text=f"Background scheduler error: {str(e)[:50]}", text_color="red")
+
+    def _toggle_launch_on_login(self):
+        """Toggle whether the scheduler starts on system login."""
+        try:
+            from scheduler_daemon import enable_launch_on_login, disable_launch_on_login
+
+            if self.launch_on_login_var.get():
+                success = enable_launch_on_login()
+                if success:
+                    self.label_status.configure(text="Scheduler will start on login", text_color="green")
+                else:
+                    self.launch_on_login_var.set(False)
+                    self.label_status.configure(text="Failed to enable launch on login", text_color="red")
+            else:
+                success = disable_launch_on_login()
+                if success:
+                    self.label_status.configure(text="Scheduler will not start on login", text_color="gray")
+                else:
+                    self.launch_on_login_var.set(True)
+                    self.label_status.configure(text="Failed to disable launch on login", text_color="red")
+
+        except Exception as e:
+            print(f"[BackgroundScheduler] Launch on login error: {e}")
+            self.label_status.configure(text=f"Launch on login error: {str(e)[:50]}", text_color="red")
+
+    def _refresh_scheduler_tasks(self):
+        """Refresh the scheduler tasks list display."""
+        # Clear existing widgets
+        for widget in self.scheduler_tasks_list.winfo_children():
+            widget.destroy()
+
+        if not self._scheduler or not self._scheduler.tasks:
+            self.scheduler_empty_label = ctk.CTkLabel(
+                self.scheduler_tasks_list,
+                text="No scheduled tasks. Click '+ Add Task' to create one.",
+                text_color="gray",
+                font=("Arial", 11)
+            )
+            self.scheduler_empty_label.grid(row=0, column=0, pady=20)
+            return
+
+        for i, task in enumerate(self._scheduler.tasks):
+            self._create_task_row(i, task)
+
+    def _create_task_row(self, row: int, task):
+        """Create a row for a scheduled task."""
+        row_frame = ctk.CTkFrame(self.scheduler_tasks_list, fg_color=("gray90", "gray20"))
+        row_frame.grid(row=row, column=0, sticky="ew", pady=2, padx=2)
+        row_frame.grid_columnconfigure(1, weight=1)
+
+        # Enable/disable checkbox
+        enabled_var = ctk.BooleanVar(value=task.enabled)
+        chk = ctk.CTkCheckBox(
+            row_frame, text="", variable=enabled_var, width=24,
+            command=lambda t=task, v=enabled_var: self._toggle_task_enabled(t.id, v.get())
+        )
+        chk.grid(row=0, column=0, padx=(5, 0), pady=5)
+
+        # Task name and next run
+        info_frame = ctk.CTkFrame(row_frame, fg_color="transparent")
+        info_frame.grid(row=0, column=1, sticky="ew", padx=5, pady=5)
+
+        name_label = ctk.CTkLabel(info_frame, text=task.name, font=ctk.CTkFont(weight="bold"))
+        name_label.pack(anchor="w")
+
+        # Format next run time
+        next_run_text = ""
+        if task.next_run:
+            try:
+                from datetime import datetime
+                next_dt = datetime.fromisoformat(task.next_run)
+                next_run_text = f"Next: {next_dt.strftime('%b %d, %H:%M')}"
+            except:
+                next_run_text = "Next: --"
+        else:
+            next_run_text = "Next: --"
+
+        status_text = f"{task.interval} • {next_run_text}"
+        if task.last_result:
+            status_text += f" • {task.last_result[:30]}"
+
+        status_label = ctk.CTkLabel(info_frame, text=status_text, font=("Arial", 10), text_color="gray")
+        status_label.pack(anchor="w")
+
+        # Action buttons
+        btn_frame = ctk.CTkFrame(row_frame, fg_color="transparent")
+        btn_frame.grid(row=0, column=2, padx=5, pady=5)
+
+        ctk.CTkButton(
+            btn_frame, text="▶", width=30, fg_color="green",
+            command=lambda t=task: self._run_task_now(t.id)
+        ).pack(side="left", padx=2)
+
+        ctk.CTkButton(
+            btn_frame, text="✎", width=30, fg_color="gray",
+            command=lambda t=task: self._open_task_editor(t.id)
+        ).pack(side="left", padx=2)
+
+        ctk.CTkButton(
+            btn_frame, text="✕", width=30, fg_color="#dc3545",
+            command=lambda t=task: self._delete_task(t.id)
+        ).pack(side="left", padx=2)
+
+    def _toggle_task_enabled(self, task_id: str, enabled: bool):
+        """Toggle a task's enabled state."""
+        if self._scheduler:
+            self._scheduler.update_task(task_id, {"enabled": enabled})
+            self._refresh_scheduler_tasks()
+
+    def _run_task_now(self, task_id: str):
+        """Run a task immediately."""
+        if self._scheduler:
+            task = self._scheduler.get_task(task_id)
+            if task:
+                self.label_status.configure(text=f"Running task: {task.name}...", text_color="orange")
+                self._scheduler.run_task_now(task_id)
+
+    def _delete_task(self, task_id: str):
+        """Delete a scheduled task."""
+        if self._scheduler:
+            task = self._scheduler.get_task(task_id)
+            if task:
+                # Confirm deletion
+                if self._scheduler.delete_task(task_id):
+                    self.label_status.configure(text=f"Deleted task: {task.name}", text_color="gray")
+                    self._refresh_scheduler_tasks()
+
+    def _open_task_editor(self, task_id: str = None):
+        """Open the task editor dialog."""
+        from scheduler import ScheduledTask
+
+        # Get existing task or create new
+        task = None
+        if task_id and self._scheduler:
+            task = self._scheduler.get_task(task_id)
+
+        is_new = task is None
+        if is_new:
+            task = ScheduledTask(id="", name="New Task")
+
+        # Create dialog
+        dialog = ctk.CTkToplevel(self)
+        dialog.title("Edit Scheduled Task" if not is_new else "Add Scheduled Task")
+        dialog.geometry("550x580")
+        dialog.minsize(500, 550)
+        dialog.transient(self)
+        dialog.grab_set()
+
+        # Main scrollable frame
+        main_frame = ctk.CTkScrollableFrame(dialog)
+        main_frame.pack(fill="both", expand=True, padx=15, pady=15)
+        main_frame.grid_columnconfigure(1, weight=1)
+
+        row = 0
+
+        # Task Name
+        ctk.CTkLabel(main_frame, text="Task Name:", font=ctk.CTkFont(weight="bold")).grid(row=row, column=0, sticky="w", pady=(0, 5))
+        row += 1
+        name_entry = ctk.CTkEntry(main_frame, width=400)
+        name_entry.grid(row=row, column=0, columnspan=2, sticky="ew", pady=(0, 15))
+        name_entry.insert(0, task.name)
+        row += 1
+
+        # Source URL
+        ctk.CTkLabel(main_frame, text="Source URL:", font=ctk.CTkFont(weight="bold")).grid(row=row, column=0, sticky="w", pady=(0, 5))
+        row += 1
+        ctk.CTkLabel(main_frame, text="Telegram channel, newsletter, RSS feed, or article archive URL", font=("Arial", 10), text_color="gray").grid(row=row, column=0, columnspan=2, sticky="w")
+        row += 1
+        source_entry = ctk.CTkEntry(main_frame, width=400, placeholder_text="https://t.me/s/YourChannel or https://newsletter.example.com/archive")
+        source_entry.grid(row=row, column=0, columnspan=2, sticky="ew", pady=(0, 15))
+        source_entry.insert(0, task.source_url)
+        row += 1
+
+        # Extraction Config
+        ctk.CTkLabel(main_frame, text="Extraction Config:", font=ctk.CTkFont(weight="bold")).grid(row=row, column=0, sticky="w", pady=(0, 5))
+        row += 1
+        config_var = ctk.StringVar(value=task.config_name)
+        config_values = self._get_extraction_configs()
+        config_combo = ctk.CTkComboBox(main_frame, variable=config_var, values=config_values, width=200, state="readonly")
+        config_combo.grid(row=row, column=0, columnspan=2, sticky="w", pady=(0, 15))
+        row += 1
+
+        # Schedule Section
+        ctk.CTkLabel(main_frame, text="Schedule:", font=ctk.CTkFont(weight="bold")).grid(row=row, column=0, sticky="w", pady=(0, 5))
+        row += 1
+
+        schedule_frame = ctk.CTkFrame(main_frame, fg_color="transparent")
+        schedule_frame.grid(row=row, column=0, columnspan=2, sticky="ew", pady=(0, 15))
+        row += 1
+
+        interval_var = ctk.StringVar(value=task.interval)
+        intervals = [
+            ("Hourly", "hourly"),
+            ("Every 6 Hours", "every_6_hours"),
+            ("Every 12 Hours", "every_12_hours"),
+            ("Daily", "daily"),
+            ("Weekly", "weekly"),
+        ]
+
+        for i, (label, value) in enumerate(intervals):
+            ctk.CTkRadioButton(schedule_frame, text=label, variable=interval_var, value=value).grid(row=i // 3, column=i % 3, sticky="w", padx=10, pady=3)
+
+        # Time picker (for daily/weekly)
+        time_frame = ctk.CTkFrame(main_frame, fg_color="transparent")
+        time_frame.grid(row=row, column=0, columnspan=2, sticky="w", pady=(0, 15))
+        row += 1
+
+        ctk.CTkLabel(time_frame, text="Run at:").pack(side="left", padx=(0, 5))
+        time_entry = ctk.CTkEntry(time_frame, width=70, placeholder_text="09:00")
+        time_entry.pack(side="left", padx=(0, 10))
+        time_entry.insert(0, task.run_at_time)
+
+        ctk.CTkLabel(time_frame, text="(HH:MM, 24-hour format)", font=("Arial", 10), text_color="gray").pack(side="left")
+
+        # Google Sheets Export Section
+        ctk.CTkLabel(main_frame, text="Google Sheets Export:", font=ctk.CTkFont(weight="bold")).grid(row=row, column=0, sticky="w", pady=(10, 5))
+        row += 1
+
+        sheets_var = ctk.BooleanVar(value=task.export_to_sheets)
+        sheets_check = ctk.CTkCheckBox(main_frame, text="Export to Google Sheets", variable=sheets_var)
+        sheets_check.grid(row=row, column=0, columnspan=2, sticky="w", pady=(0, 10))
+        row += 1
+
+        ctk.CTkLabel(main_frame, text="Spreadsheet ID or URL:").grid(row=row, column=0, sticky="w", pady=(0, 5))
+        row += 1
+        sheet_id_entry = ctk.CTkEntry(main_frame, width=400, placeholder_text="https://docs.google.com/spreadsheets/d/... or just the ID")
+        sheet_id_entry.grid(row=row, column=0, columnspan=2, sticky="ew", pady=(0, 10))
+        sheet_id_entry.insert(0, task.spreadsheet_id)
+        row += 1
+
+        ctk.CTkLabel(main_frame, text="Sheet Tab Name:").grid(row=row, column=0, sticky="w", pady=(0, 5))
+        row += 1
+        sheet_name_entry = ctk.CTkEntry(main_frame, width=200, placeholder_text="Sheet1")
+        sheet_name_entry.grid(row=row, column=0, sticky="w", pady=(0, 10))
+        sheet_name_entry.insert(0, task.sheet_name)
+        row += 1
+
+        headers_var = ctk.BooleanVar(value=task.include_headers)
+        headers_check = ctk.CTkCheckBox(main_frame, text="Include headers (only needed once for new sheets)", variable=headers_var)
+        headers_check.grid(row=row, column=0, columnspan=2, sticky="w", pady=(0, 15))
+        row += 1
+
+        # Buttons
+        btn_frame = ctk.CTkFrame(dialog, fg_color="transparent")
+        btn_frame.pack(fill="x", padx=15, pady=15)
+
+        def save_task():
+            # Gather values
+            new_name = name_entry.get().strip() or "Untitled Task"
+            new_source = source_entry.get().strip()
+            new_config = config_var.get()
+            new_interval = interval_var.get()
+            new_time = time_entry.get().strip() or "09:00"
+            new_sheets = sheets_var.get()
+            new_sheet_id = sheet_id_entry.get().strip()
+            new_sheet_name = sheet_name_entry.get().strip() or "Sheet1"
+            new_headers = headers_var.get()
+
+            # Extract sheet ID from URL if needed
+            if new_sheet_id and '/spreadsheets/d/' in new_sheet_id:
+                try:
+                    from sheets_manager import extract_sheet_id
+                    new_sheet_id = extract_sheet_id(new_sheet_id)
+                except:
+                    pass
+
+            if is_new:
+                new_task = ScheduledTask(
+                    id="",
+                    name=new_name,
+                    enabled=True,
+                    source_url=new_source,
+                    config_name=new_config,
+                    interval=new_interval,
+                    run_at_time=new_time,
+                    export_to_sheets=new_sheets,
+                    spreadsheet_id=new_sheet_id,
+                    sheet_name=new_sheet_name,
+                    include_headers=new_headers,
+                )
+                self._scheduler.add_task(new_task)
+                self.label_status.configure(text=f"Created task: {new_name}", text_color="green")
+            else:
+                self._scheduler.update_task(task.id, {
+                    "name": new_name,
+                    "source_url": new_source,
+                    "config_name": new_config,
+                    "interval": new_interval,
+                    "run_at_time": new_time,
+                    "export_to_sheets": new_sheets,
+                    "spreadsheet_id": new_sheet_id,
+                    "sheet_name": new_sheet_name,
+                    "include_headers": new_headers,
+                })
+                self.label_status.configure(text=f"Updated task: {new_name}", text_color="green")
+
+            self._refresh_scheduler_tasks()
+            dialog.destroy()
+
+        ctk.CTkButton(btn_frame, text="Save", fg_color="green", width=100, command=save_task).pack(side="right", padx=5)
+        ctk.CTkButton(btn_frame, text="Cancel", fg_color="gray", width=100, command=dialog.destroy).pack(side="right", padx=5)
+
+    def show_scheduler_guide(self):
+        """Show the scheduler setup guide."""
+        guide = ctk.CTkToplevel(self)
+        guide.title("Scheduler Setup Guide")
+        guide.geometry("700x600")
+        guide.minsize(600, 500)
+        guide.transient(self)
+        guide.grab_set()
+
+        # Header
+        header = ctk.CTkFrame(guide, fg_color=("gray85", "gray25"))
+        header.pack(fill="x")
+        ctk.CTkLabel(header, text="📅 Scheduler Setup Guide", font=ctk.CTkFont(size=20, weight="bold"), pady=20).pack()
+
+        # Content
+        content = ctk.CTkScrollableFrame(guide)
+        content.pack(fill="both", expand=True, padx=20, pady=10)
+
+        guide_text = """
+## How the Scheduler Works
+
+The scheduler automatically extracts data from your configured sources and exports it to Google Sheets on a regular schedule.
+
+---
+
+## Quick Start
+
+1. **Add a Task** - Click "+ Add Task" in the Scheduler section
+2. **Set the Source URL** - Paste your Telegram channel, newsletter archive, or RSS feed URL
+3. **Choose a Config** - Select an extraction config (or use Default)
+4. **Set the Schedule** - Choose how often to run (hourly, daily, etc.)
+5. **Enable Sheets Export** - Paste your Google Sheet URL
+6. **Save and Enable** - Toggle "Scheduler Active" to start
+
+---
+
+## Supported Source Types
+
+### Telegram Channels
+```
+https://t.me/YourChannel
+https://t.me/s/YourChannel
+```
+The scheduler fetches recent messages and extracts any article links.
+
+### Newsletter Archives
+```
+https://newsletter.example.com/archive
+https://newsletter.example.com/authors/...
+```
+Works with Beehiiv, Substack, and similar platforms.
+
+### RSS Feeds
+```
+https://example.com/feed.xml
+https://example.com/rss
+```
+Standard RSS/Atom feeds are supported.
+
+---
+
+## Google Sheets Setup
+
+To export to Google Sheets, you need:
+
+1. **Google Cloud Console Setup**
+   - Go to console.cloud.google.com
+   - Create a new project (or use existing)
+   - Enable "Google Sheets API"
+
+2. **Service Account**
+   - Go to IAM & Admin → Service Accounts
+   - Create a new service account
+   - Download the JSON key file
+   - Save it as `google_credentials.json` in the app folder
+
+3. **Share Your Sheet**
+   - Open your Google Sheet
+   - Click "Share"
+   - Add the service account email (found in the JSON file)
+   - Give it "Editor" access
+
+---
+
+## Tips
+
+- **Test First**: Use the "▶" button to run a task manually before scheduling
+- **Headers**: Only check "Include headers" for new sheets; uncheck for append mode
+- **Time Format**: Use 24-hour format (e.g., 09:00, 14:30, 22:00)
+- **Keep Running**: The scheduler only runs while the app is open
+
+---
+
+## Troubleshooting
+
+**Task not running?**
+- Make sure "Scheduler Active" is toggled ON
+- Check that the task is enabled (checkbox checked)
+- Verify the source URL is accessible
+
+**Sheets export failing?**
+- Confirm google_credentials.json exists in the app folder
+- Make sure you shared the sheet with the service account email
+- Check the sheet ID is correct
+"""
+
+        # Render the guide text with basic markdown
+        self._render_markdown(content, guide_text)
+
+        # Close button
+        btn_frame = ctk.CTkFrame(guide, fg_color="transparent")
+        btn_frame.pack(fill="x", padx=20, pady=15)
+        ctk.CTkButton(btn_frame, text="Close", width=100, command=guide.destroy).pack()
+
+    # ========== Unified Content Editor Methods ==========
+
+    def _on_textbox_change(self, event=None):
+        """Handle textbox content changes - detect URLs, update placeholder and banner."""
+        try:
+            # Safety check - ensure widgets are initialized
+            if not hasattr(self, 'inline_status_label') or not hasattr(self, 'url_banner_frame'):
+                return
+
+            text = self.textbox.get("0.0", "end-1c").strip()
+
+            # Update placeholder visibility
+            if hasattr(self, '_update_placeholder'):
+                self._update_placeholder()
+
+            if not text:
+                self._set_url_banner_inactive()
+                self.inline_status_label.configure(text="")
+                self._current_config_urls = None
+                return
+
+            # Detect content type for URL banner
+            detection = self._detect_content_type(text)
+
+            if detection['total_urls'] > 0:
+                # Check if any article URLs match extraction configs
+                config_categorization = None
+                if detection['article_urls']:
+                    try:
+                        config_categorization = self._categorize_urls_by_config(detection['article_urls'])
+                        self._current_config_urls = config_categorization
+                    except Exception as e:
+                        print(f"[DEBUG] Error categorizing URLs: {e}")
+                        config_categorization = None
+                        self._current_config_urls = None
+                else:
+                    self._current_config_urls = None
+
+                # Build description of detected URLs
+                parts = []
+                if detection['youtube_urls']:
+                    count = len(detection['youtube_urls'])
+                    parts.append(f"{count} YouTube video{'s' if count > 1 else ''}")
+
+                # Check for config-matched URLs
+                config_parts = []
+                if config_categorization and config_categorization.get('config_urls'):
+                    for config_name, config_data in config_categorization['config_urls'].items():
+                        count = len(config_data['urls'])
+                        config_parts.append(f"{count} {config_data['display_name']}")
+
+                # Regular articles (non-config-matched)
+                if config_categorization and config_categorization.get('regular_urls'):
+                    count = len(config_categorization['regular_urls'])
+                    parts.append(f"{count} article{'s' if count > 1 else ''}")
+                elif detection['article_urls'] and not config_categorization:
+                    count = len(detection['article_urls'])
+                    parts.append(f"{count} article{'s' if count > 1 else ''}")
+
+                # Combine parts
+                all_parts = parts + config_parts
+                banner_text = f"Detected: {' and '.join(all_parts)}" if all_parts else "URLs detected"
+
+                # If there are config-matched URLs, add a note
+                if config_parts:
+                    self._set_url_banner_active_with_config(banner_text, config_categorization)
+                else:
+                    self._set_url_banner_active(banner_text)
+
+                # Store detection for later use
+                self._current_url_detection = detection
+            else:
+                self._set_url_banner_inactive()
+                self._current_url_detection = None
+                self._current_config_urls = None
+        except Exception as e:
+            print(f"[DEBUG] Error in _on_textbox_change: {e}")
+            import traceback
+            traceback.print_exc()
+
+    def _set_url_banner_active(self, message: str):
+        """Set URL banner to active state with detection message."""
+        self._url_banner_active = True
+        self.url_banner_frame.configure(fg_color=("#fef3c7", "#4a3f1f"))
+        self.url_banner_label.configure(text=message, text_color=("gray10", "gray90"))
+        self.btn_fetch_urls.configure(state="normal", fg_color="green")
+        self.btn_ignore_urls.configure(state="normal", fg_color="gray50")
+        # Keep Extract Data button visible but greyed (no config matches for this URL)
+        if hasattr(self, 'btn_extract_data'):
+            self.btn_extract_data.configure(state="disabled", fg_color="gray")
+
+    def _set_url_banner_inactive(self, message: str = "Paste URLs to fetch article content or extract newsletter data"):
+        """Set URL banner to inactive/greyed state with explainer text."""
+        self._url_banner_active = False
+        self.url_banner_frame.configure(fg_color=("gray85", "gray20"))
+        self.url_banner_label.configure(text=message, text_color="gray")
+        self.btn_fetch_urls.configure(state="disabled", fg_color="gray")
+        self.btn_ignore_urls.configure(state="disabled", fg_color="gray")
+        # Keep Extract Data button visible but greyed out (as explainer)
+        if hasattr(self, 'btn_extract_data'):
+            self.btn_extract_data.grid()
+            self.btn_extract_data.configure(state="disabled", fg_color="gray")
+
+    def _set_url_banner_active_with_config(self, message: str, config_categorization: dict):
+        """Set URL banner to active state with config-matched URL options."""
+        self._url_banner_active = True
+        # Use a slightly different color to indicate config match (blue tint)
+        self.url_banner_frame.configure(fg_color=("#dbeafe", "#1e3a5f"))
+        self.url_banner_label.configure(text=message, text_color=("gray10", "gray90"))
+        self.btn_fetch_urls.configure(state="normal", fg_color="green")
+        self.btn_ignore_urls.configure(state="normal", fg_color="gray50")
+
+        # Show and enable Extract Data button
+        self.btn_extract_data.grid()
+        self.btn_extract_data.configure(state="normal", fg_color="#3b82f6")  # Blue color
+
+    def _extract_config_urls(self):
+        """Extract data from config-matched URLs using Data Extractor logic."""
+        if not hasattr(self, '_current_config_urls') or not self._current_config_urls:
+            return
+
+        config_urls = self._current_config_urls.get('config_urls', {})
+        if not config_urls:
+            self.inline_status_label.configure(
+                text="No config-matched URLs to extract",
+                text_color="orange"
+            )
+            return
+
+        # Collect all URLs to process
+        all_urls = []
+        config_names = []
+        for config_name, config_data in config_urls.items():
+            all_urls.extend(config_data['urls'])
+            config_names.append(config_data['display_name'])
+
+        # Update banner to show processing
+        self._set_url_banner_inactive(f"Extracting from {len(all_urls)} URL(s)...")
+        self.label_status.configure(
+            text=f"Extracting data using {', '.join(config_names)} config(s)...",
+            text_color="orange"
+        )
+
+        def do_extraction():
+            try:
+                # Use the Data Extractor logic
+                from data_csv_processor import DataCSVProcessor, ExtractionConfig
+
+                all_results = []
+
+                for config_name, config_data in config_urls.items():
+                    urls = config_data['urls']
+
+                    # Load the config
+                    config_path = os.path.join(
+                        os.path.dirname(os.path.abspath(__file__)),
+                        'extraction_instructions',
+                        f'{config_name}.json'
+                    )
+
+                    if os.path.exists(config_path):
+                        with open(config_path, 'r', encoding='utf-8') as f:
+                            config_dict = json.load(f)
+                        config = ExtractionConfig.from_dict(config_dict)
+                    else:
+                        config = ExtractionConfig()
+
+                    processor = DataCSVProcessor(config)
+
+                    for url in urls:
+                        try:
+                            self.after(0, lambda u=url: self.label_status.configure(
+                                text=f"Extracting: {u[:50]}...",
+                                text_color="orange"
+                            ))
+
+                            items = processor.process_url(url)
+                            if items:
+                                all_results.extend(items)
+                        except Exception as e:
+                            print(f"[Extract] Error processing {url}: {e}")
+
+                # Format results as text for the textbox
+                if all_results:
+                    formatted_text = self._format_extraction_results(all_results)
+
+                    def update_ui():
+                        # Get current text
+                        current_text = self.textbox.get("0.0", "end-1c").strip()
+
+                        # Remove the extracted URLs from text
+                        for config_name, config_data in config_urls.items():
+                            for url in config_data['urls']:
+                                current_text = current_text.replace(url, '')
+
+                        # Clean up multiple newlines
+                        import re
+                        current_text = re.sub(r'\n\s*\n+', '\n\n', current_text).strip()
+
+                        # Append extraction results
+                        if current_text:
+                            new_text = current_text + "\n\n" + formatted_text
+                        else:
+                            new_text = formatted_text
+
+                        # Update textbox
+                        self.textbox.delete("0.0", "end")
+                        self.textbox.insert("0.0", new_text)
+
+                        # Store for raw/cleaned toggle
+                        self._raw_text_backup = new_text
+                        self._cleaned_text_backup = ""
+                        self._editor_showing_raw = True
+                        self.btn_toggle_view.configure(text="Show Cleaned", fg_color="green", state="normal")
+
+                        # Update status
+                        self.label_status.configure(
+                            text=f"Extracted {len(all_results)} items from {len(all_urls)} URL(s)",
+                            text_color="green"
+                        )
+                        self.inline_status_label.configure(
+                            text=f"Extracted {len(all_results)} items - ready for audio or further editing",
+                            text_color="green"
+                        )
+
+                        # Re-detect URLs in updated text
+                        self._on_textbox_change()
+
+                    self.after(0, update_ui)
+                else:
+                    self.after(0, lambda: self.label_status.configure(
+                        text="No items extracted from URLs",
+                        text_color="orange"
+                    ))
+                    self.after(0, lambda: self._set_url_banner_inactive("No items found"))
+
+            except Exception as e:
+                self.after(0, lambda err=str(e): self.label_status.configure(
+                    text=f"Extraction error: {err}",
+                    text_color="red"
+                ))
+                self.after(0, lambda: self._set_url_banner_inactive("Extraction failed"))
+
+        # Run in background thread
+        threading.Thread(target=do_extraction, daemon=True).start()
+
+    def _format_extraction_results(self, items: list) -> str:
+        """Format extraction results as readable text for the textbox."""
+        lines = []
+        lines.append("=== Extracted Content ===\n")
+
+        for item in items:
+            # Handle both dict and ExtractedItem objects
+            if hasattr(item, 'to_dict'):
+                item = item.to_dict()
+            elif hasattr(item, 'title'):
+                # It's an ExtractedItem dataclass, access attributes directly
+                item = {
+                    'title': getattr(item, 'title', ''),
+                    'description': getattr(item, 'description', ''),
+                    'source_name': getattr(item, 'source_name', ''),
+                    'url': getattr(item, 'url', ''),
+                }
+
+            title = item.get('title', item.get('headline', ''))
+            description = item.get('description', item.get('summary', ''))
+            source = item.get('source', item.get('source_name', ''))
+            url = item.get('url', '')
+
+            if title:
+                lines.append(f"• {title}")
+                if source:
+                    lines.append(f"  Source: {source}")
+                if description:
+                    lines.append(f"  {description}")
+                if url:
+                    lines.append(f"  {url}")
+                lines.append("")
+
+        return "\n".join(lines)
+
+    def _toggle_editor_view(self):
+        """Toggle between raw and cleaned text views in the editor."""
+        current_text = self.textbox.get("0.0", "end-1c").strip()
+
+        if self._editor_showing_raw:
+            # Currently showing raw, switch to cleaned
+            if self._cleaned_text_backup:
+                self._raw_text_backup = current_text
+                self.textbox.delete("0.0", "end")
+                self.textbox.insert("0.0", self._cleaned_text_backup)
+                self.btn_toggle_view.configure(text="Show Raw", fg_color="orange")
+                self.inline_status_label.configure(
+                    text="Showing cleaned text (ready for audio)",
+                    text_color="green"
+                )
+                self._editor_showing_raw = False
+            else:
+                self.inline_status_label.configure(
+                    text="No cleaned text yet - click Generate to clean",
+                    text_color="orange"
+                )
+        else:
+            # Currently showing cleaned, switch to raw
+            self._cleaned_text_backup = current_text
+            self.textbox.delete("0.0", "end")
+            self.textbox.insert("0.0", self._raw_text_backup)
+            self.btn_toggle_view.configure(text="Show Cleaned", fg_color="green")
+            self.inline_status_label.configure(
+                text="Showing raw text",
+                text_color="gray"
+            )
+            self._editor_showing_raw = True
+
+    def _fetch_detected_urls(self):
+        """Fetch content from detected URLs and replace in textbox."""
+        if not hasattr(self, '_current_url_detection') or not self._current_url_detection:
+            return
+
+        detection = self._current_url_detection
+        raw_text = self.textbox.get("0.0", "end-1c").strip()
+        api_key = self.gemini_key_entry.get().strip()
+
+        if not api_key:
+            self.inline_status_label.configure(
+                text="API key required to fetch URL content",
+                text_color="red"
+            )
+            return
+
+        # Set banner to processing state and show progress
+        self._set_url_banner_inactive(f"Fetching {detection['total_urls']} URL(s)...")
+        self.inline_status_label.configure(
+            text=f"Fetching {detection['total_urls']} URL(s)...",
+            text_color="orange"
+        )
+
+        def fetch_async():
+            def progress_cb(msg, color):
+                self.after(0, lambda: self.inline_status_label.configure(text=msg, text_color=color))
+
+            # Process mixed content (YouTube + articles + plain text)
+            processed = self._process_mixed_content(raw_text, api_key, progress_callback=progress_cb)
+
+            def update_ui():
+                if processed:
+                    # Store raw text for toggle, update with cleaned/processed content
+                    self._raw_text_backup = raw_text
+                    self._cleaned_text_backup = processed
+                    self._editor_showing_raw = False  # Now showing cleaned content
+
+                    self.textbox.delete("0.0", "end")
+                    self.textbox.insert("0.0", processed)
+                    self._placeholder.place_forget()
+
+                    # Enable the Show Raw toggle button
+                    self.btn_toggle_view.configure(
+                        text="Show Raw",
+                        fg_color="green",
+                        state="normal"
+                    )
+
+                    self.inline_status_label.configure(
+                        text="Content cleaned - ready for audio generation",
+                        text_color="green"
+                    )
+
+                    # Hide the URL banner since we've processed the URLs
+                    self._set_url_banner_inactive("Content fetched and cleaned")
+                    self._current_url_detection = None
+                else:
+                    self.inline_status_label.configure(
+                        text="Failed to fetch content",
+                        text_color="red"
+                    )
+
+            self.after(0, update_ui)
+
+        threading.Thread(target=fetch_async, daemon=True).start()
+
+    def _dismiss_url_banner(self):
+        """Dismiss the URL detection banner (keep URLs as text)."""
+        self._set_url_banner_inactive("URLs kept as text")
+        self._current_url_detection = None
+        self.inline_status_label.configure(
+            text="URLs kept as text",
+            text_color="gray"
+        )
+
+    def _reset_editor_state(self):
+        """Reset the editor to initial state (raw mode, no backups)."""
+        self._editor_showing_raw = True
+        self._raw_text_backup = ""
+        self._cleaned_text_backup = ""
+        self._current_url_detection = None
+        self.btn_toggle_view.configure(text="Show Cleaned", fg_color="gray", state="disabled")
+        self.inline_status_label.configure(text="", text_color="gray")
+        self._set_url_banner_inactive()
+
+    def _show_article_selector(self, source_name: str, links: list, cutoff_date, callback):
+        """Show inline selector for article archive pages.
+
+        Args:
+            source_name: Name of the source for display
+            links: List of ArchiveLink objects from source_fetcher
+            cutoff_date: Date to compare for pre-selection
+            callback: Function to call with selected links when user accepts
+        """
+        from datetime import datetime
+        from urllib.parse import urlparse
+
+        dialog = ctk.CTkToplevel(self)
+        dialog.title(f"Select Articles - {source_name}")
+        dialog.geometry("800x600")
+        dialog.minsize(700, 450)
+        dialog.transient(self)
+        dialog.lift()
+        dialog.grab_set()  # Make modal
+
+        # Header
+        header_frame = ctk.CTkFrame(dialog, fg_color="transparent")
+        header_frame.pack(fill="x", padx=15, pady=(15, 10))
+
+        ctk.CTkLabel(
+            header_frame,
+            text=f"Found {len(links)} articles from {source_name}",
+            font=ctk.CTkFont(size=16, weight="bold")
+        ).pack(side="left")
+
+        # Info text
+        ctk.CTkLabel(
+            dialog,
+            text="Select which articles to fetch and process (showing title and URL path):",
+            text_color="gray"
+        ).pack(padx=15, anchor="w")
+
+        # Scrollable container for article checkboxes
+        container = ctk.CTkScrollableFrame(dialog, width=750, height=400)
+        container.pack(padx=15, pady=10, fill="both", expand=True)
+        container.grid_columnconfigure(0, weight=1)
+
+        # Track checkbox variables
+        checkbox_vars = []
+
+        for idx, link in enumerate(links):
+            row_frame = ctk.CTkFrame(container, fg_color="transparent")
+            row_frame.grid(row=idx, column=0, sticky="ew", pady=3)
+            row_frame.grid_columnconfigure(1, weight=1)
+
+            # Determine if within date range (pre-select if so)
+            within_range = True
+            if link.date and cutoff_date:
+                within_range = link.date.date() >= cutoff_date.date()
+
+            var = ctk.BooleanVar(value=within_range)
+            checkbox_vars.append((var, link))
+
+            # Checkbox
+            chk = ctk.CTkCheckBox(
+                row_frame,
+                text="",
+                variable=var,
+                width=24
+            )
+            chk.grid(row=0, column=0, rowspan=2, padx=(5, 10), sticky="n", pady=3)
+
+            # Title - show meaningful text or extract from URL
+            title_text = link.title.strip() if link.title.strip() else "Untitled"
+            # If title looks like it's just a fragment or very short, use URL path
+            if len(title_text) < 10 or title_text.lower() in ['home', 'article', 'post', 'page']:
+                # Extract meaningful part from URL
+                parsed = urlparse(link.url)
+                path_parts = [p for p in parsed.path.split('/') if p]
+                if path_parts:
+                    title_text = path_parts[-1].replace('-', ' ').replace('_', ' ').title()[:60]
+                else:
+                    title_text = parsed.netloc
+
+            title_text = title_text[:70] + "..." if len(title_text) > 70 else title_text
+            title_label = ctk.CTkLabel(
+                row_frame,
+                text=title_text,
+                anchor="w",
+                font=ctk.CTkFont(size=12, weight="bold")
+            )
+            title_label.grid(row=0, column=1, sticky="w")
+
+            # URL path preview (second row, smaller text)
+            parsed_url = urlparse(link.url)
+            url_preview = parsed_url.path[:60] + "..." if len(parsed_url.path) > 60 else parsed_url.path
+            if not url_preview or url_preview == "/":
+                url_preview = link.url[:60]
+            url_label = ctk.CTkLabel(
+                row_frame,
+                text=url_preview,
+                anchor="w",
+                font=ctk.CTkFont(size=10),
+                text_color="gray"
+            )
+            url_label.grid(row=1, column=1, sticky="w")
+
+            # Date (if available)
+            if link.date_str or link.date:
+                date_text = link.date_str if link.date_str else link.date.strftime("%b %d, %Y")
+                date_color = "gray" if within_range else "orange"
+                date_label = ctk.CTkLabel(
+                    row_frame,
+                    text=date_text,
+                    text_color=date_color,
+                    font=ctk.CTkFont(size=11)
+                )
+                date_label.grid(row=0, column=2, rowspan=2, padx=(10, 5), sticky="e")
+
+        # Button row
+        btn_frame = ctk.CTkFrame(dialog, fg_color="transparent")
+        btn_frame.pack(fill="x", padx=15, pady=(5, 15))
+
+        # Selection count label
+        count_label = ctk.CTkLabel(btn_frame, text="", font=ctk.CTkFont(size=11))
+        count_label.pack(side="left")
+
+        def update_count(*args):
+            selected = sum(1 for var, _ in checkbox_vars if var.get())
+            count_label.configure(text=f"{selected} of {len(links)} selected")
+
+        # Initial count
+        update_count()
+
+        # Bind count update to checkbox changes
+        for var, _ in checkbox_vars:
+            var.trace_add("write", update_count)
+
+        def select_all():
+            for var, _ in checkbox_vars:
+                var.set(True)
+
+        def select_none():
+            for var, _ in checkbox_vars:
+                var.set(False)
+
+        def select_in_range():
+            for var, link in checkbox_vars:
+                if link.date and cutoff_date:
+                    var.set(link.date.date() >= cutoff_date.date())
+                else:
+                    var.set(True)  # Select if no date info
+
+        def accept():
+            selected_links = [link for var, link in checkbox_vars if var.get()]
+            dialog.destroy()
+            if callback:
+                callback(selected_links)
+
+        def cancel():
+            dialog.destroy()
+            if callback:
+                callback([])  # Empty list indicates cancellation
+
+        # Helper buttons
+        ctk.CTkButton(
+            btn_frame, text="Select All", width=90,
+            fg_color="gray", command=select_all
+        ).pack(side="right", padx=3)
+
+        ctk.CTkButton(
+            btn_frame, text="Select None", width=90,
+            fg_color="gray", command=select_none
+        ).pack(side="right", padx=3)
+
+        ctk.CTkButton(
+            btn_frame, text="In Date Range", width=100,
+            fg_color="gray", command=select_in_range
+        ).pack(side="right", padx=3)
+
+        # Main action buttons
+        action_frame = ctk.CTkFrame(dialog, fg_color="transparent")
+        action_frame.pack(fill="x", padx=15, pady=(0, 15))
+
+        ctk.CTkButton(
+            action_frame, text="Accept", width=140,
+            fg_color="green", command=accept,
+            font=ctk.CTkFont(weight="bold")
+        ).pack(side="right", padx=5)
+
+        ctk.CTkButton(
+            action_frame, text="Cancel", width=100,
+            fg_color="gray", command=cancel
+        ).pack(side="right", padx=5)
+
     def set_extract_mode(self, mode):
         """Switch between URL and HTML extraction modes."""
         self.extract_mode_var.set(mode)
+        # Active tab: blue with border, inactive: gray and flat
+        active_color = ("#3B8ED0", "#1F6AA5")  # Default blue
+        inactive_color = ("gray70", "gray30")
         if mode == "url":
-            self.btn_tab_url.configure(fg_color=None)  # Use default color
-            self.btn_tab_html.configure(fg_color="gray")
+            self.btn_tab_url.configure(fg_color=active_color, border_width=2, border_color=("gray40", "gray60"), text="● From URL(s)")
+            self.btn_tab_html.configure(fg_color=inactive_color, border_width=0, text="○ Paste HTML")
             self.url_input_frame.grid()
             self.html_input_frame.grid_remove()
         else:
-            self.btn_tab_url.configure(fg_color="gray")
-            self.btn_tab_html.configure(fg_color=None)
+            self.btn_tab_url.configure(fg_color=inactive_color, border_width=0, text="○ From URL(s)")
+            self.btn_tab_html.configure(fg_color=active_color, border_width=2, border_color=("gray40", "gray60"), text="● Paste HTML")
             self.url_input_frame.grid_remove()
             self.html_input_frame.grid()
 
@@ -3586,17 +7979,48 @@ Click the '? Tutorial' button next to the status bar!""",
         mode = self.extract_mode_var.get()
 
         if mode == "url":
-            url = self.extract_url_entry.get().strip()
-            if not url:
-                self.label_status.configure(text="Please enter a URL to extract.", text_color="orange")
+            # Get URLs from multi-line text area - flexible parsing
+            url_text = self.extract_url_text.get("1.0", "end-1c").strip()
+            if not url_text:
+                self.label_status.configure(text="Please enter at least one URL to extract.", text_color="orange")
                 return
-            if not url.startswith("http"):
-                url = "https://" + url
+
+            # Extract URLs using regex - finds http/https URLs anywhere in the text
+            import re
+            url_pattern = r'https?://[^\s<>"\'`,\)\]]+[^\s<>"\'`,\.\)\]]'
+            found_urls = re.findall(url_pattern, url_text)
+
+            # If no URLs found with http, try to find domain-like patterns
+            if not found_urls:
+                # Split by whitespace, newlines, commas and check each piece
+                pieces = re.split(r'[\s,]+', url_text)
+                for piece in pieces:
+                    piece = piece.strip().strip(',').strip()
+                    if piece and ('.' in piece) and len(piece) > 5:
+                        # Looks like it could be a URL
+                        if not piece.startswith('http'):
+                            piece = 'https://' + piece
+                        found_urls.append(piece)
+
+            # Deduplicate while preserving order
+            seen = set()
+            urls = []
+            for url in found_urls:
+                # Clean up any trailing punctuation that might have been captured
+                url = url.rstrip('.,;:')
+                if url not in seen:
+                    seen.add(url)
+                    urls.append(url)
+
+            if not urls:
+                self.label_status.configure(text="No valid URLs found. Paste URLs starting with http:// or https://", text_color="orange")
+                return
         else:
             html = self.extract_html_text.get("1.0", "end-1c").strip()
             if not html:
                 self.label_status.configure(text="Please paste HTML content to extract.", text_color="orange")
                 return
+            urls = []  # Not used in HTML mode
 
         # Get config
         config_name = self.extract_config_var.get()
@@ -3606,7 +8030,8 @@ Click the '? Tutorial' button next to the status bar!""",
 
         # Disable button during extraction
         self.btn_extract.configure(state="disabled", text="Extracting...")
-        self.label_status.configure(text="Extracting links...", text_color="orange")
+        url_count = len(urls) if mode == "url" else 1
+        self.label_status.configure(text=f"Extracting from {url_count} source(s)...", text_color="orange")
 
         def extract_thread():
             try:
@@ -3622,7 +8047,16 @@ Click the '? Tutorial' button next to the status bar!""",
 
                 # Extract items
                 if mode == "url":
-                    items = processor.process_url(url, custom_instructions)
+                    all_items = []
+                    for i, url in enumerate(urls):
+                        self.after(0, lambda i=i, total=len(urls): self.label_status.configure(
+                            text=f"Extracting URL {i+1}/{total}...", text_color="orange"))
+                        try:
+                            items = processor.process_url(url, custom_instructions)
+                            all_items.extend(items)
+                        except Exception as url_error:
+                            print(f"Error processing {url}: {url_error}")
+                    items = all_items
                 else:
                     source_url = self.extract_source_url.get().strip()
                     items = processor.process_html(html, source_url, custom_instructions)

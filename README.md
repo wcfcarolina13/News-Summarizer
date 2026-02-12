@@ -133,6 +133,71 @@ git push --tags
 
 ---
 
+## Command Line Guide (Power Users)
+
+For users who prefer command-line tools, several scripts can be run directly:
+
+### ExecSum Newsletter Processor
+
+Process ExecSum newsletters to extract market news for audio briefings:
+
+```bash
+cd daily_audio_briefing
+
+# Process a single newsletter URL
+python execsum_processor.py "https://execsum.beehiiv.com/p/your-newsletter-url"
+
+# Process multiple URLs at once
+python execsum_processor.py "https://url1" "https://url2" "https://url3"
+
+# Process URLs from a file (one URL per line)
+python execsum_processor.py --urls-file my_urls.txt
+
+# Skip AI processing (basic extraction only)
+python execsum_processor.py "https://url" --no-ai
+
+# Custom output path
+python execsum_processor.py "https://url" --output my_output.txt
+```
+
+Output files are saved to `Week_X_YYYY/execsum_digest_YYYY-MM-DD_HHMM.txt` by default.
+
+### YouTube News Fetcher
+
+Fetch and summarize videos from configured YouTube channels:
+
+```bash
+# Fetch last 7 days of videos
+python get_youtube_news.py --days 7
+
+# Fetch specific number of videos
+python get_youtube_news.py --videos 10
+
+# Fetch from date range
+python get_youtube_news.py --start 2026-01-01 --end 2026-01-15
+```
+
+### Audio Generation
+
+Generate audio from text files:
+
+```bash
+# Fast generation with gTTS
+python make_audio.py input.txt output.mp3
+
+# High-quality with Kokoro TTS
+python make_audio_quality.py input.txt output.wav --voice af_sarah
+```
+
+### Main GUI Application
+
+```bash
+# Launch the desktop app from source
+python gui_app.py
+```
+
+---
+
 ## Troubleshooting
 
 | Problem | Solution |
