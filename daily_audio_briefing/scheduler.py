@@ -153,8 +153,13 @@ class Scheduler:
         self._stop_event = threading.Event()
         self._on_task_complete = on_task_complete
         self._lock = threading.Lock()
+        self._tasks_loaded = False
 
-        self.load_tasks()
+        # In server mode, defer load_tasks() to the background thread so
+        # Sheets API calls don't block gunicorn worker boot (120s timeout).
+        if not server_mode:
+            self.load_tasks()
+            self._tasks_loaded = True
 
     def load_tasks(self):
         """Load scheduled tasks with multi-tier fallback.
@@ -429,6 +434,15 @@ class Scheduler:
 
     def _run_loop(self):
         """Main scheduler loop - checks for tasks to run."""
+        # In server mode, load tasks here (background thread) instead of __init__
+        # to avoid blocking gunicorn worker boot with slow Sheets API calls.
+        if not self._tasks_loaded:
+            try:
+                self.load_tasks()
+                self._tasks_loaded = True
+            except Exception as e:
+                print(f"[Scheduler] Error loading tasks in background: {e}")
+
         while not self._stop_event.is_set():
             try:
                 now = datetime.now()

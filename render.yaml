@@ -1,6 +1,8 @@
 # Render.com deployment config
 # Scheduler runs as a background thread inside the Flask web process.
 # Use UptimeRobot (free) to ping /health every 5 min to prevent sleep.
+# NOTE: Render only reads startCommand on initial service creation.
+# If you change it here, also update it in Render Dashboard → Settings → Start Command.
 services:
   - type: web
     name: daily-briefing-server
