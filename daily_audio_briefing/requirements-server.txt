@@ -1,4 +1,4 @@
-# Server-only dependencies (no GUI, no audio)
+# Server dependencies for web dashboard
 # Used by Render.com / Railway / Fly.io deployments
 # NOTE: Render free tier has 512MB RAM — keep this list lean!
 
@@ -24,6 +24,9 @@ google-generativeai
 # Google Sheets (used by scheduler for export + config persistence)
 google-api-python-client
 google-auth
+
+# Audio — Fast mode (lightweight, works within 512MB)
+gTTS
 
 # Utilities
 python-dotenv

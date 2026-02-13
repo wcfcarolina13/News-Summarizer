@@ -219,28 +219,37 @@ def get_extraction_config(name):
 
 
 def check_dependencies():
-    """Check available dependencies."""
+    """Check available dependencies on this server/machine."""
     deps = {
         'ffmpeg': False,
         'faster_whisper': False,
-        'kokoro': False
+        'kokoro': False,
+        'gtts': False,
+        'server_mode': SERVER_MODE
     }
 
-    # Check ffmpeg
+    # Check ffmpeg (system tool — needed for audio file processing)
     try:
         subprocess.run(['ffmpeg', '-version'], capture_output=True, timeout=5)
         deps['ffmpeg'] = True
     except:
         pass
 
-    # Check faster-whisper
+    # Check gTTS (lightweight Google TTS — works on any server)
+    try:
+        import gtts
+        deps['gtts'] = True
+    except:
+        pass
+
+    # Check faster-whisper (heavy AI model — needs 1GB+ RAM)
     try:
         import faster_whisper
         deps['faster_whisper'] = True
     except:
         pass
 
-    # Check kokoro
+    # Check kokoro (ONNX model file — ~300MB + runtime RAM)
     kokoro_path = BASE_DIR / 'kokoro-v1.0.onnx'
     deps['kokoro'] = kokoro_path.exists()
 
@@ -1786,15 +1795,20 @@ HTML_TEMPLATE = '''
                 const container = document.getElementById('depStatus');
 
                 container.innerHTML = `
-                    <div class="dep-badge" title="Required for audio processing. Install: brew install ffmpeg (macOS) or download from ffmpeg.org">
+                    <div class="dep-badge" title="Google Text-to-Speech — lightweight, works on any server. Used by Fast mode.">
+                        <span class="dot ${data.gtts ? 'green' : 'orange'}"></span>
+                        gTTS (Fast)
+                        ${data.gtts ? '' : '<span style="font-size:0.7rem;color:var(--text-muted);margin-left:4px;">pip install gTTS</span>'}
+                    </div>
+                    <div class="dep-badge" title="Audio/video processing. Required for both Fast and Quality audio modes.">
                         <span class="dot ${data.ffmpeg ? 'green' : 'orange'}"></span>
                         ffmpeg
                         ${data.ffmpeg ? '' : '<span style="font-size:0.7rem;color:var(--text-muted);margin-left:4px;">brew install ffmpeg</span>'}
                     </div>
-                    <div class="dep-badge" title="High-quality TTS engine. Requires kokoro-v1.0.onnx model file in the app directory.">
+                    <div class="dep-badge" title="High-quality neural TTS. Requires ~300MB model file + ONNX runtime. Used by Quality mode.">
                         <span class="dot ${data.kokoro ? 'green' : 'orange'}"></span>
-                        Kokoro TTS
-                        ${data.kokoro ? '' : '<span style="font-size:0.7rem;color:var(--text-muted);margin-left:4px;">model file not found</span>'}
+                        Kokoro (Quality)
+                        ${data.kokoro ? '' : '<span style="font-size:0.7rem;color:var(--text-muted);margin-left:4px;">model not found</span>'}
                     </div>
                 `;
 
@@ -1896,28 +1910,33 @@ HTML_TEMPLATE = '''
                 sources = sourcesData.sources || [];
                 renderSources();
 
-                // Load dependencies
+                // Load dependencies (detected on the server this app is running on)
                 const depData = await api('/api/dependencies');
                 document.getElementById('systemStatus').innerHTML = `
-                    <div class="dep-badge" title="Audio/video processing tool. Required for audio generation.\nInstall: brew install ffmpeg (macOS) or download from ffmpeg.org">
+                    <div class="dep-badge" title="Google Text-to-Speech — lightweight, works on any server. pip install gTTS">
+                        <span class="dot ${depData.gtts ? 'green' : 'orange'}"></span>
+                        gTTS (Fast Audio)
+                        ${depData.gtts ? '' : '<span style="font-size:0.7rem;color:var(--text-muted);margin-left:4px;">pip install gTTS</span>'}
+                    </div>
+                    <div class="dep-badge" title="Audio/video processing tool. Required for all audio generation.">
                         <span class="dot ${depData.ffmpeg ? 'green' : 'red'}"></span>
                         ffmpeg
                         ${depData.ffmpeg ? '' : '<span style="font-size:0.7rem;color:var(--text-muted);margin-left:4px;">brew install ffmpeg</span>'}
                     </div>
-                    <div class="dep-badge" title="AI speech-to-text for transcribing YouTube audio.\nInstall: pip install faster-whisper">
+                    <div class="dep-badge" title="AI speech-to-text for YouTube transcription. Needs ~1GB RAM. pip install faster-whisper">
                         <span class="dot ${depData.faster_whisper ? 'green' : 'orange'}"></span>
                         Whisper
                         ${depData.faster_whisper ? '' : '<span style="font-size:0.7rem;color:var(--text-muted);margin-left:4px;">pip install faster-whisper</span>'}
                     </div>
-                    <div class="dep-badge" title="High-quality text-to-speech engine.\nRequires kokoro-v1.0.onnx model file in the app directory.">
+                    <div class="dep-badge" title="High-quality neural TTS. Needs ~300MB model + ONNX runtime.">
                         <span class="dot ${depData.kokoro ? 'green' : 'orange'}"></span>
-                        Kokoro
-                        ${depData.kokoro ? '' : '<span style="font-size:0.7rem;color:var(--text-muted);margin-left:4px;">model file not found</span>'}
+                        Kokoro (Quality Audio)
+                        ${depData.kokoro ? '' : '<span style="font-size:0.7rem;color:var(--text-muted);margin-left:4px;">model not found</span>'}
                     </div>
                     <p style="font-size:0.7rem;color:var(--text-muted);margin-top:8px;">
-                        <span style="display:inline-block;width:8px;height:8px;border-radius:50%;margin-right:4px;background:var(--success);"></span> Installed
+                        <span style="display:inline-block;width:8px;height:8px;border-radius:50%;margin-right:4px;background:var(--success);"></span> Available
                         &nbsp;&nbsp;
-                        <span style="display:inline-block;width:8px;height:8px;border-radius:50%;margin-right:4px;background:var(--warning);"></span> Optional
+                        <span style="display:inline-block;width:8px;height:8px;border-radius:50%;margin-right:4px;background:var(--warning);"></span> Not installed
                         &nbsp;&nbsp;
                         <span style="display:inline-block;width:8px;height:8px;border-radius:50%;margin-right:4px;background:var(--danger);"></span> Required
                     </p>
@@ -2646,10 +2665,8 @@ def api_extract():
 
 @app.route('/api/dependencies')
 def api_dependencies():
-    """Get dependency status."""
-    deps = check_dependencies()
-    deps['server_mode'] = SERVER_MODE
-    return jsonify(deps)
+    """Get dependency status (checks what's installed on this server/machine)."""
+    return jsonify(check_dependencies())
 
 @app.route('/api/voices')
 def api_voices():
