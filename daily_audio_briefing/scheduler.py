@@ -462,8 +462,11 @@ class Scheduler:
             # Import here to avoid circular imports
             from data_csv_processor import DataCSVProcessor, ExtractionConfig, load_custom_instructions
 
-            # Create processor
+            # Create processor — use lean config in server mode (512MB limit)
             config = ExtractionConfig()
+            if self.server_mode:
+                config.max_workers = 2
+                config.resolve_redirects = False
             processor = DataCSVProcessor(config)
 
             # Load custom instructions if not default

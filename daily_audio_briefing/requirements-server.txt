@@ -1,25 +1,27 @@
 # Server-only dependencies (no GUI, no audio)
 # Used by Render.com / Railway / Fly.io deployments
+# NOTE: Render free tier has 512MB RAM — keep this list lean!
 
 # Web framework
 flask
 gunicorn
 
-# Content fetching
+# Content fetching (used by scheduler + data extractor)
 requests
 beautifulsoup4
 lxml
 dateparser
 
-# YouTube
+# YouTube (lazy-loaded, only for manual "Get YouTube News" feature)
 youtube-transcript-api
 scrapetube
-yt-dlp
+# yt-dlp          # DISABLED — ~80MB in memory, not needed for server scheduler
+                   # Re-enable if YouTube audio download is needed on server
 
-# AI summarization
+# AI summarization (lazy-loaded, only for YouTube + newsletter features)
 google-generativeai
 
-# Google Sheets
+# Google Sheets (used by scheduler for export + config persistence)
 google-api-python-client
 google-auth
 
