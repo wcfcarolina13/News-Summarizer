@@ -2744,6 +2744,10 @@ def api_scheduler_tasks_list():
     """List all scheduled tasks."""
     if not server_scheduler:
         return jsonify({'tasks': []})
+    # If background thread hasn't loaded tasks yet, load them on-demand
+    if not server_scheduler.scheduler._tasks_loaded:
+        server_scheduler.scheduler.load_tasks()
+        server_scheduler.scheduler._tasks_loaded = True
     return jsonify({
         'tasks': [t.to_dict() for t in server_scheduler.tasks]
     })
