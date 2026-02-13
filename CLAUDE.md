@@ -163,6 +163,7 @@ gunicorn web_app:app --bind 0.0.0.0:$PORT --timeout 120 --workers 1 --preload
 16. ~~Inline config editor in scheduler~~ ✅ Edit columns, patterns, blocked domains in task editor
 17. ~~Auto-dismiss notifications~~ ✅ 5s timeout for success/info, clear on tab change
 18. ~~Favicon serving on Render~~ ✅ Dedicated Flask routes instead of inline base64
+19. ~~Server crash loop (every few hours)~~ ✅ Fixed lock contention, added task mutex, gc.collect(), 10MB response cap, memory monitoring in /health
 
 **Critical — API Cost Protection:**
 12. API usage rate limiter — hard cap to prevent unexpected bills from scheduler bursts
