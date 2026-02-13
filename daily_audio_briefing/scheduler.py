@@ -8,6 +8,7 @@ This module provides:
 4. Auto-export to Google Sheets
 """
 
+import gc
 import os
 import sys
 import json
@@ -153,6 +154,7 @@ class Scheduler:
         self._stop_event = threading.Event()
         self._on_task_complete = on_task_complete
         self._lock = threading.Lock()
+        self._task_running = False  # Mutex: prevent concurrent task execution
         self._tasks_loaded = False
 
         # In server mode, defer load_tasks() to the background thread so
@@ -447,18 +449,24 @@ class Scheduler:
             try:
                 now = datetime.now()
 
+                # Collect tasks due to run (under lock), then execute outside lock
+                tasks_to_run = []
                 with self._lock:
                     for task in self.tasks:
                         if not task.enabled or not task.next_run:
                             continue
-
                         try:
                             next_run = datetime.fromisoformat(task.next_run)
                             if now >= next_run:
-                                # Time to run this task
-                                self._execute_task(task)
+                                tasks_to_run.append(task)
                         except Exception as e:
                             print(f"[Scheduler] Error checking task {task.name}: {e}")
+
+                # Execute outside lock so other operations aren't blocked
+                for task in tasks_to_run:
+                    if self._stop_event.is_set():
+                        break
+                    self._execute_task(task)
 
                 # Check every 30 seconds
                 self._stop_event.wait(30)
@@ -468,7 +476,13 @@ class Scheduler:
                 self._stop_event.wait(60)
 
     def _execute_task(self, task: ScheduledTask):
-        """Execute a scheduled task."""
+        """Execute a scheduled task. Guarded by mutex to prevent concurrent runs."""
+        # Mutex: skip if another task is already running (prevents OOM on 512MB)
+        if self._task_running:
+            print(f"[Scheduler] Skipping '{task.name}' — another task is still running")
+            return
+        self._task_running = True
+
         print(f"[Scheduler] Running task: {task.name}")
         task.last_run = datetime.now().isoformat()
 
@@ -559,6 +573,11 @@ class Scheduler:
                 self._on_task_complete(task, False, task.last_result)
 
             print(f"[Scheduler] Task failed: {e}")
+
+        finally:
+            self._task_running = False
+            # Force garbage collection after task to reclaim memory (512MB limit)
+            gc.collect()
 
     def run_task_now(self, task_id: str) -> bool:
         """Manually trigger a task to run immediately."""

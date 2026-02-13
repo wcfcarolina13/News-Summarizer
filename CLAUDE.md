@@ -8,7 +8,8 @@ All source files are in `daily_audio_briefing/`.
 
 | File | Lines | Purpose |
 |------|-------|---------|
-| `gui_app.py` | ~8300 | **Main GUI — NEVER read in full.** Use grep for targeted searches. |
+| `gui_app.py` | ~8800 | **Main GUI — NEVER read in full.** Sidebar nav + 7 pages (Home, Summarize, Extract, Audio, Scheduler, Settings, Guide). Use grep for targeted searches. |
+| `cloud_scheduler_client.py` | ~175 | REST API client for remote scheduler (Render server) |
 | `data_csv_processor.py` | ~2100 | Data extraction and Grid enrichment |
 | `source_fetcher.py` | ~1600 | Unified content fetching (YouTube, RSS, article archives) |
 | `execsum_processor.py` | ~870 | ExecSum newsletter processing |
@@ -68,11 +69,36 @@ URLs pasted in the audio content textbox are checked against extraction configs:
 
 To add new mappings: add `source_url_patterns` field to config JSON, or update `domain_map` dict.
 
+## Navigation Architecture (Desktop App)
+
+The desktop app uses a **sidebar + page container** layout matching the web app:
+
+```
+┌──────────────┬─────────────────────────────────┐
+│  Sidebar     │  Page Container                  │
+│  (200px)     │  (CTkScrollableFrame per page)   │
+│              │                                   │
+│  🏠 Home     │  Only one page visible at a time │
+│  📰 Summarize│  via grid()/grid_remove()        │
+│  📊 Extract  │                                   │
+│  🔊 Audio    │                                   │
+│  📅 Scheduler│                                   │
+│  ⚙️ Settings │                                   │
+│  📖 Guide    │                                   │
+└──────────────┴─────────────────────────────────┘
+```
+
+**Key methods:** `_create_sidebar()`, `_create_pages()`, `_navigate_to(page_name)`
+**Color tokens:** `COLORS` dict at module level (matches web app CSS variables)
+**Card factory:** `_create_card(parent, title)` — consistent card styling across all pages
+
+**Scheduler modes:** Local (embedded `Scheduler` class) or Cloud (`CloudSchedulerClient` REST wrapper). Switched via segmented button on Scheduler page. `_get_active_scheduler()` returns the active backend.
+
 ## Do NOT
 - Break the working development mode (`Launch Audio Briefing.command`)
 - Change the output folder structure (`Week_N_YYYY` format)
 - Remove any existing functionality
-- Read `gui_app.py` in full (~8300 lines) — always use grep/targeted reads
+- Read `gui_app.py` in full (~8800 lines) — always use grep/targeted reads
 - Commit `.env`, `google_credentials.json`, or API keys
 
 ## Server Deployment (Render.com)
@@ -114,13 +140,16 @@ gunicorn web_app:app --bind 0.0.0.0:$PORT --timeout 120 --workers 1 --preload
 ## Pending Work
 
 **High Priority:**
-1. Rebuild macOS app — major features added since last build (scheduler, daemon, newsletter rewrite, audio fixes, UI reorg)
+1. Rebuild macOS app — major features added since last build (sidebar nav redesign, cloud scheduler, daemon, newsletter rewrite, audio fixes)
 2. Test multi-URL feature in GUI
 3. ~~Commit outstanding changes~~ ✅ Pushed to `server-deploy` branch
 4. ~~Deploy to Render.com~~ ✅ Live at https://news-summarizer-zgny.onrender.com
 5. ~~Add Guide page, tooltips, alpha banner~~ ✅ Done
 6. ~~Update README with web dashboard and server docs~~ ✅ Done
 7. ~~Fix config name mapping (display_name vs filename)~~ ✅ Done
+8. ~~Desktop app redesign — sidebar nav + 7 pages matching web app~~ ✅ Done
+9. ~~Cloud scheduler client — desktop connects to Render server~~ ✅ Done
+10. ~~Web app desktop-only badges + download guide~~ ✅ Done
 
 **Server/Infra:**
 8. ~~Set up UptimeRobot keep-alive ping after Render deploy~~ ✅ Self-ping built-in + UptimeRobot
@@ -141,14 +170,21 @@ gunicorn web_app:app --bind 0.0.0.0:$PORT --timeout 120 --workers 1 --preload
 14. Per-task API call tracking and cost estimation
 15. Dashboard showing cumulative API usage and remaining budget
 
+**Future — Desktop/Web Sync:**
+- Login/registration system for cloud features
+- API key gating — require auth to use cloud scheduler API
+- Bidirectional sync between desktop settings and cloud
+- Shared source lists between desktop and web
+- Desktop app auto-update mechanism
+
 **Future — Multi-tenant SaaS:**
-16. Add authentication to web dashboard (currently open)
-17. Per-client API keys and Sheets credentials
-18. Task isolation (client A can't see/modify client B's tasks)
-19. Rate limiting per client
-20. Progress indicator for multi-URL extraction
-21. Save/load URL lists for recurring newsletter batches
-22. Keyboard shortcuts for common actions
+- Add authentication to web dashboard (currently open)
+- Per-client API keys and Sheets credentials
+- Task isolation (client A can't see/modify client B's tasks)
+- Rate limiting per client
+- Progress indicator for multi-URL extraction
+- Save/load URL lists for recurring newsletter batches
+- Keyboard shortcuts for common actions
 
 ## Build Instructions
 

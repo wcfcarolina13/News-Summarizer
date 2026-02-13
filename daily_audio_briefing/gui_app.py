@@ -84,6 +84,33 @@ except Exception:
 ctk.set_appearance_mode("Dark")
 ctk.set_default_color_theme("blue")
 
+# Color tokens matching web app design
+COLORS = {
+    "bg_primary": "#0f0f0f",       # Main background
+    "bg_secondary": "#1a1a1a",     # Cards, sidebar
+    "bg_tertiary": "#252525",      # Input backgrounds, hover
+    "accent": "#4a9eff",           # Primary accent (blue)
+    "accent_hover": "#3a8eef",     # Hover state
+    "success": "#2ecc71",          # Green
+    "warning": "#f39c12",          # Orange
+    "danger": "#e74c3c",           # Red
+    "border": "#333333",           # Borders
+    "text_primary": "#ffffff",     # Main text
+    "text_secondary": "#aaaaaa",   # Secondary text
+    "text_muted": "#666666",       # Muted text
+}
+
+# Navigation page definitions
+NAV_PAGES = [
+    ("home", "🏠  Home"),
+    ("summarize", "📰  Summarize"),
+    ("extract", "📊  Extract"),
+    ("audio", "🔊  Audio"),
+    ("scheduler", "📅  Scheduler"),
+    ("settings", "⚙️  Settings"),
+    ("guide", "📖  Guide"),
+]
+
 
 class ToolTip:
     """
@@ -163,21 +190,26 @@ class AudioBriefingApp(ctk.CTk):
         self.title("Daily Audio Briefing")
         self.geometry("950x900") # Wider default width to fit controls
 
-        # Main window grid - single scrollable container
-        self.grid_columnconfigure(0, weight=1)
+        # Main window grid - sidebar + page container
+        self.grid_columnconfigure(0, weight=0)  # Sidebar fixed width
+        self.grid_columnconfigure(1, weight=1)   # Page container expands
         self.grid_rowconfigure(0, weight=1)
 
-        # Create scrollable main container with wider scrollbar
-        self.main_scroll = ctk.CTkScrollableFrame(self, fg_color="transparent")
-        self.main_scroll.grid(row=0, column=0, sticky="nsew", padx=0, pady=0)
-        self.main_scroll.grid_columnconfigure(0, weight=1)
+        # Create sidebar navigation
+        self._create_sidebar()
 
-        # Widen the scrollbar for easier interaction
-        try:
-            # Access the internal scrollbar and make it wider
-            self.main_scroll._scrollbar.configure(width=16)
-        except:
-            pass  # Fallback if internal structure changes
+        # Create page container
+        self.page_container = ctk.CTkFrame(self, fg_color=COLORS["bg_primary"], corner_radius=0)
+        self.page_container.grid(row=0, column=1, sticky="nsew")
+        self.page_container.grid_columnconfigure(0, weight=1)
+        self.page_container.grid_rowconfigure(0, weight=1)
+
+        # Create page frames
+        self.pages = {}
+        self._create_pages()
+
+        # Backward compatibility: alias for scroll-to-widget in tutorial system
+        self.main_scroll = self.pages.get("summarize")
 
         # Initialize managers
         self.file_manager = FileManager()
@@ -211,12 +243,18 @@ class AudioBriefingApp(ctk.CTk):
         # self.podcast_server = PodcastServer()  # Disabled
         # self.drive_manager = None  # Google Drive features removed
 
-        # Header
-        self.label_header = ctk.CTkLabel(self.main_scroll, text="Summarize Text, Articles, and Videos", font=ctk.CTkFont(size=20, weight="bold"))
+        # ============ SUMMARIZE PAGE ============
+        # Page header
+        self.label_header = ctk.CTkLabel(
+            self.pages["summarize"],
+            text="Summarize Text, Articles, and Videos",
+            font=ctk.CTkFont(size=20, weight="bold"),
+            text_color=COLORS["text_primary"]
+        )
         self.label_header.grid(row=0, column=0, padx=20, pady=(20, 10), sticky="ew")
 
-        # Text Area Section (collapsible)
-        self.frame_text = ctk.CTkFrame(self.main_scroll)
+        # Text Area Card
+        self.frame_text = ctk.CTkFrame(self.pages["summarize"], fg_color=COLORS["bg_secondary"], corner_radius=12, border_width=1, border_color=COLORS["border"])
         self.frame_text.grid(row=1, column=0, padx=20, pady=10, sticky="ew")
         self.frame_text.grid_columnconfigure(0, weight=1)
 
@@ -231,12 +269,11 @@ class AudioBriefingApp(ctk.CTk):
         self.btn_fetch_article = ctk.CTkButton(text_header, text="Fetch Article", width=100, fg_color="green", command=self.open_fetch_article_dialog)
         self.btn_fetch_article.grid(row=0, column=1, padx=(10, 5))
 
-        # Settings button
-        self.btn_settings = ctk.CTkButton(text_header, text="Settings", width=70, fg_color="gray", command=self.open_settings_dialog)
+        # Settings button — navigate to Settings page
+        self.btn_settings = ctk.CTkButton(text_header, text="Settings", width=70, fg_color="gray", command=lambda: self._navigate_to("settings"))
         self.btn_settings.grid(row=0, column=2, padx=(0, 5))
 
-        self.text_toggle_btn = ctk.CTkButton(text_header, text="Collapse", width=70, fg_color="gray", command=self.toggle_text_section)
-        self.text_toggle_btn.grid(row=0, column=3, padx=(0, 0))
+        # Text collapse button removed — text area is always visible on its own page
 
         # Text content frame (collapsible)
         self.text_content = ctk.CTkFrame(self.frame_text, fg_color="transparent")
@@ -518,7 +555,7 @@ class AudioBriefingApp(ctk.CTk):
         # Bind textbox changes for URL detection and placeholder
         self.textbox.bind("<KeyRelease>", self._on_textbox_change)
 
-        self.frame_yt_api = ctk.CTkFrame(self.main_scroll)
+        self.frame_yt_api = ctk.CTkFrame(self.pages["summarize"], fg_color=COLORS["bg_secondary"], corner_radius=12, border_width=1, border_color=COLORS["border"])
         self.frame_yt_api.grid(row=2, column=0, padx=20, pady=(10, 5), sticky="ew")
         self.frame_yt_api.grid_columnconfigure(0, weight=0)
         self.frame_yt_api.grid_columnconfigure(1, weight=1)
@@ -635,16 +672,18 @@ class AudioBriefingApp(ctk.CTk):
         # Users can now paste YouTube URLs or article URLs directly and they'll be auto-detected
         # Note: Transcription features moved to collapsible "Advanced" section at bottom
 
-        # Separator and Audio Section Header
-        self.audio_separator = ctk.CTkFrame(self.main_scroll, height=2, fg_color=("gray70", "gray40"))
-        self.audio_separator.grid(row=3, column=0, padx=20, pady=(15, 5), sticky="ew")
+        # ============ AUDIO PAGE ============
+        self.label_audio_header = ctk.CTkLabel(
+            self.pages["audio"],
+            text="Convert Text/Summaries to Audio",
+            font=ctk.CTkFont(size=20, weight="bold"),
+            text_color=COLORS["text_primary"]
+        )
+        self.label_audio_header.grid(row=0, column=0, padx=20, pady=(20, 10), sticky="ew")
 
-        self.label_audio_header = ctk.CTkLabel(self.main_scroll, text="Convert Text/Summaries to Audio", font=ctk.CTkFont(size=20, weight="bold"))
-        self.label_audio_header.grid(row=4, column=0, padx=20, pady=(10, 10), sticky="ew")
-
-        # Audio Controls Frame
-        self.frame_audio_controls = ctk.CTkFrame(self.main_scroll)
-        self.frame_audio_controls.grid(row=5, column=0, padx=20, pady=(5, 20), sticky="ew")
+        # Audio Controls Card
+        self.frame_audio_controls = ctk.CTkFrame(self.pages["audio"], fg_color=COLORS["bg_secondary"], corner_radius=12, border_width=1, border_color=COLORS["border"])
+        self.frame_audio_controls.grid(row=1, column=0, padx=20, pady=(5, 20), sticky="ew")
         self.frame_audio_controls.grid_columnconfigure((0, 1), weight=1)
 
         # Row 0: Fast Generation with sample button
@@ -681,45 +720,23 @@ class AudioBriefingApp(ctk.CTk):
         self.btn_quality = ctk.CTkButton(self.frame_audio_controls, text="Generate Quality (Kokoro)", command=self.start_quality_generation)
         self.btn_quality.grid(row=4, column=0, columnspan=2, padx=10, pady=(5, 10), sticky="ew")
 
-        # Advanced Section (Collapsible) - Contains Data Extractor and Transcription
-        self.frame_advanced = ctk.CTkFrame(self.main_scroll)
-        self.frame_advanced.grid(row=6, column=0, padx=20, pady=(0, 10), sticky="ew")
-        self.frame_advanced.grid_columnconfigure(0, weight=1)
+        # ============ EXTRACT PAGE ============
+        ctk.CTkLabel(
+            self.pages["extract"],
+            text="Data Extractor",
+            font=ctk.CTkFont(size=20, weight="bold"),
+            text_color=COLORS["text_primary"]
+        ).grid(row=0, column=0, padx=20, pady=(20, 10), sticky="w")
 
-        # Header with expand/collapse toggle
-        advanced_header = ctk.CTkFrame(self.frame_advanced, fg_color="transparent")
-        advanced_header.grid(row=0, column=0, sticky="ew", padx=10, pady=(10, 5))
-        advanced_header.grid_columnconfigure(1, weight=1)
-
-        ctk.CTkLabel(advanced_header, text="Advanced", font=ctk.CTkFont(size=14, weight="bold")).grid(row=0, column=0, sticky="w")
-        self.advanced_toggle_btn = ctk.CTkButton(advanced_header, text="Expand", width=70, fg_color="gray", command=self.toggle_advanced_section)
-        self.advanced_toggle_btn.grid(row=0, column=2, padx=(10, 0))
-
-        # Collapsible content (contains nested sections)
-        self.advanced_content = ctk.CTkFrame(self.frame_advanced, fg_color="transparent")
-        self.advanced_content.grid(row=1, column=0, sticky="ew", padx=10, pady=5)
-        self.advanced_content.grid_columnconfigure(0, weight=1)
-        self.advanced_content.grid_remove()  # Start collapsed
-
-        # ============ DATA EXTRACTOR SECTION (nested dropdown) ============
-        self.frame_extract = ctk.CTkFrame(self.advanced_content)
-        self.frame_extract.grid(row=0, column=0, sticky="ew", pady=(0, 10))
+        # Extract content card — replaces the old collapsible section
+        self.frame_extract = ctk.CTkFrame(self.pages["extract"], fg_color=COLORS["bg_secondary"], corner_radius=12, border_width=1, border_color=COLORS["border"])
+        self.frame_extract.grid(row=1, column=0, padx=20, sticky="ew", pady=(0, 10))
         self.frame_extract.grid_columnconfigure(0, weight=1)
 
-        # Data Extractor header with toggle
-        extract_header = ctk.CTkFrame(self.frame_extract, fg_color="transparent")
-        extract_header.grid(row=0, column=0, sticky="ew", padx=10, pady=(10, 5))
-        extract_header.grid_columnconfigure(1, weight=1)
-
-        ctk.CTkLabel(extract_header, text="Data Extractor", font=ctk.CTkFont(size=13, weight="bold")).grid(row=0, column=0, sticky="w")
-        self.extract_toggle_btn = ctk.CTkButton(extract_header, text="Expand", width=70, fg_color="gray", command=self.toggle_extract_section)
-        self.extract_toggle_btn.grid(row=0, column=2, padx=(10, 0))
-
-        # Collapsible extractor content
+        # Extract content (always visible now — no collapsible toggle needed)
         self.extract_content = ctk.CTkFrame(self.frame_extract, fg_color="transparent")
-        self.extract_content.grid(row=1, column=0, sticky="ew", padx=10, pady=5)
+        self.extract_content.grid(row=0, column=0, sticky="ew", padx=10, pady=10)
         self.extract_content.grid_columnconfigure(0, weight=1)
-        self.extract_content.grid_remove()  # Start collapsed
 
         # Mode tabs (URL vs HTML) - styled as toggle tabs
         tab_frame = ctk.CTkFrame(self.extract_content, fg_color="transparent")
@@ -819,25 +836,22 @@ class AudioBriefingApp(ctk.CTk):
         self.extract_results_list.grid(row=1, column=0, sticky="ew", padx=5, pady=5)
         self.extract_results_list.grid_columnconfigure(0, weight=1)
 
-        # ============ TRANSCRIPTION SECTION (nested dropdown) ============
-        self.frame_transcription = ctk.CTkFrame(self.advanced_content)
-        self.frame_transcription.grid(row=1, column=0, sticky="ew", pady=(0, 5))
+        # Transcription Card — on Audio page (always visible, no toggle)
+        self.frame_transcription = ctk.CTkFrame(self.pages["audio"], fg_color=COLORS["bg_secondary"], corner_radius=12, border_width=1, border_color=COLORS["border"])
+        self.frame_transcription.grid(row=2, column=0, padx=20, sticky="ew", pady=(0, 20))
         self.frame_transcription.grid_columnconfigure(0, weight=1)
 
-        # Transcription header with toggle
-        transcription_header = ctk.CTkFrame(self.frame_transcription, fg_color="transparent")
-        transcription_header.grid(row=0, column=0, sticky="ew", padx=10, pady=(10, 5))
-        transcription_header.grid_columnconfigure(1, weight=1)
+        # Transcription section title inside the card
+        ctk.CTkLabel(
+            self.frame_transcription, text="Transcription",
+            font=ctk.CTkFont(size=15, weight="bold"),
+            text_color=COLORS["text_primary"]
+        ).grid(row=0, column=0, padx=16, pady=(16, 8), sticky="w")
 
-        ctk.CTkLabel(transcription_header, text="Transcription", font=ctk.CTkFont(size=13, weight="bold")).grid(row=0, column=0, sticky="w")
-        self.transcription_toggle_btn = ctk.CTkButton(transcription_header, text="Expand", width=70, fg_color="gray", command=self.toggle_transcription_section)
-        self.transcription_toggle_btn.grid(row=0, column=2, padx=(10, 0))
-
-        # Collapsible transcription content
+        # Transcription content (always visible now)
         self.transcription_content = ctk.CTkFrame(self.frame_transcription, fg_color="transparent")
-        self.transcription_content.grid(row=1, column=0, sticky="ew", padx=10, pady=5)
+        self.transcription_content.grid(row=1, column=0, sticky="ew", padx=10, pady=(0, 10))
         self.transcription_content.grid_columnconfigure(0, weight=1)
-        self.transcription_content.grid_remove()  # Start collapsed
 
         # Description
         ctk.CTkLabel(
@@ -885,25 +899,23 @@ class AudioBriefingApp(ctk.CTk):
         self.label_transcription.grid(row=3, column=0, sticky="w", pady=(5, 0))
         self.label_transcription.bind("<Button-1>", lambda e: self.show_transcription_guide())
 
-        # ============ SCHEDULER SECTION (nested dropdown) ============
-        self.frame_scheduler = ctk.CTkFrame(self.advanced_content)
-        self.frame_scheduler.grid(row=2, column=0, sticky="ew", pady=(0, 5))
+        # ============ SCHEDULER PAGE ============
+        ctk.CTkLabel(
+            self.pages["scheduler"],
+            text="Scheduler",
+            font=ctk.CTkFont(size=20, weight="bold"),
+            text_color=COLORS["text_primary"]
+        ).grid(row=0, column=0, padx=20, pady=(20, 10), sticky="w")
+
+        # Scheduler card
+        self.frame_scheduler = ctk.CTkFrame(self.pages["scheduler"], fg_color=COLORS["bg_secondary"], corner_radius=12, border_width=1, border_color=COLORS["border"])
+        self.frame_scheduler.grid(row=1, column=0, padx=20, sticky="ew", pady=(0, 10))
         self.frame_scheduler.grid_columnconfigure(0, weight=1)
 
-        # Scheduler header with toggle
-        scheduler_header = ctk.CTkFrame(self.frame_scheduler, fg_color="transparent")
-        scheduler_header.grid(row=0, column=0, sticky="ew", padx=10, pady=(10, 5))
-        scheduler_header.grid_columnconfigure(1, weight=1)
-
-        ctk.CTkLabel(scheduler_header, text="Scheduler", font=ctk.CTkFont(size=13, weight="bold")).grid(row=0, column=0, sticky="w")
-        self.scheduler_toggle_btn = ctk.CTkButton(scheduler_header, text="Expand", width=70, fg_color="gray", command=self.toggle_scheduler_section)
-        self.scheduler_toggle_btn.grid(row=0, column=2, padx=(10, 0))
-
-        # Collapsible scheduler content
+        # Scheduler content (always visible now — own page)
         self.scheduler_content = ctk.CTkFrame(self.frame_scheduler, fg_color="transparent")
-        self.scheduler_content.grid(row=1, column=0, sticky="ew", padx=10, pady=5)
+        self.scheduler_content.grid(row=0, column=0, sticky="ew", padx=10, pady=10)
         self.scheduler_content.grid_columnconfigure(0, weight=1)
-        self.scheduler_content.grid_remove()  # Start collapsed
 
         # Description
         ctk.CTkLabel(
@@ -1038,31 +1050,50 @@ class AudioBriefingApp(ctk.CTk):
         # Initialize scheduler (but don't start it yet)
         self._init_scheduler()
 
-        # Open Folder Button
-        self.btn_open = ctk.CTkButton(self.main_scroll, text="Open Output Folder", fg_color="transparent", border_width=2, text_color=("gray10", "#DCE4EE"), command=self.open_output_folder)
-        self.btn_open.grid(row=7, column=0, padx=20, pady=(0, 10))
+        # Cloud Scheduler Card (on Scheduler page, below the local scheduler)
+        self._build_cloud_scheduler_card()
 
-        # Status row (at the bottom)
-        status_frame = ctk.CTkFrame(self.main_scroll, fg_color="transparent")
-        status_frame.grid(row=8, column=0, padx=20, pady=(10, 5), sticky="ew")
-        status_frame.grid_columnconfigure(0, weight=1)
+        # Open Folder button — on Summarize page (convenient after generating content)
+        self.btn_open = ctk.CTkButton(
+            self.pages["summarize"], text="Open Output Folder",
+            fg_color="transparent", border_width=2,
+            text_color=COLORS["text_primary"],
+            hover_color=COLORS["bg_tertiary"],
+            corner_radius=8,
+            command=self.open_output_folder
+        )
+        self.btn_open.grid(row=3, column=0, padx=20, pady=(10, 10))
 
-        self.label_status = ctk.CTkLabel(status_frame, text="Ready", text_color=("gray10", "#DCE4EE"), font=("Arial", 14, "bold"))
+        # Status label — on Summarize page
+        sum_status_frame = ctk.CTkFrame(self.pages["summarize"], fg_color="transparent")
+        sum_status_frame.grid(row=4, column=0, padx=20, pady=(5, 5), sticky="ew")
+        sum_status_frame.grid_columnconfigure(0, weight=1)
+
+        self.label_status = ctk.CTkLabel(sum_status_frame, text="Ready", text_color=COLORS["text_primary"], font=ctk.CTkFont(size=14, weight="bold"))
         self.label_status.grid(row=0, column=0, sticky="w")
 
-        # Compression Status Indicator (at the very bottom)
+        # ============ SETTINGS PAGE ============
+        self._build_settings_page()
+
+        # ============ HOME PAGE ============
+        self._build_home_page()
+
+        # ============ GUIDE PAGE ============
+        self._build_guide_page()
+
+        # Compression status — tracked for settings page
         self.compression_enabled = check_ffmpeg()
-        compression_text = "✓ Compression enabled" if self.compression_enabled else "⚠ Compression disabled - see installation guide"
+        compression_text = "✓ Compression enabled" if self.compression_enabled else "⚠ Compression disabled"
         compression_color = "green" if self.compression_enabled else "orange"
 
         self.label_compression = ctk.CTkLabel(
-            self.main_scroll,
+            self.pages["settings"],
             text=compression_text,
             text_color=compression_color,
             font=("Arial", 11),
-            cursor="hand2"  # Show clickable cursor
+            cursor="hand2"
         )
-        self.label_compression.grid(row=9, column=0, padx=20, pady=(0, 20))
+        self.label_compression.grid(row=10, column=0, padx=20, pady=(5, 20))
         self.label_compression.bind("<Button-1>", lambda e: self.show_compression_guide())
 
         # Initialize tooltips for all buttons
@@ -1079,6 +1110,544 @@ class AudioBriefingApp(ctk.CTk):
         if hasattr(self, '_on_textbox_change'):
             self._on_textbox_change()
 
+    # ========== Navigation System ==========
+
+    def _create_sidebar(self):
+        """Create the left sidebar navigation matching web app design."""
+        self.sidebar_frame = ctk.CTkFrame(
+            self, width=200, corner_radius=0,
+            fg_color=COLORS["bg_secondary"],
+            border_width=0
+        )
+        self.sidebar_frame.grid(row=0, column=0, sticky="nsew")
+        self.sidebar_frame.grid_propagate(False)  # Fixed width
+        self.sidebar_frame.grid_columnconfigure(0, weight=1)
+
+        # App title at top
+        title_frame = ctk.CTkFrame(self.sidebar_frame, fg_color="transparent")
+        title_frame.grid(row=0, column=0, padx=16, pady=(20, 8), sticky="ew")
+
+        ctk.CTkLabel(
+            title_frame, text="Daily Audio",
+            font=ctk.CTkFont(size=18, weight="bold"),
+            text_color=COLORS["text_primary"]
+        ).pack(anchor="w")
+        ctk.CTkLabel(
+            title_frame, text="Briefing",
+            font=ctk.CTkFont(size=18, weight="bold"),
+            text_color=COLORS["accent"]
+        ).pack(anchor="w")
+
+        # Separator
+        sep = ctk.CTkFrame(self.sidebar_frame, height=1, fg_color=COLORS["border"])
+        sep.grid(row=1, column=0, padx=16, pady=(8, 12), sticky="ew")
+
+        # Navigation buttons
+        self.nav_buttons = {}
+        for i, (page_id, label) in enumerate(NAV_PAGES):
+            btn = ctk.CTkButton(
+                self.sidebar_frame, text=label,
+                anchor="w", height=40,
+                font=ctk.CTkFont(size=14),
+                fg_color="transparent",
+                text_color=COLORS["text_secondary"],
+                hover_color=COLORS["bg_tertiary"],
+                corner_radius=8,
+                command=lambda p=page_id: self._navigate_to(p)
+            )
+            btn.grid(row=i + 2, column=0, padx=10, pady=2, sticky="ew")
+            self.nav_buttons[page_id] = btn
+
+        # Push version/status to bottom
+        self.sidebar_frame.grid_rowconfigure(len(NAV_PAGES) + 2, weight=1)
+
+        # Status area at bottom of sidebar
+        status_frame = ctk.CTkFrame(self.sidebar_frame, fg_color="transparent")
+        status_frame.grid(row=len(NAV_PAGES) + 3, column=0, padx=16, pady=(8, 16), sticky="ew")
+
+        self.sidebar_status_label = ctk.CTkLabel(
+            status_frame, text="Ready",
+            font=ctk.CTkFont(size=11),
+            text_color=COLORS["text_muted"]
+        )
+        self.sidebar_status_label.pack(anchor="w")
+
+        self.sidebar_version_label = ctk.CTkLabel(
+            status_frame, text="v1.0 Alpha",
+            font=ctk.CTkFont(size=10),
+            text_color=COLORS["text_muted"]
+        )
+        self.sidebar_version_label.pack(anchor="w", pady=(4, 0))
+
+    def _create_pages(self):
+        """Create all page frames (one per navigation item)."""
+        for page_id, _ in NAV_PAGES:
+            page = ctk.CTkScrollableFrame(
+                self.page_container,
+                fg_color=COLORS["bg_primary"],
+                corner_radius=0
+            )
+            page.grid(row=0, column=0, sticky="nsew")
+            page.grid_columnconfigure(0, weight=1)
+            # Widen scrollbar
+            try:
+                page._scrollbar.configure(width=14)
+            except Exception:
+                pass
+            self.pages[page_id] = page
+            page.grid_remove()  # All hidden initially
+
+        # Show home page by default
+        self.pages["home"].grid()
+        self._current_page = "home"
+        self.nav_buttons["home"].configure(
+            fg_color=COLORS["bg_tertiary"],
+            text_color=COLORS["accent"]
+        )
+
+    def _navigate_to(self, page_name: str):
+        """Switch to a page (hides current, shows target, highlights nav)."""
+        if page_name == self._current_page:
+            return
+
+        # Hide current page
+        if self._current_page in self.pages:
+            self.pages[self._current_page].grid_remove()
+            if self._current_page in self.nav_buttons:
+                self.nav_buttons[self._current_page].configure(
+                    fg_color="transparent",
+                    text_color=COLORS["text_secondary"]
+                )
+
+        # Show target page
+        if page_name in self.pages:
+            self.pages[page_name].grid()
+            if page_name in self.nav_buttons:
+                self.nav_buttons[page_name].configure(
+                    fg_color=COLORS["bg_tertiary"],
+                    text_color=COLORS["accent"]
+                )
+            self._current_page = page_name
+
+            # Page-specific refresh hooks
+            if page_name == "scheduler":
+                self._refresh_scheduler_tasks()
+            elif page_name == "settings":
+                self._refresh_settings_page()
+
+    def _create_card(self, parent, title=None, padding=16):
+        """Create a card-styled frame matching web app visual language."""
+        card = ctk.CTkFrame(
+            parent,
+            fg_color=COLORS["bg_secondary"],
+            corner_radius=12,
+            border_width=1,
+            border_color=COLORS["border"]
+        )
+        if title:
+            ctk.CTkLabel(
+                card, text=title,
+                font=ctk.CTkFont(size=15, weight="bold"),
+                text_color=COLORS["text_primary"]
+            ).grid(row=0, column=0, padx=padding, pady=(padding, 8), sticky="w")
+            card._content_row = 1
+        else:
+            card._content_row = 0
+        card.grid_columnconfigure(0, weight=1)
+        return card
+
+    def _refresh_settings_page(self):
+        """Refresh settings page content (called when navigating to Settings)."""
+        # Update compression status
+        if hasattr(self, 'label_compression'):
+            self.compression_enabled = check_ffmpeg()
+            compression_text = "✓ Compression enabled" if self.compression_enabled else "⚠ Compression disabled"
+            compression_color = "green" if self.compression_enabled else "orange"
+            self.label_compression.configure(text=compression_text, text_color=compression_color)
+
+    def _build_home_page(self):
+        """Build the Home/Dashboard page with quick actions."""
+        page = self.pages["home"]
+
+        # Welcome header
+        ctk.CTkLabel(
+            page, text="Daily Audio Briefing",
+            font=ctk.CTkFont(size=24, weight="bold"),
+            text_color=COLORS["text_primary"]
+        ).grid(row=0, column=0, padx=20, pady=(20, 5), sticky="w")
+
+        ctk.CTkLabel(
+            page, text="Your personalized news and content briefing tool",
+            font=ctk.CTkFont(size=13),
+            text_color=COLORS["text_secondary"]
+        ).grid(row=1, column=0, padx=20, pady=(0, 15), sticky="w")
+
+        # Quick Actions card
+        actions_card = self._create_card(page, title="Quick Actions")
+        actions_card.grid(row=2, column=0, padx=20, pady=(0, 12), sticky="ew")
+
+        actions_frame = ctk.CTkFrame(actions_card, fg_color="transparent")
+        actions_frame.grid(row=1, column=0, padx=16, pady=(0, 16), sticky="ew")
+        actions_frame.grid_columnconfigure((0, 1, 2), weight=1)
+
+        # Quick action buttons
+        ctk.CTkButton(
+            actions_frame, text="📰  Get Summaries",
+            fg_color=COLORS["accent"], hover_color=COLORS["accent_hover"],
+            corner_radius=8, height=40,
+            command=lambda: self._navigate_to("summarize")
+        ).grid(row=0, column=0, padx=(0, 6), sticky="ew")
+
+        ctk.CTkButton(
+            actions_frame, text="📊  Extract Data",
+            fg_color=COLORS["accent"], hover_color=COLORS["accent_hover"],
+            corner_radius=8, height=40,
+            command=lambda: self._navigate_to("extract")
+        ).grid(row=0, column=1, padx=6, sticky="ew")
+
+        ctk.CTkButton(
+            actions_frame, text="🔊  Generate Audio",
+            fg_color=COLORS["accent"], hover_color=COLORS["accent_hover"],
+            corner_radius=8, height=40,
+            command=lambda: self._navigate_to("audio")
+        ).grid(row=0, column=2, padx=(6, 0), sticky="ew")
+
+        # Status card
+        status_card = self._create_card(page, title="System Status")
+        status_card.grid(row=3, column=0, padx=20, pady=(0, 12), sticky="ew")
+
+        status_content = ctk.CTkFrame(status_card, fg_color="transparent")
+        status_content.grid(row=1, column=0, padx=16, pady=(0, 16), sticky="ew")
+        status_content.grid_columnconfigure(1, weight=1)
+
+        # Compression status
+        ffmpeg_ok = check_ffmpeg()
+        self._home_ffmpeg_dot = ctk.CTkLabel(
+            status_content,
+            text="●" if ffmpeg_ok else "●",
+            text_color=COLORS["success"] if ffmpeg_ok else COLORS["warning"],
+            font=ctk.CTkFont(size=14)
+        )
+        self._home_ffmpeg_dot.grid(row=0, column=0, padx=(0, 8), sticky="w")
+        ctk.CTkLabel(
+            status_content, text="ffmpeg (audio compression)",
+            font=ctk.CTkFont(size=12), text_color=COLORS["text_secondary"]
+        ).grid(row=0, column=1, sticky="w")
+
+        # Open output folder button
+        ctk.CTkButton(
+            page, text="Open Output Folder",
+            fg_color="transparent", border_width=1,
+            border_color=COLORS["border"],
+            text_color=COLORS["text_secondary"],
+            hover_color=COLORS["bg_tertiary"],
+            corner_radius=8,
+            command=self.open_output_folder
+        ).grid(row=4, column=0, padx=20, pady=(0, 20))
+
+    def _build_settings_page(self):
+        """Build the Settings page (replaces modal dialog)."""
+        page = self.pages["settings"]
+
+        ctk.CTkLabel(
+            page, text="Settings",
+            font=ctk.CTkFont(size=20, weight="bold"),
+            text_color=COLORS["text_primary"]
+        ).grid(row=0, column=0, padx=20, pady=(20, 10), sticky="w")
+
+        # Text Scale card
+        scale_card = self._create_card(page, title="Display")
+        scale_card.grid(row=1, column=0, padx=20, pady=(0, 12), sticky="ew")
+
+        scale_content = ctk.CTkFrame(scale_card, fg_color="transparent")
+        scale_content.grid(row=1, column=0, padx=16, pady=(0, 16), sticky="ew")
+        scale_content.grid_columnconfigure(1, weight=1)
+
+        ctk.CTkLabel(scale_content, text="Text Size:", font=ctk.CTkFont(size=12)).grid(row=0, column=0, sticky="w")
+
+        self.settings_text_scale_var = ctk.DoubleVar(value=self._current_text_scale)
+        self.settings_text_scale_slider = ctk.CTkSlider(
+            scale_content,
+            from_=0.5, to=1.5,
+            number_of_steps=20,
+            variable=self.settings_text_scale_var,
+            command=self._on_settings_scale_change
+        )
+        self.settings_text_scale_slider.grid(row=0, column=1, padx=(10, 10), sticky="ew")
+
+        self.settings_scale_label = ctk.CTkLabel(
+            scale_content,
+            text=f"{int(self._current_text_scale * 100)}%",
+            font=ctk.CTkFont(size=12),
+            text_color=COLORS["text_secondary"]
+        )
+        self.settings_scale_label.grid(row=0, column=2, sticky="e")
+
+        # System status card
+        sys_card = self._create_card(page, title="System Status")
+        sys_card.grid(row=2, column=0, padx=20, pady=(0, 12), sticky="ew")
+
+        sys_content = ctk.CTkFrame(sys_card, fg_color="transparent")
+        sys_content.grid(row=1, column=0, padx=16, pady=(0, 16), sticky="ew")
+
+        # Show dependency statuses
+        deps = [
+            ("ffmpeg", check_ffmpeg(), "Audio compression"),
+            ("gTTS", True, "Fast text-to-speech"),  # Always available
+        ]
+        # Check optional deps
+        try:
+            import faster_whisper
+            whisper_ok = True
+        except ImportError:
+            whisper_ok = False
+        deps.append(("Whisper", whisper_ok, "Audio transcription"))
+
+        kokoro_path = os.path.join(get_data_directory(), "kokoro-v1.0.onnx")
+        kokoro_ok = os.path.exists(kokoro_path)
+        deps.append(("Kokoro", kokoro_ok, "Quality text-to-speech"))
+
+        for i, (name, available, desc) in enumerate(deps):
+            dot_color = COLORS["success"] if available else COLORS["warning"]
+            ctk.CTkLabel(
+                sys_content, text="●", text_color=dot_color,
+                font=ctk.CTkFont(size=14)
+            ).grid(row=i, column=0, padx=(0, 8), sticky="w", pady=2)
+            ctk.CTkLabel(
+                sys_content, text=f"{name} — {desc}",
+                font=ctk.CTkFont(size=12), text_color=COLORS["text_secondary"]
+            ).grid(row=i, column=1, sticky="w", pady=2)
+
+    def _on_settings_scale_change(self, value):
+        """Handle text scale slider change on Settings page."""
+        pct = int(value * 100)
+        if hasattr(self, 'settings_scale_label'):
+            self.settings_scale_label.configure(text=f"{pct}%")
+        self._current_text_scale = value
+        self._apply_text_scale()
+        # Save to settings
+        self.settings['text_scale'] = value
+        self._save_settings()
+
+    def _build_cloud_scheduler_card(self):
+        """Build the Cloud Scheduler connection card on the Scheduler page."""
+        cloud_card = self._create_card(self.pages["scheduler"], title="Cloud Scheduler")
+        cloud_card.grid(row=2, column=0, padx=20, pady=(0, 12), sticky="ew")
+
+        cloud_content = ctk.CTkFrame(cloud_card, fg_color="transparent")
+        cloud_content.grid(row=1, column=0, padx=16, pady=(0, 16), sticky="ew")
+        cloud_content.grid_columnconfigure(1, weight=1)
+
+        ctk.CTkLabel(
+            cloud_content,
+            text="Connect to your cloud server for 24/7 scheduling",
+            font=ctk.CTkFont(size=12),
+            text_color=COLORS["text_secondary"]
+        ).grid(row=0, column=0, columnspan=3, sticky="w", pady=(0, 10))
+
+        # Server URL
+        ctk.CTkLabel(
+            cloud_content, text="Server URL:",
+            font=ctk.CTkFont(size=12)
+        ).grid(row=1, column=0, sticky="w", padx=(0, 8))
+
+        default_url = self.settings.get('server_url', '')
+        self.cloud_url_entry = ctk.CTkEntry(
+            cloud_content, placeholder_text="https://your-app.onrender.com",
+            font=ctk.CTkFont(size=12),
+            fg_color=COLORS["bg_tertiary"],
+            border_color=COLORS["border"],
+            corner_radius=8
+        )
+        self.cloud_url_entry.grid(row=1, column=1, sticky="ew", padx=(0, 8))
+        if default_url:
+            self.cloud_url_entry.insert(0, default_url)
+
+        # Test Connection button
+        self.btn_test_cloud = ctk.CTkButton(
+            cloud_content, text="Test Connection",
+            width=130, corner_radius=8,
+            fg_color=COLORS["bg_tertiary"],
+            border_width=1, border_color=COLORS["border"],
+            hover_color=COLORS["accent"],
+            command=self._test_cloud_connection
+        )
+        self.btn_test_cloud.grid(row=1, column=2, sticky="e")
+
+        # Connection status
+        self.cloud_status_label = ctk.CTkLabel(
+            cloud_content, text="● Not connected",
+            font=ctk.CTkFont(size=11),
+            text_color=COLORS["text_muted"]
+        )
+        self.cloud_status_label.grid(row=2, column=0, columnspan=3, sticky="w", pady=(8, 0))
+
+        # Mode selector
+        mode_frame = ctk.CTkFrame(cloud_content, fg_color="transparent")
+        mode_frame.grid(row=3, column=0, columnspan=3, sticky="ew", pady=(10, 0))
+
+        ctk.CTkLabel(
+            mode_frame, text="Scheduler Mode:",
+            font=ctk.CTkFont(size=12)
+        ).pack(side="left", padx=(0, 12))
+
+        self._scheduler_mode = "local"
+        self.scheduler_mode_seg = ctk.CTkSegmentedButton(
+            mode_frame,
+            values=["Local", "Cloud"],
+            command=self._on_scheduler_mode_change,
+            font=ctk.CTkFont(size=12),
+            corner_radius=8
+        )
+        self.scheduler_mode_seg.set("Local")
+        self.scheduler_mode_seg.pack(side="left")
+
+        # Cloud client (initialized when needed)
+        self._cloud_client = None
+
+    def _test_cloud_connection(self):
+        """Test connection to the cloud scheduler server."""
+        url = self.cloud_url_entry.get().strip()
+        if not url:
+            self.cloud_status_label.configure(
+                text="● Enter a server URL first",
+                text_color=COLORS["warning"]
+            )
+            return
+
+        # Save URL to settings
+        self.settings['server_url'] = url
+        self._save_settings()
+
+        self.cloud_status_label.configure(
+            text="● Testing...",
+            text_color=COLORS["text_muted"]
+        )
+        self.btn_test_cloud.configure(state="disabled")
+
+        def _test():
+            from cloud_scheduler_client import CloudSchedulerClient
+            client = CloudSchedulerClient(url)
+            ok, msg = client.test_connection()
+            if ok:
+                self._cloud_client = client
+                client.refresh_tasks()
+            self.after(0, lambda: self._on_cloud_test_result(ok, msg))
+
+        threading.Thread(target=_test, daemon=True).start()
+
+    def _on_cloud_test_result(self, ok: bool, msg: str):
+        """Handle cloud connection test result (called on main thread)."""
+        self.btn_test_cloud.configure(state="normal")
+        if ok:
+            task_count = len(self._cloud_client.tasks) if self._cloud_client else 0
+            self.cloud_status_label.configure(
+                text=f"● Connected — {task_count} task{'s' if task_count != 1 else ''}",
+                text_color=COLORS["success"]
+            )
+        else:
+            self.cloud_status_label.configure(
+                text=f"● {msg}",
+                text_color=COLORS["danger"]
+            )
+
+    def _on_scheduler_mode_change(self, value):
+        """Handle Local/Cloud mode switch."""
+        mode = value.lower()
+        if mode == self._scheduler_mode:
+            return
+
+        if mode == "cloud" and not self._cloud_client:
+            # Must test connection first
+            self.cloud_status_label.configure(
+                text="● Test connection first before switching to Cloud mode",
+                text_color=COLORS["warning"]
+            )
+            self.scheduler_mode_seg.set("Local")
+            return
+
+        self._scheduler_mode = mode
+        self._refresh_scheduler_tasks()
+
+    def _get_active_scheduler(self):
+        """Return the active scheduler backend (local or cloud)."""
+        if self._scheduler_mode == "cloud" and self._cloud_client:
+            return self._cloud_client
+        return self._scheduler
+
+    def _build_guide_page(self):
+        """Build the Guide/Help page."""
+        page = self.pages["guide"]
+
+        ctk.CTkLabel(
+            page, text="Guide",
+            font=ctk.CTkFont(size=20, weight="bold"),
+            text_color=COLORS["text_primary"]
+        ).grid(row=0, column=0, padx=20, pady=(20, 10), sticky="w")
+
+        # Alpha warning
+        alpha_card = ctk.CTkFrame(
+            page, fg_color="#3f3a1e", corner_radius=12,
+            border_width=1, border_color="#665c1e"
+        )
+        alpha_card.grid(row=1, column=0, padx=20, pady=(0, 12), sticky="ew")
+        alpha_card.grid_columnconfigure(0, weight=1)
+        ctk.CTkLabel(
+            alpha_card,
+            text="⚠️  Alpha Version — Features may change. Report issues on GitHub.",
+            font=ctk.CTkFont(size=12),
+            text_color=COLORS["warning"],
+            wraplength=600
+        ).grid(row=0, column=0, padx=16, pady=12, sticky="w")
+
+        # Getting Started card
+        gs_card = self._create_card(page, title="Getting Started")
+        gs_card.grid(row=2, column=0, padx=20, pady=(0, 12), sticky="ew")
+
+        steps = [
+            "1. Set your Gemini API key in Settings or on the Summarize page",
+            "2. Configure your YouTube/RSS sources via the Summarize page",
+            "3. Click 'Get Summaries' to fetch and summarize content",
+            "4. Switch to Audio to generate a spoken briefing",
+            "5. Use Scheduler to automate extraction on a schedule",
+        ]
+        gs_content = ctk.CTkFrame(gs_card, fg_color="transparent")
+        gs_content.grid(row=1, column=0, padx=16, pady=(0, 16), sticky="ew")
+        for i, step in enumerate(steps):
+            ctk.CTkLabel(
+                gs_content, text=step,
+                font=ctk.CTkFont(size=12),
+                text_color=COLORS["text_secondary"],
+                wraplength=600, justify="left"
+            ).grid(row=i, column=0, sticky="w", pady=2)
+
+        # Pages overview card
+        pages_card = self._create_card(page, title="Pages")
+        pages_card.grid(row=3, column=0, padx=20, pady=(0, 12), sticky="ew")
+
+        pages_info = [
+            ("📰 Summarize", "Fetch and summarize content from YouTube, RSS, and article sources"),
+            ("📊 Extract", "Extract structured data from newsletters and web pages"),
+            ("🔊 Audio", "Convert text to audio using gTTS (fast) or Kokoro (quality)"),
+            ("📅 Scheduler", "Automate extraction tasks on a schedule with Google Sheets export"),
+            ("⚙️ Settings", "Configure API keys, text size, and system dependencies"),
+        ]
+        pi_content = ctk.CTkFrame(pages_card, fg_color="transparent")
+        pi_content.grid(row=1, column=0, padx=16, pady=(0, 16), sticky="ew")
+        pi_content.grid_columnconfigure(1, weight=1)
+        for i, (name, desc) in enumerate(pages_info):
+            ctk.CTkLabel(
+                pi_content, text=name,
+                font=ctk.CTkFont(size=13, weight="bold"),
+                text_color=COLORS["text_primary"]
+            ).grid(row=i, column=0, sticky="w", padx=(0, 12), pady=3)
+            ctk.CTkLabel(
+                pi_content, text=desc,
+                font=ctk.CTkFont(size=12),
+                text_color=COLORS["text_secondary"],
+                wraplength=500, justify="left"
+            ).grid(row=i, column=1, sticky="w", pady=3)
+
     def _init_tooltips(self):
         """Initialize tooltips for all buttons in the application."""
         # News Summary section
@@ -1086,8 +1655,7 @@ class AudioBriefingApp(ctk.CTk):
             "Fetch article content from a URL and add it to the text area. Useful for importing news articles.")
         add_tooltip(self.btn_settings,
             "Open application settings including output folder and default options.")
-        add_tooltip(self.text_toggle_btn,
-            "Collapse or expand the News Summary text area.")
+        # text_toggle_btn removed — text area always visible on Summarize page
 
         # API Key section
         add_tooltip(self.btn_save_key,
@@ -1109,9 +1677,7 @@ class AudioBriefingApp(ctk.CTk):
         add_tooltip(self.btn_upload_file,
             "Upload a text file (.txt) to load into the News Summary area.")
 
-        # Advanced section tooltips
-        add_tooltip(self.advanced_toggle_btn,
-            "Expand or collapse the Advanced section (transcription features).")
+        # Transcription tooltips
         add_tooltip(self.btn_upload_audio,
             "Upload audio/video files (.mp3, .wav, .m4a) for transcription.")
         add_tooltip(self.btn_clear_selected,
@@ -1139,8 +1705,6 @@ class AudioBriefingApp(ctk.CTk):
             "Generate high-quality audio using Kokoro TTS. Better voice quality but requires more processing.")
 
         # Data Extractor section
-        add_tooltip(self.extract_toggle_btn,
-            "Expand or collapse the Data Extractor section.")
         add_tooltip(self.btn_tab_url,
             "INPUT MODE: Extract from URL(s). Click to select this mode. Paste newsletter URLs and the app will fetch and extract content.")
         add_tooltip(self.btn_tab_html,
@@ -1160,11 +1724,7 @@ class AudioBriefingApp(ctk.CTk):
         add_tooltip(self.btn_copy_text,
             "Copy all extracted items to clipboard.")
 
-        # Transcription section
-        add_tooltip(self.transcription_toggle_btn,
-            "Expand or collapse the Transcription section (audio-to-text).")
-
-        # Missing controls from fetch options
+        # Fetch options
         add_tooltip(self.entry_value,
             "Enter the number of hours, days, or videos to fetch summaries for.")
         add_tooltip(self.combo_mode,
@@ -1464,6 +2024,7 @@ class AudioBriefingApp(ctk.CTk):
         default_settings = {
             "auto_fetch_urls": False,  # Auto-fetch URLs in Direct Audio mode
             "text_scale": 100,  # Text scaling percentage (50-150%)
+            "server_url": "",  # Cloud scheduler server URL
         }
         try:
             if os.path.exists(settings_path):
@@ -5971,7 +6532,9 @@ Open Settings and click '? Start Tutorial'!""",
                         self.update_idletasks()
 
                         # Get the canvas and its scrollable region
-                        canvas = self.main_scroll._parent_canvas
+                        # Find the page scroll frame this widget belongs to
+                        current_page = self.pages.get(self._current_page, self.pages.get("summarize"))
+                        canvas = current_page._parent_canvas
 
                         # Get widget position relative to the scrollable content
                         widget_y = widget.winfo_y()
@@ -5979,7 +6542,7 @@ Open Settings and click '? Start Tutorial'!""",
 
                         # Get the parent frames to calculate total offset
                         parent = widget.master
-                        while parent and parent != self.main_scroll:
+                        while parent and parent != current_page:
                             widget_y += parent.winfo_y()
                             parent = parent.master
 
@@ -6001,7 +6564,7 @@ Open Settings and click '? Start Tutorial'!""",
                     except Exception as e:
                         # Fallback: try simple scroll to top for top widgets
                         try:
-                            self.main_scroll._parent_canvas.yview_moveto(0)
+                            current_page._parent_canvas.yview_moveto(0)
                         except Exception:
                             pass
             except Exception as e:
@@ -6797,55 +7360,11 @@ Open Settings and click '? Start Tutorial'!""",
         return configs
 
     def toggle_text_section(self):
-        """Toggle the news summary text area visibility."""
-        if self.text_expanded:
-            # Collapse: hide content
-            self.text_content.grid_remove()
-            self.text_toggle_btn.configure(text="Expand")
-            self.text_expanded = False
-        else:
-            # Expand: show content
-            self.text_content.grid()
-            self.text_toggle_btn.configure(text="Collapse")
-            self.text_expanded = True
+        """Toggle the news summary text area visibility (legacy — text always visible now)."""
+        pass  # No-op: text area is always visible on its own page
 
-    def toggle_extract_section(self):
-        """Toggle the data extraction section visibility."""
-        if self.extract_content.winfo_ismapped():
-            self.extract_content.grid_remove()
-            self.extract_toggle_btn.configure(text="Expand")
-        else:
-            self.extract_content.grid()
-            self.extract_toggle_btn.configure(text="Collapse")
-
-    def toggle_advanced_section(self):
-        """Toggle the advanced section visibility."""
-        if self.advanced_content.winfo_ismapped():
-            self.advanced_content.grid_remove()
-            self.advanced_toggle_btn.configure(text="Expand")
-        else:
-            self.advanced_content.grid()
-            self.advanced_toggle_btn.configure(text="Collapse")
-
-    def toggle_transcription_section(self):
-        """Toggle the transcription section visibility."""
-        if self.transcription_content.winfo_ismapped():
-            self.transcription_content.grid_remove()
-            self.transcription_toggle_btn.configure(text="Expand")
-        else:
-            self.transcription_content.grid()
-            self.transcription_toggle_btn.configure(text="Collapse")
-
-    def toggle_scheduler_section(self):
-        """Toggle the scheduler section visibility."""
-        if self.scheduler_content.winfo_ismapped():
-            self.scheduler_content.grid_remove()
-            self.scheduler_toggle_btn.configure(text="Expand")
-        else:
-            self.scheduler_content.grid()
-            self.scheduler_toggle_btn.configure(text="Collapse")
-            # Refresh task list when expanding
-            self._refresh_scheduler_tasks()
+    # toggle_extract_section, toggle_advanced_section, toggle_transcription_section,
+    # toggle_scheduler_section — REMOVED: pages have their own navigation now
 
     # ========== Scheduler Methods ==========
 
@@ -6969,21 +7488,38 @@ Open Settings and click '? Start Tutorial'!""",
 
     def _refresh_scheduler_tasks(self):
         """Refresh the scheduler tasks list display."""
+        scheduler = self._get_active_scheduler()
+
+        # For cloud mode, refresh from server in background
+        if self._scheduler_mode == "cloud" and self._cloud_client:
+            def _fetch():
+                self._cloud_client.refresh_tasks()
+                self.after(0, self._render_scheduler_tasks)
+            threading.Thread(target=_fetch, daemon=True).start()
+            return
+
+        self._render_scheduler_tasks()
+
+    def _render_scheduler_tasks(self):
+        """Render the scheduler tasks list (called on main thread)."""
+        scheduler = self._get_active_scheduler()
+
         # Clear existing widgets
         for widget in self.scheduler_tasks_list.winfo_children():
             widget.destroy()
 
-        if not self._scheduler or not self._scheduler.tasks:
+        if not scheduler or not scheduler.tasks:
+            mode_text = "cloud server" if self._scheduler_mode == "cloud" else "local scheduler"
             self.scheduler_empty_label = ctk.CTkLabel(
                 self.scheduler_tasks_list,
-                text="No scheduled tasks. Click '+ Add Task' to create one.",
+                text=f"No scheduled tasks on {mode_text}. Click '+ Add Task' to create one.",
                 text_color="gray",
                 font=("Arial", 11)
             )
             self.scheduler_empty_label.grid(row=0, column=0, pady=20)
             return
 
-        for i, task in enumerate(self._scheduler.tasks):
+        for i, task in enumerate(scheduler.tasks):
             self._create_task_row(i, task)
 
     def _create_task_row(self, row: int, task):
@@ -7047,25 +7583,28 @@ Open Settings and click '? Start Tutorial'!""",
 
     def _toggle_task_enabled(self, task_id: str, enabled: bool):
         """Toggle a task's enabled state."""
-        if self._scheduler:
-            self._scheduler.update_task(task_id, {"enabled": enabled})
+        scheduler = self._get_active_scheduler()
+        if scheduler:
+            scheduler.update_task(task_id, {"enabled": enabled})
             self._refresh_scheduler_tasks()
 
     def _run_task_now(self, task_id: str):
         """Run a task immediately."""
-        if self._scheduler:
-            task = self._scheduler.get_task(task_id)
+        scheduler = self._get_active_scheduler()
+        if scheduler:
+            task = scheduler.get_task(task_id)
             if task:
                 self.label_status.configure(text=f"Running task: {task.name}...", text_color="orange")
-                self._scheduler.run_task_now(task_id)
+                scheduler.run_task_now(task_id)
 
     def _delete_task(self, task_id: str):
         """Delete a scheduled task."""
-        if self._scheduler:
-            task = self._scheduler.get_task(task_id)
+        scheduler = self._get_active_scheduler()
+        if scheduler:
+            task = scheduler.get_task(task_id)
             if task:
                 # Confirm deletion
-                if self._scheduler.delete_task(task_id):
+                if scheduler.delete_task(task_id):
                     self.label_status.configure(text=f"Deleted task: {task.name}", text_color="gray")
                     self._refresh_scheduler_tasks()
 
@@ -7222,10 +7761,10 @@ Open Settings and click '? Start Tutorial'!""",
                     sheet_name=new_sheet_name,
                     include_headers=new_headers,
                 )
-                self._scheduler.add_task(new_task)
+                self._get_active_scheduler().add_task(new_task)
                 self.label_status.configure(text=f"Created task: {new_name}", text_color="green")
             else:
-                self._scheduler.update_task(task.id, {
+                self._get_active_scheduler().update_task(task.id, {
                     "name": new_name,
                     "source_url": new_source,
                     "config_name": new_config,

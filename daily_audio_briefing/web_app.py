@@ -100,7 +100,13 @@ def _start_self_ping():
             time.sleep(240)  # 4 minutes
             try:
                 resp = _requests.get(health_url, timeout=10)
-                print(f"[keep-alive] Ping {resp.status_code}")
+                # Log memory usage for OOM diagnosis
+                try:
+                    data = resp.json()
+                    mem = data.get('memory_mb', '?')
+                    print(f"[keep-alive] Ping {resp.status_code} | Memory: {mem}MB")
+                except Exception:
+                    print(f"[keep-alive] Ping {resp.status_code}")
             except Exception as e:
                 print(f"[keep-alive] Ping failed: {e}")
 
@@ -730,6 +736,18 @@ HTML_TEMPLATE = '''
         .dep-badge .dot.orange { background: var(--warning); }
         .dep-badge .dot.red { background: var(--danger); }
 
+        .desktop-badge {
+            display: inline-block;
+            font-size: 0.65rem;
+            padding: 2px 8px;
+            border-radius: 6px;
+            background: rgba(74, 158, 255, 0.15);
+            color: var(--accent);
+            margin-left: 8px;
+            vertical-align: middle;
+            font-weight: 600;
+        }
+
         /* Results List */
         .result-item {
             background: var(--bg-tertiary);
@@ -1006,6 +1024,25 @@ HTML_TEMPLATE = '''
 
             <div class="card">
                 <div class="card-title">
+                    <svg fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9.75 17L9 20l-1 1h8l-1-1-.75-3M3 13h18M5 17h14a2 2 0 002-2V5a2 2 0 00-2-2H5a2 2 0 00-2 2v10a2 2 0 002 2z"/></svg>
+                    Desktop App
+                </div>
+                <p style="font-size:0.85rem;color:var(--text-secondary);margin-bottom:12px;">Get the full-featured desktop app for advanced capabilities:</p>
+                <ul style="font-size:0.82rem;color:var(--text-secondary);padding-left:20px;margin-bottom:12px;line-height:1.8;">
+                    <li><strong>Kokoro TTS</strong> — high-quality neural text-to-speech voices</li>
+                    <li><strong>Whisper</strong> — audio/video transcription</li>
+                    <li><strong>Local audio playback</strong> — preview and manage audio files</li>
+                    <li><strong>Offline mode</strong> — works without internet</li>
+                    <li><strong>Cloud sync</strong> — connects to this scheduler for 24/7 automation</li>
+                </ul>
+                <button class="btn btn-secondary" onclick="navigateTo('guide')" style="width:auto;">
+                    <svg width="16" height="16" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 6.253v13m0-13C10.832 5.477 9.246 5 7.5 5S4.168 5.477 3 6.253v13C4.168 18.477 5.754 18 7.5 18s3.332.477 4.5 1.253m0-13C13.168 5.477 14.754 5 16.5 5c1.747 0 3.332.477 4.5 1.253v13C19.832 18.477 18.247 18 16.5 18c-1.746 0-3.332.477-4.5 1.253"/></svg>
+                    Setup Instructions
+                </button>
+            </div>
+
+            <div class="card">
+                <div class="card-title">
                     <svg fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 8v4l3 3m6-3a9 9 0 11-18 0 9 9 0 0118 0z"/></svg>
                     Recent Summaries
                 </div>
@@ -1161,8 +1198,8 @@ HTML_TEMPLATE = '''
                     <button class="btn btn-primary" onclick="generateAudio('fast')" title="Quick generation using Google TTS — robotic but fast">
                         Fast (gTTS)
                     </button>
-                    <button class="btn btn-success" onclick="generateAudio('quality')" title="High-quality generation using Kokoro ONNX — natural voice, slower">
-                        Quality (Kokoro)
+                    <button class="btn btn-success" onclick="generateAudio('quality')" title="High-quality generation using Kokoro ONNX — natural voice, slower. Requires desktop app.">
+                        Quality (Kokoro) <span class="desktop-badge">Desktop App</span>
                     </button>
                 </div>
             </div>
@@ -1184,6 +1221,8 @@ HTML_TEMPLATE = '''
                     Scheduler
                     <span id="schedulerStatusBadge" style="margin-left:auto;font-size:0.75rem;padding:4px 10px;border-radius:12px;background:var(--bg-tertiary);color:var(--text-muted);">Loading...</span>
                 </div>
+
+                <p style="font-size:0.75rem;color:var(--text-muted);margin-bottom:12px;">This scheduler runs 24/7 in the cloud. The desktop app can connect to it for full-featured audio generation with Kokoro voices.</p>
 
                 <div style="display:flex;align-items:center;gap:12px;margin-bottom:16px;">
                     <div class="toggle" id="schedulerToggle" onclick="toggleScheduler()" title="Turn the background scheduler on or off"></div>
@@ -1386,6 +1425,24 @@ HTML_TEMPLATE = '''
                     <li><strong>Task vanished?</strong> &mdash; Tasks persist to Google Sheets and survive redeployments. If tasks are missing, check SCHEDULER_SHEET_ID env var is set.</li>
                     <li><strong>Extraction empty?</strong> &mdash; Some sites block automated access. Try a different URL or config.</li>
                 </ul>
+
+                <h3 style="color:var(--text-primary);margin:18px 0 8px;">Desktop App</h3>
+                <p>The desktop app provides advanced features not available in the web dashboard:</p>
+                <ul>
+                    <li><strong>Kokoro TTS</strong> — High-quality neural text-to-speech with multiple voices</li>
+                    <li><strong>Whisper Transcription</strong> — Convert audio/video files to text</li>
+                    <li><strong>Local audio playback</strong> — Preview and manage generated audio</li>
+                    <li><strong>Offline mode</strong> — Works without internet connection</li>
+                    <li><strong>Cloud sync</strong> — Connects to this web scheduler for 24/7 automation</li>
+                </ul>
+                <h4 style="color:var(--text-primary);margin:12px 0 6px;">Setup</h4>
+                <ol>
+                    <li>Download the app from <a href="https://github.com/wcfcarolina13/News-Summarizer/releases" target="_blank" style="color:var(--accent);">GitHub Releases</a></li>
+                    <li><strong>macOS:</strong> Open the .dmg and drag to Applications</li>
+                    <li><strong>Windows:</strong> Run the .exe installer</li>
+                    <li>Enter your Gemini API key in Settings</li>
+                    <li>To connect to this cloud scheduler: go to Scheduler → Cloud Scheduler → enter this server URL</li>
+                </ol>
 
                 <p style="margin-top:18px;font-size:0.75rem;color:var(--text-muted);">Built with Flask, Google Gemini AI, and Kokoro TTS. Source on <a href="https://github.com/wcfcarolina13/News-Summarizer" target="_blank" style="color:var(--accent);">GitHub</a>.</p>
 
@@ -3039,11 +3096,18 @@ def api_sheets_create_tab():
 
 @app.route('/health')
 def health():
-    """Health check."""
+    """Health check with memory stats (useful for diagnosing OOM on 512MB Render)."""
+    import resource
+    mem_mb = resource.getrusage(resource.RUSAGE_SELF).ru_maxrss / (1024 * 1024)  # macOS: bytes, Linux: KB
+    # Linux (Render) reports in KB, macOS in bytes — detect platform
+    import platform
+    if platform.system() == 'Linux':
+        mem_mb = resource.getrusage(resource.RUSAGE_SELF).ru_maxrss / 1024  # KB -> MB
     return jsonify({
         'status': 'ok',
         'timestamp': datetime.now().isoformat(),
         'scheduler_running': server_scheduler.is_running if server_scheduler else False,
+        'memory_mb': round(mem_mb, 1),
     })
 
 @app.route('/favicon.ico')

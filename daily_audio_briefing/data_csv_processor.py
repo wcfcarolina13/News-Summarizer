@@ -1002,6 +1002,9 @@ class DataCSVProcessor:
 
         return combined
 
+    # Max HTML size to load into memory (10MB) — prevents OOM on 512MB servers
+    MAX_RESPONSE_SIZE = 10 * 1024 * 1024
+
     def _fetch_content(self, url: str) -> str:
         """Fetch HTML content from URL with multiple fallback methods."""
         # Browser-like headers to bypass bot detection
@@ -1026,10 +1029,21 @@ class DataCSVProcessor:
                 url,
                 headers=headers,
                 timeout=self.config.timeout,
-                allow_redirects=True
+                allow_redirects=True,
+                stream=True
             )
             response.raise_for_status()
-            return response.text
+            # Guard against huge responses (OOM on 512MB servers)
+            content_len = response.headers.get('content-length')
+            if content_len and int(content_len) > self.MAX_RESPONSE_SIZE:
+                print(f"    [!] Response too large ({int(content_len) // 1024 // 1024}MB), skipping")
+                response.close()
+                return ""
+            text = response.text
+            if len(text) > self.MAX_RESPONSE_SIZE:
+                print(f"    [!] Response body too large ({len(text) // 1024 // 1024}MB), truncating")
+                text = text[:self.MAX_RESPONSE_SIZE]
+            return text
         except Exception as e:
             print(f"    [!] requests failed: {e}")
 
