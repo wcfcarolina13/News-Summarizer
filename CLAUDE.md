@@ -15,12 +15,12 @@ All source files are in `daily_audio_briefing/`.
 | `scheduler_daemon.py` | ~610 | Background daemon for scheduled tasks |
 | `get_youtube_news.py` | ~580 | YouTube video fetching and AI summarization |
 | `source_processor.py` | ~440 | Unified source routing |
-| `scheduler.py` | ~420 | Automated extraction task scheduler |
+| `scheduler.py` | ~570 | Automated extraction task scheduler (Sheets persistence, deferred loading) |
 | `audio_generator.py` | ~380 | Audio generation orchestration |
 | `make_audio_quality.py` | ~210 | Kokoro TTS high-quality audio |
-| `sheets_manager.py` | ~210 | Google Sheets export |
+| `sheets_manager.py` | ~350 | Google Sheets export, tab management, deduplication |
 | `file_manager.py` | ~155 | File I/O with frozen app support |
-| `web_app.py` | ~2700 | Flask web dashboard (scheduler, extraction, audio) — **NEVER read in full.** Use grep. |
+| `web_app.py` | ~2850 | Flask web dashboard (scheduler, extraction, audio) — **NEVER read in full.** Use grep. |
 | `server_scheduler.py` | ~80 | Flask-integrated scheduler for cloud deployment |
 
 Config files: `sources.json`, `instruction_profiles.json`, `scheduled_tasks.json`, `settings.json`
@@ -90,8 +90,20 @@ Deploy to Render.com free tier with keep-alive ping to prevent sleep.
 - `SERVER_MODE=true` — Enables auto-start of scheduler
 - `GEMINI_API_KEY` — For AI summarization
 - `GOOGLE_CREDENTIALS_JSON` — Full JSON of service account credentials (for Sheets)
+- `SCHEDULER_SHEET_ID` — Spreadsheet ID for task persistence across redeploys
 
-**Keep-alive:** Set up UptimeRobot (free) to ping `/health` every 5 minutes.
+**Keep-alive:** Self-ping built in (pings `/health` every 4 min) + UptimeRobot as backup.
+
+**Render constraints & mitigations:**
+- 512MB RAM limit → `yt-dlp` removed from server deps, server mode uses `max_workers=2`, `resolve_redirects=False`
+- Ephemeral filesystem → tasks persist to Google Sheets (`_scheduler_config` tab), 3-tier fallback: file → Sheets → env var
+- 120s worker timeout → `Scheduler.load_tasks()` deferred to background thread in server mode (Sheets API auth takes 4+ min on cold start)
+- `render.yaml` startCommand changes not auto-applied after initial creation → must also update in Render Dashboard → Settings
+
+**Start command (must match both render.yaml and Render Dashboard):**
+```
+gunicorn web_app:app --bind 0.0.0.0:$PORT --timeout 120 --workers 1 --preload
+```
 
 ## Current Status
 
@@ -112,9 +124,16 @@ Deploy to Render.com free tier with keep-alive ping to prevent sleep.
 
 **Server/Infra:**
 8. ~~Set up UptimeRobot keep-alive ping after Render deploy~~ ✅ Self-ping built-in + UptimeRobot
-9. Test Sheets export via env var credentials on server
+9. ~~Test Sheets export via env var credentials on server~~ ✅ Working (scheduler exports to Sheets)
 10. Verify web app feature parity with desktop version
-11. Persistent storage solution for Render (tasks lost on redeploy)
+11. ~~Persistent storage solution for Render (tasks lost on redeploy)~~ ✅ Google Sheets persistence with 3-tier fallback
+12. ~~Fix Render OOM crashes (512MB)~~ ✅ Removed yt-dlp, lean server config, deferred Sheets loading
+13. ~~Fix worker timeout on cold start~~ ✅ Deferred load_tasks() to background thread
+14. ~~Sheet tab rename detection~~ ✅ Auto-resolves renamed tabs (single-tab spreadsheets)
+15. ~~Sheet tab validation + create-tab in web UI~~ ✅ Blue checkmark / amber warning with Create button
+16. ~~Inline config editor in scheduler~~ ✅ Edit columns, patterns, blocked domains in task editor
+17. ~~Auto-dismiss notifications~~ ✅ 5s timeout for success/info, clear on tab change
+18. ~~Favicon serving on Render~~ ✅ Dedicated Flask routes instead of inline base64
 
 **Critical — API Cost Protection:**
 12. API usage rate limiter — hard cap to prevent unexpected bills from scheduler bursts
