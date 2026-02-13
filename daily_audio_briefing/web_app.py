@@ -1785,20 +1785,18 @@ HTML_TEMPLATE = '''
                 const data = await api('/api/dependencies');
                 const container = document.getElementById('depStatus');
 
-                if (data.server_mode) {
-                    container.innerHTML = '<p style="font-size:0.8rem;color:var(--text-muted);">Audio generation is available on the desktop app only.</p>';
-                } else {
-                    container.innerHTML = `
-                        <div class="dep-badge" title="Required for audio processing. Install: brew install ffmpeg">
-                            <span class="dot ${data.ffmpeg ? 'green' : 'orange'}"></span>
-                            ffmpeg
-                        </div>
-                        <div class="dep-badge" title="High-quality TTS engine. Requires kokoro-v1.0.onnx model file.">
-                            <span class="dot ${data.kokoro ? 'green' : 'orange'}"></span>
-                            Kokoro TTS
-                        </div>
-                    `;
-                }
+                container.innerHTML = `
+                    <div class="dep-badge" title="Required for audio processing. Install: brew install ffmpeg (macOS) or download from ffmpeg.org">
+                        <span class="dot ${data.ffmpeg ? 'green' : 'orange'}"></span>
+                        ffmpeg
+                        ${data.ffmpeg ? '' : '<span style="font-size:0.7rem;color:var(--text-muted);margin-left:4px;">brew install ffmpeg</span>'}
+                    </div>
+                    <div class="dep-badge" title="High-quality TTS engine. Requires kokoro-v1.0.onnx model file in the app directory.">
+                        <span class="dot ${data.kokoro ? 'green' : 'orange'}"></span>
+                        Kokoro TTS
+                        ${data.kokoro ? '' : '<span style="font-size:0.7rem;color:var(--text-muted);margin-left:4px;">model file not found</span>'}
+                    </div>
+                `;
 
                 // Also load voices
                 const voicesData = await api('/api/voices');
@@ -1900,38 +1898,30 @@ HTML_TEMPLATE = '''
 
                 // Load dependencies
                 const depData = await api('/api/dependencies');
-                if (depData.server_mode) {
-                    document.getElementById('systemStatus').innerHTML = `
-                        <p style="font-size:0.8rem;color:var(--text-muted);margin:0;">
-                            Running in <strong>server mode</strong> (Render.com). Audio dependencies are desktop-only and not needed here.
-                        </p>
-                    `;
-                } else {
-                    document.getElementById('systemStatus').innerHTML = `
-                        <div class="dep-badge" title="Audio/video processing tool. Required for audio generation.\nInstall: brew install ffmpeg (macOS) or download from ffmpeg.org">
-                            <span class="dot ${depData.ffmpeg ? 'green' : 'red'}"></span>
-                            ffmpeg
-                            ${depData.ffmpeg ? '' : '<span style="font-size:0.7rem;color:var(--text-muted);margin-left:4px;">brew install ffmpeg</span>'}
-                        </div>
-                        <div class="dep-badge" title="AI speech-to-text for transcribing YouTube audio.\nInstall: pip install faster-whisper">
-                            <span class="dot ${depData.faster_whisper ? 'green' : 'orange'}"></span>
-                            Whisper
-                            ${depData.faster_whisper ? '' : '<span style="font-size:0.7rem;color:var(--text-muted);margin-left:4px;">pip install faster-whisper</span>'}
-                        </div>
-                        <div class="dep-badge" title="High-quality text-to-speech engine.\nRequires kokoro-v1.0.onnx model file in the app directory.">
-                            <span class="dot ${depData.kokoro ? 'green' : 'orange'}"></span>
-                            Kokoro
-                            ${depData.kokoro ? '' : '<span style="font-size:0.7rem;color:var(--text-muted);margin-left:4px;">model file not found</span>'}
-                        </div>
-                        <p style="font-size:0.7rem;color:var(--text-muted);margin-top:8px;">
-                            <span class="dot green" style="display:inline-block;width:8px;height:8px;border-radius:50%;margin-right:4px;background:var(--success);"></span> Installed
-                            &nbsp;&nbsp;
-                            <span class="dot orange" style="display:inline-block;width:8px;height:8px;border-radius:50%;margin-right:4px;background:var(--warning);"></span> Optional (not installed)
-                            &nbsp;&nbsp;
-                            <span class="dot red" style="display:inline-block;width:8px;height:8px;border-radius:50%;margin-right:4px;background:var(--danger);"></span> Required (not installed)
-                        </p>
-                    `;
-                }
+                document.getElementById('systemStatus').innerHTML = `
+                    <div class="dep-badge" title="Audio/video processing tool. Required for audio generation.\nInstall: brew install ffmpeg (macOS) or download from ffmpeg.org">
+                        <span class="dot ${depData.ffmpeg ? 'green' : 'red'}"></span>
+                        ffmpeg
+                        ${depData.ffmpeg ? '' : '<span style="font-size:0.7rem;color:var(--text-muted);margin-left:4px;">brew install ffmpeg</span>'}
+                    </div>
+                    <div class="dep-badge" title="AI speech-to-text for transcribing YouTube audio.\nInstall: pip install faster-whisper">
+                        <span class="dot ${depData.faster_whisper ? 'green' : 'orange'}"></span>
+                        Whisper
+                        ${depData.faster_whisper ? '' : '<span style="font-size:0.7rem;color:var(--text-muted);margin-left:4px;">pip install faster-whisper</span>'}
+                    </div>
+                    <div class="dep-badge" title="High-quality text-to-speech engine.\nRequires kokoro-v1.0.onnx model file in the app directory.">
+                        <span class="dot ${depData.kokoro ? 'green' : 'orange'}"></span>
+                        Kokoro
+                        ${depData.kokoro ? '' : '<span style="font-size:0.7rem;color:var(--text-muted);margin-left:4px;">model file not found</span>'}
+                    </div>
+                    <p style="font-size:0.7rem;color:var(--text-muted);margin-top:8px;">
+                        <span style="display:inline-block;width:8px;height:8px;border-radius:50%;margin-right:4px;background:var(--success);"></span> Installed
+                        &nbsp;&nbsp;
+                        <span style="display:inline-block;width:8px;height:8px;border-radius:50%;margin-right:4px;background:var(--warning);"></span> Optional
+                        &nbsp;&nbsp;
+                        <span style="display:inline-block;width:8px;height:8px;border-radius:50%;margin-right:4px;background:var(--danger);"></span> Required
+                    </p>
+                `;
             } catch (e) {
                 console.error(e);
             }
