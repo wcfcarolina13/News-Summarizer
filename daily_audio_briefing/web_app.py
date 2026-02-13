@@ -981,15 +981,15 @@ HTML_TEMPLATE = '''
                     <svg fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 19V6l12-3v13M9 19c0 1.105-1.343 2-3 2s-3-.895-3-2 1.343-2 3-2 3 .895 3 2zm12-3c0 1.105-1.343 2-3 2s-3-.895-3-2 1.343-2 3-2 3 .895 3 2zM9 10l12-3"/></svg>
                     Quick Actions
                 </div>
-                <button class="btn btn-primary" onclick="navigateTo('summarize')">
+                <button class="btn btn-primary" onclick="navigateTo('summarize')" title="Fetch recent YouTube videos from your channels and generate an AI summary">
                     <svg width="18" height="18" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15 10l4.553-2.276A1 1 0 0121 8.618v6.764a1 1 0 01-1.447.894L15 14M5 18h8a2 2 0 002-2V8a2 2 0 00-2-2H5a2 2 0 00-2 2v8a2 2 0 002 2z"/></svg>
                     Get YouTube News
                 </button>
-                <button class="btn btn-secondary" onclick="navigateTo('extract')">
+                <button class="btn btn-secondary" onclick="navigateTo('extract')" title="Parse newsletters and extract structured data (links, titles, summaries)">
                     <svg width="18" height="18" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z"/></svg>
                     Extract from Newsletter
                 </button>
-                <button class="btn btn-secondary" onclick="navigateTo('audio')">
+                <button class="btn btn-secondary" onclick="navigateTo('audio')" title="Convert your text summary into a spoken audio briefing">
                     <svg width="18" height="18" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 11a7 7 0 01-7 7m0 0a7 7 0 01-7-7m7 7v4m0 0H8m4 0h4m-4-8a3 3 0 01-3-3V5a3 3 0 116 0v6a3 3 0 01-3 3z"/></svg>
                     Generate Audio
                 </button>
@@ -1073,8 +1073,8 @@ HTML_TEMPLATE = '''
                 </div>
 
                 <div class="tabs">
-                    <div class="tab active" onclick="setExtractMode('url')">URL</div>
-                    <div class="tab" onclick="setExtractMode('html')">Paste HTML</div>
+                    <div class="tab active" onclick="setExtractMode('url')" title="Enter a URL and the app will fetch and parse it automatically">URL</div>
+                    <div class="tab" onclick="setExtractMode('html')" title="Paste raw HTML source if the URL is behind a paywall or login">Paste HTML</div>
                 </div>
 
                 <div id="extractUrlSection">
@@ -1161,7 +1161,7 @@ HTML_TEMPLATE = '''
             <div class="card" id="audioPlayerCard" style="display: none;">
                 <div class="card-title">Generated Audio</div>
                 <audio id="audioPlayer" controls></audio>
-                <button class="btn btn-secondary" style="margin-top: 12px;" onclick="downloadAudio()">
+                <button class="btn btn-secondary" style="margin-top: 12px;" onclick="downloadAudio()" title="Download the generated audio file to your device">
                     Download Audio
                 </button>
             </div>
@@ -1177,9 +1177,9 @@ HTML_TEMPLATE = '''
                 </div>
 
                 <div style="display:flex;align-items:center;gap:12px;margin-bottom:16px;">
-                    <div class="toggle" id="schedulerToggle" onclick="toggleScheduler()"></div>
-                    <span style="font-size:0.85rem;color:var(--text-secondary);">Scheduler Active</span>
-                    <span id="sheetsStatus" style="margin-left:auto;font-size:0.7rem;padding:4px 8px;border-radius:8px;"></span>
+                    <div class="toggle" id="schedulerToggle" onclick="toggleScheduler()" title="Turn the background scheduler on or off"></div>
+                    <span style="font-size:0.85rem;color:var(--text-secondary);" title="When active, tasks run automatically on their configured schedule">Scheduler Active</span>
+                    <span id="sheetsStatus" style="margin-left:auto;font-size:0.7rem;padding:4px 8px;border-radius:8px;" title="Shows whether Google Sheets credentials are configured for data export"></span>
                 </div>
 
                 <div id="taskList" style="margin-bottom:16px;">
@@ -1374,7 +1374,7 @@ HTML_TEMPLATE = '''
                     <li><strong>No summaries?</strong> &mdash; Check that sources are configured in Settings</li>
                     <li><strong>API errors?</strong> &mdash; Verify your API key is correct</li>
                     <li><strong>Sheets not working?</strong> &mdash; Ensure the spreadsheet is shared with the service account email</li>
-                    <li><strong>Task vanished?</strong> &mdash; Server redeployments clear task data. Re-create the task.</li>
+                    <li><strong>Task vanished?</strong> &mdash; Tasks persist to Google Sheets and survive redeployments. If tasks are missing, check SCHEDULER_SHEET_ID env var is set.</li>
                     <li><strong>Extraction empty?</strong> &mdash; Some sites block automated access. Try a different URL or config.</li>
                 </ul>
 
@@ -1785,16 +1785,20 @@ HTML_TEMPLATE = '''
                 const data = await api('/api/dependencies');
                 const container = document.getElementById('depStatus');
 
-                container.innerHTML = `
-                    <div class="dep-badge">
-                        <span class="dot ${data.ffmpeg ? 'green' : 'orange'}"></span>
-                        ffmpeg
-                    </div>
-                    <div class="dep-badge">
-                        <span class="dot ${data.kokoro ? 'green' : 'orange'}"></span>
-                        Kokoro TTS
-                    </div>
-                `;
+                if (data.server_mode) {
+                    container.innerHTML = '<p style="font-size:0.8rem;color:var(--text-muted);">Audio generation is available on the desktop app only.</p>';
+                } else {
+                    container.innerHTML = `
+                        <div class="dep-badge" title="Required for audio processing. Install: brew install ffmpeg">
+                            <span class="dot ${data.ffmpeg ? 'green' : 'orange'}"></span>
+                            ffmpeg
+                        </div>
+                        <div class="dep-badge" title="High-quality TTS engine. Requires kokoro-v1.0.onnx model file.">
+                            <span class="dot ${data.kokoro ? 'green' : 'orange'}"></span>
+                            Kokoro TTS
+                        </div>
+                    `;
+                }
 
                 // Also load voices
                 const voicesData = await api('/api/voices');
@@ -1896,20 +1900,38 @@ HTML_TEMPLATE = '''
 
                 // Load dependencies
                 const depData = await api('/api/dependencies');
-                document.getElementById('systemStatus').innerHTML = `
-                    <div class="dep-badge">
-                        <span class="dot ${depData.ffmpeg ? 'green' : 'red'}"></span>
-                        ffmpeg
-                    </div>
-                    <div class="dep-badge">
-                        <span class="dot ${depData.faster_whisper ? 'green' : 'orange'}"></span>
-                        Whisper
-                    </div>
-                    <div class="dep-badge">
-                        <span class="dot ${depData.kokoro ? 'green' : 'orange'}"></span>
-                        Kokoro
-                    </div>
-                `;
+                if (depData.server_mode) {
+                    document.getElementById('systemStatus').innerHTML = `
+                        <p style="font-size:0.8rem;color:var(--text-muted);margin:0;">
+                            Running in <strong>server mode</strong> (Render.com). Audio dependencies are desktop-only and not needed here.
+                        </p>
+                    `;
+                } else {
+                    document.getElementById('systemStatus').innerHTML = `
+                        <div class="dep-badge" title="Audio/video processing tool. Required for audio generation.\nInstall: brew install ffmpeg (macOS) or download from ffmpeg.org">
+                            <span class="dot ${depData.ffmpeg ? 'green' : 'red'}"></span>
+                            ffmpeg
+                            ${depData.ffmpeg ? '' : '<span style="font-size:0.7rem;color:var(--text-muted);margin-left:4px;">brew install ffmpeg</span>'}
+                        </div>
+                        <div class="dep-badge" title="AI speech-to-text for transcribing YouTube audio.\nInstall: pip install faster-whisper">
+                            <span class="dot ${depData.faster_whisper ? 'green' : 'orange'}"></span>
+                            Whisper
+                            ${depData.faster_whisper ? '' : '<span style="font-size:0.7rem;color:var(--text-muted);margin-left:4px;">pip install faster-whisper</span>'}
+                        </div>
+                        <div class="dep-badge" title="High-quality text-to-speech engine.\nRequires kokoro-v1.0.onnx model file in the app directory.">
+                            <span class="dot ${depData.kokoro ? 'green' : 'orange'}"></span>
+                            Kokoro
+                            ${depData.kokoro ? '' : '<span style="font-size:0.7rem;color:var(--text-muted);margin-left:4px;">model file not found</span>'}
+                        </div>
+                        <p style="font-size:0.7rem;color:var(--text-muted);margin-top:8px;">
+                            <span class="dot green" style="display:inline-block;width:8px;height:8px;border-radius:50%;margin-right:4px;background:var(--success);"></span> Installed
+                            &nbsp;&nbsp;
+                            <span class="dot orange" style="display:inline-block;width:8px;height:8px;border-radius:50%;margin-right:4px;background:var(--warning);"></span> Optional (not installed)
+                            &nbsp;&nbsp;
+                            <span class="dot red" style="display:inline-block;width:8px;height:8px;border-radius:50%;margin-right:4px;background:var(--danger);"></span> Required (not installed)
+                        </p>
+                    `;
+                }
             } catch (e) {
                 console.error(e);
             }
@@ -2076,10 +2098,10 @@ HTML_TEMPLATE = '''
                     '<div style="font-size:0.75rem;color:' + resultColor + ';margin-top:4px;">' + (t.last_result || 'Not run yet') + '</div>' +
                     '<div style="font-size:0.7rem;color:var(--text-muted);margin-top:2px;">Last: ' + lastRun + ' | Next: ' + nextRun + '</div>' +
                     '<div style="display:flex;gap:6px;margin-top:8px;">' +
-                        '<button class="btn btn-secondary" style="padding:6px 12px;font-size:0.75rem;flex:0;" onclick="runTaskNow(&#39;' + t.id + '&#39;)">&#9654; Run</button>' +
-                        '<button class="btn btn-secondary" style="padding:6px 12px;font-size:0.75rem;flex:0;" onclick="editTask(&#39;' + t.id + '&#39;)">Edit</button>' +
-                        '<button class="btn btn-secondary" style="padding:6px 12px;font-size:0.75rem;flex:0;color:var(--danger);" onclick="deleteTask(&#39;' + t.id + '&#39;)">Delete</button>' +
-                        '<button class="btn btn-secondary" style="padding:6px 12px;font-size:0.75rem;flex:0;margin-left:auto;" onclick="toggleTask(&#39;' + t.id + '&#39;,' + !t.enabled + ')">' + (t.enabled ? 'Disable' : 'Enable') + '</button>' +
+                        '<button class="btn btn-secondary" style="padding:6px 12px;font-size:0.75rem;flex:0;" onclick="runTaskNow(&#39;' + t.id + '&#39;)" title="Run this task immediately (ignores schedule)">&#9654; Run</button>' +
+                        '<button class="btn btn-secondary" style="padding:6px 12px;font-size:0.75rem;flex:0;" onclick="editTask(&#39;' + t.id + '&#39;)" title="Edit task settings, schedule, and export options">Edit</button>' +
+                        '<button class="btn btn-secondary" style="padding:6px 12px;font-size:0.75rem;flex:0;color:var(--danger);" onclick="deleteTask(&#39;' + t.id + '&#39;)" title="Permanently delete this task">Delete</button>' +
+                        '<button class="btn btn-secondary" style="padding:6px 12px;font-size:0.75rem;flex:0;margin-left:auto;" onclick="toggleTask(&#39;' + t.id + '&#39;,' + !t.enabled + ')" title="' + (t.enabled ? 'Pause this task so it won\\'t run on schedule' : 'Resume this task so it runs on schedule') + '">' + (t.enabled ? 'Disable' : 'Enable') + '</button>' +
                     '</div>' +
                 '</div>';
             }).join('');
@@ -2635,7 +2657,9 @@ def api_extract():
 @app.route('/api/dependencies')
 def api_dependencies():
     """Get dependency status."""
-    return jsonify(check_dependencies())
+    deps = check_dependencies()
+    deps['server_mode'] = SERVER_MODE
+    return jsonify(deps)
 
 @app.route('/api/voices')
 def api_voices():
