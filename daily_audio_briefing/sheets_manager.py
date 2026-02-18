@@ -28,6 +28,10 @@ except ImportError:
 SCOPES = ['https://www.googleapis.com/auth/spreadsheets']
 CREDENTIALS_FILE = os.path.join(os.path.dirname(__file__), 'google_credentials.json')
 
+# Cached service to avoid repeated discovery doc parsing + HTTP client creation
+_cached_service = None
+_cached_creds_source = None
+
 
 def is_sheets_available() -> bool:
     """Check if Google Sheets integration is available (file or env var credentials)."""
@@ -49,28 +53,43 @@ def get_missing_requirements() -> str:
 def get_sheets_service():
     """Create and return a Google Sheets service instance.
 
+    Caches the service at module level to avoid repeated discovery doc
+    parsing and HTTP client creation. Service account tokens are refreshed
+    internally by the google-auth library.
+
     Supports two credential sources:
     1. GOOGLE_CREDENTIALS_JSON env var (for server deployment)
     2. google_credentials.json file (for local development)
     """
+    global _cached_service, _cached_creds_source
+
     if not SHEETS_AVAILABLE:
         raise ImportError("Google API packages not installed")
 
-    # Try env var first (for server/cloud deployment)
+    # Determine current credential source
     creds_json = os.environ.get('GOOGLE_CREDENTIALS_JSON')
-    if creds_json:
-        info = json.loads(creds_json)
-        credentials = Credentials.from_service_account_info(info, scopes=SCOPES)
-    elif os.path.exists(CREDENTIALS_FILE):
-        credentials = Credentials.from_service_account_file(CREDENTIALS_FILE, scopes=SCOPES)
-    else:
+    current_source = 'env' if creds_json else ('file' if os.path.exists(CREDENTIALS_FILE) else None)
+
+    if current_source is None:
         raise FileNotFoundError(
             "No Google credentials found. Set GOOGLE_CREDENTIALS_JSON env var "
             f"or place credentials file at: {CREDENTIALS_FILE}"
         )
 
-    service = build('sheets', 'v4', credentials=credentials)
-    return service
+    # Return cached service if source hasn't changed
+    if _cached_service is not None and _cached_creds_source == current_source:
+        return _cached_service
+
+    # Build fresh service
+    if current_source == 'env':
+        info = json.loads(creds_json)
+        credentials = Credentials.from_service_account_info(info, scopes=SCOPES)
+    else:
+        credentials = Credentials.from_service_account_file(CREDENTIALS_FILE, scopes=SCOPES)
+
+    _cached_service = build('sheets', 'v4', credentials=credentials)
+    _cached_creds_source = current_source
+    return _cached_service
 
 
 def append_to_sheet(
