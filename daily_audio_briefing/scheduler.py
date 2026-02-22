@@ -562,7 +562,7 @@ class Scheduler:
                 try:
                     from sheets_manager import (
                         export_items_to_sheet, is_sheets_available, resolve_sheet_name,
-                        deduplicate_sheet
+                        deduplicate_sheet, sort_sheet_by_date
                     )
 
                     if is_sheets_available():
@@ -596,7 +596,7 @@ class Scheduler:
                             task.last_result = f"Success: {len(items)} items → {updated} rows to Sheets"
                             self._log(task.id, f"[Scheduler] {task.last_result}")
 
-                            # Auto-deduplicate the sheet after each export
+                            # Auto-deduplicate and sort the sheet after each export
                             try:
                                 dedup_result = deduplicate_sheet(
                                     task.spreadsheet_id, task.sheet_name
@@ -604,8 +604,11 @@ class Scheduler:
                                 removed = dedup_result.get('removed_count', 0) if isinstance(dedup_result, dict) else 0
                                 if removed > 0:
                                     self._log(task.id, f"[Scheduler] Cleaned {removed} duplicate/empty rows")
+                                sort_sheet_by_date(
+                                    task.spreadsheet_id, task.sheet_name
+                                )
                             except Exception as dedup_err:
-                                self._log(task.id, f"[Scheduler] Dedup warning: {dedup_err}")
+                                self._log(task.id, f"[Scheduler] Dedup/sort warning: {dedup_err}")
                     else:
                         task.last_result = f"Extracted {len(items)} items (Sheets not configured)"
                         self._log(task.id, f"[Scheduler] {task.last_result}")
@@ -668,7 +671,7 @@ class Scheduler:
                 from sheets_manager import (
                     export_items_to_sheet, is_sheets_available, resolve_sheet_name,
                     get_last_date_in_sheet, get_covered_dates_in_sheet,
-                    deduplicate_sheet
+                    deduplicate_sheet, sort_sheet_by_date
                 )
 
                 # Load extraction config
@@ -841,6 +844,18 @@ class Scheduler:
                 if errors:
                     task.last_result += f" ({errors} errors)"
                 self._log(task.id, f"[Backfill] Complete: {task.last_result}")
+
+                # Final dedup + sort
+                try:
+                    dedup_result = deduplicate_sheet(task.spreadsheet_id, task.sheet_name)
+                    removed = dedup_result.get('removed_count', 0) if isinstance(dedup_result, dict) else 0
+                    if removed > 0:
+                        self._log(task.id, f"[Backfill] Final cleanup: {removed} duplicate/empty rows removed")
+                    sort_sheet_by_date(task.spreadsheet_id, task.sheet_name)
+                    self._log(task.id, "[Backfill] Sheet sorted by date")
+                except Exception as cleanup_err:
+                    self._log(task.id, f"[Backfill] Cleanup warning: {cleanup_err}")
+
                 task.last_run = datetime.now().isoformat()
                 self.save_tasks()
 
@@ -858,6 +873,222 @@ class Scheduler:
                 gc.collect()
 
         threading.Thread(target=_run_backfill, daemon=True).start()
+        return True
+
+    def reenrich_task(self, task_id: str, stop_flag: Optional[Callable] = None) -> bool:
+        """Re-enrich existing sheet rows that are missing Grid data.
+
+        Reads rows from the sheet, identifies those without grid_matched,
+        runs Grid enrichment on them, and writes grid columns back.
+
+        Args:
+            task_id: The task to re-enrich
+            stop_flag: Optional callable that returns True to stop
+
+        Returns:
+            True if re-enrichment started successfully.
+        """
+        task = self.get_task(task_id)
+        if not task:
+            return False
+
+        if self._task_running:
+            self._log(task.id, "[Re-enrich] Another task is already running")
+            return False
+
+        if not task.spreadsheet_id:
+            self._log(task.id, "[Re-enrich] No spreadsheet configured")
+            return False
+
+        self._task_running = True
+
+        def _run_reenrich():
+            try:
+                from sheets_manager import (
+                    get_sheets_service, get_sheet_headers,
+                    sort_sheet_by_date
+                )
+                from data_csv_processor import DataProcessor, ExtractedItem
+
+                self._log(task.id, "[Re-enrich] Reading sheet data...")
+
+                service = get_sheets_service()
+                result = service.spreadsheets().values().get(
+                    spreadsheetId=task.spreadsheet_id,
+                    range=f"'{task.sheet_name}'!A:Z"
+                ).execute()
+
+                rows = result.get('values', [])
+                if len(rows) < 2:
+                    self._log(task.id, "[Re-enrich] No data rows found")
+                    return
+
+                headers = rows[0]
+                data_rows = rows[1:]
+
+                # Find column indices
+                url_idx = headers.index('url') if 'url' in headers else -1
+                desc_idx = headers.index('description') if 'description' in headers else -1
+                source_idx = headers.index('source_name') if 'source_name' in headers else -1
+                date_idx = headers.index('date_published') if 'date_published' in headers else -1
+                skip_idx = headers.index('SKIP') if 'SKIP' in headers else -1
+                grid_matched_idx = headers.index('grid_matched') if 'grid_matched' in headers else -1
+
+                if url_idx < 0 or desc_idx < 0:
+                    self._log(task.id, "[Re-enrich] Missing url or description column")
+                    return
+
+                # Find grid column indices for writing back
+                grid_cols = [h for h in headers if h.startswith('grid_')]
+                grid_col_indices = {h: headers.index(h) for h in grid_cols}
+                comments_idx = headers.index('comments') if 'comments' in headers else -1
+
+                self._log(task.id, f"[Re-enrich] Sheet has {len(data_rows)} rows, {len(grid_cols)} grid columns")
+
+                # Identify rows needing enrichment (grid_matched is empty or missing)
+                unenriched = []
+                for row_num, row in enumerate(data_rows, start=2):  # row 2 = first data row
+                    # Skip if SKIP=TRUE
+                    if skip_idx >= 0 and len(row) > skip_idx:
+                        if str(row[skip_idx]).strip().upper() == 'TRUE':
+                            continue
+
+                    # Check if grid_matched is empty
+                    has_grid = False
+                    if grid_matched_idx >= 0 and len(row) > grid_matched_idx:
+                        val = str(row[grid_matched_idx]).strip().upper()
+                        if val in ('TRUE', 'FALSE'):
+                            has_grid = True
+
+                    if not has_grid:
+                        url_val = row[url_idx] if len(row) > url_idx else ''
+                        desc_val = row[desc_idx] if len(row) > desc_idx else ''
+                        source_val = row[source_idx] if source_idx >= 0 and len(row) > source_idx else ''
+                        date_val = row[date_idx] if date_idx >= 0 and len(row) > date_idx else ''
+
+                        if url_val.strip():
+                            unenriched.append({
+                                'row_num': row_num,
+                                'url': url_val.strip(),
+                                'description': desc_val,
+                                'source_name': source_val,
+                                'date_published': date_val,
+                            })
+
+                self._log(task.id, f"[Re-enrich] Found {len(unenriched)} unenriched rows")
+
+                if not unenriched:
+                    self._log(task.id, "[Re-enrich] All rows already enriched — nothing to do")
+                    return
+
+                # Process in batches of 50
+                processor = DataProcessor(config_name=task.config_name)
+                batch_size = 50
+                total_matched = 0
+                total_processed = 0
+
+                for batch_start in range(0, len(unenriched), batch_size):
+                    if stop_flag and stop_flag():
+                        self._log(task.id, "[Re-enrich] Stopped by user")
+                        break
+
+                    batch = unenriched[batch_start:batch_start + batch_size]
+
+                    # Create ExtractedItem objects
+                    items = []
+                    for entry in batch:
+                        item = ExtractedItem(
+                            url=entry['url'],
+                            description=entry['description'],
+                            source_name=entry['source_name'],
+                            date_published=entry['date_published'],
+                            title=entry['description'][:80] if entry['description'] else '',
+                        )
+                        items.append(item)
+
+                    # Enrich with Grid
+                    try:
+                        items = processor.enrich_with_grid(items)
+                    except Exception as e:
+                        self._log(task.id, f"[Re-enrich] Grid error on batch {batch_start}: {e}")
+                        continue
+
+                    # Helper: convert 0-based column index to A1 notation letter(s)
+                    def _col_letter(idx):
+                        """Convert 0-based column index to spreadsheet column letter (A, B, ..., Z, AA, AB, ...)."""
+                        result = ''
+                        while True:
+                            result = chr(65 + idx % 26) + result
+                            idx = idx // 26 - 1
+                            if idx < 0:
+                                break
+                        return result
+
+                    # Write grid columns back to sheet
+                    updates = []
+                    for item, entry in zip(items, batch):
+                        row_num = entry['row_num']
+                        item_dict = item.to_dict()
+
+                        for col_name, col_idx in grid_col_indices.items():
+                            col_letter = _col_letter(col_idx)
+                            val = str(item_dict.get(col_name, ''))
+                            updates.append({
+                                'range': f"'{task.sheet_name}'!{col_letter}{row_num}",
+                                'values': [[val]]
+                            })
+
+                        # Also write comments if available
+                        if comments_idx >= 0:
+                            comments_val = item_dict.get('comments', '')
+                            if comments_val:
+                                col_letter = _col_letter(comments_idx)
+                                updates.append({
+                                    'range': f"'{task.sheet_name}'!{col_letter}{row_num}",
+                                    'values': [[comments_val]]
+                                })
+
+                        if item.custom_fields.get('grid_matched'):
+                            total_matched += 1
+
+                    # Batch write to sheet
+                    if updates:
+                        # Write in sub-batches of 500 cells
+                        for i in range(0, len(updates), 500):
+                            chunk = updates[i:i + 500]
+                            service.spreadsheets().values().batchUpdate(
+                                spreadsheetId=task.spreadsheet_id,
+                                body={
+                                    'valueInputOption': 'RAW',
+                                    'data': chunk
+                                }
+                            ).execute()
+
+                    total_processed += len(batch)
+                    self._log(task.id, f"[Re-enrich] Processed {total_processed}/{len(unenriched)} rows ({total_matched} matched so far)")
+
+                    gc.collect()
+                    import time as _time
+                    _time.sleep(0.5)
+
+                task.last_result = f"Re-enrich: {total_processed} rows processed, {total_matched} matched"
+                self._log(task.id, f"[Re-enrich] Complete: {task.last_result}")
+                self.save_tasks()
+
+                if self._on_task_complete:
+                    self._on_task_complete(task, True, task.last_result)
+
+            except Exception as e:
+                self._log(task.id, f"[Re-enrich] Fatal error: {e}")
+                task.last_result = f"Re-enrich error: {str(e)[:100]}"
+                self.save_tasks()
+                if self._on_task_complete:
+                    self._on_task_complete(task, False, task.last_result)
+            finally:
+                self._task_running = False
+                gc.collect()
+
+        threading.Thread(target=_run_reenrich, daemon=True).start()
         return True
 
     def run_task_now(self, task_id: str) -> bool:

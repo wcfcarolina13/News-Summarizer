@@ -8129,6 +8129,15 @@ Open Settings and click '? Start Tutorial'!""",
                 sheet_tip += f" ({sheet_name})"
             add_tooltip(btn_sheet, sheet_tip)
 
+        # Re-enrich button (only if task has Grid enrichment enabled)
+        if getattr(task, 'enrich_with_grid', False):
+            btn_reenrich = ctk.CTkButton(
+                btn_frame, text="🔄", width=30, fg_color="#6f42c1",
+                command=lambda t=task: self._reenrich_task(t.id)
+            )
+            btn_reenrich.pack(side="left", padx=2)
+            add_tooltip(btn_reenrich, "Re-enrich: Run Grid matching on rows missing enrichment data")
+
         btn_edit = ctk.CTkButton(
             btn_frame, text="✎", width=30, fg_color="gray",
             command=lambda t=task: self._open_task_editor(t.id)
@@ -8212,6 +8221,36 @@ Open Settings and click '? Start Tutorial'!""",
         """Signal the running backfill to stop."""
         self._backfill_stop = True
         self._append_task_log("[Backfill] Stop requested — finishing current post...")
+
+    def _reenrich_task(self, task_id: str):
+        """Re-enrich existing sheet rows with Grid data."""
+        scheduler = self._get_active_scheduler()
+        if not scheduler:
+            return
+
+        task = scheduler.get_task(task_id)
+        if not task:
+            return
+
+        # Clear previous log and show running status
+        self._clear_task_log()
+        self._show_scheduler_status(f"🔄 Re-enriching: {task.name}...", "#6f42c1")
+        # Auto-expand the log so user sees progress
+        if not self._task_log_expanded:
+            self._toggle_task_log()
+
+        # Stop flag
+        self._backfill_stop = False
+
+        # Show stop button
+        if hasattr(self, '_task_log_stop'):
+            self._task_log_stop.grid(row=0, column=2, sticky="e", padx=(4, 0))
+
+        # Start animated progress indicator
+        self._task_running_id = task_id
+        self._animate_task_status(task.name, 0, prefix="🔄 Re-enriching")
+
+        scheduler.reenrich_task(task_id, stop_flag=lambda: self._backfill_stop)
 
     def _build_task_log_panel(self):
         """Build the collapsible task execution log panel on the Scheduler page."""
@@ -8758,6 +8797,7 @@ Each task in the list has action buttons:
 - **▶ Run** — Execute the task immediately (one-time manual run)
 - **⏪ Backfill** — Crawl the source archive and fill in all missing dates (see below)
 - **📊 Sheet** — Open the associated Google Sheet in your browser (only shown if Sheets export is configured)
+- **🔄 Re-enrich** — Run Grid entity matching on rows that are missing enrichment data (only shown if Grid enrichment is enabled)
 - **✎ Edit** — Open the task editor to change settings
 - **✕ Delete** — Remove the task
 

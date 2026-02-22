@@ -510,6 +510,137 @@ def get_existing_urls(spreadsheet_id: str, sheet_name: str = 'Sheet1', url_colum
         return set()
 
 
+def sort_sheet_by_date(spreadsheet_id: str, sheet_name: str = 'Sheet1',
+                       date_column: str = 'date_published',
+                       ascending: bool = True) -> bool:
+    """
+    Sort all data rows in a sheet by date_published column.
+    Uses the Sheets API sortRange request for server-side sorting.
+
+    Args:
+        spreadsheet_id: The Google Sheet ID
+        sheet_name: Name of the sheet tab
+        date_column: Column to sort by
+        ascending: True for oldest-first, False for newest-first
+
+    Returns:
+        True if sort succeeded.
+    """
+    try:
+        service = get_sheets_service()
+
+        # Get sheet metadata for sheetId and row count
+        meta = service.spreadsheets().get(spreadsheetId=spreadsheet_id).execute()
+        sheet_gid = None
+        row_count = 0
+        for s in meta.get('sheets', []):
+            if s['properties']['title'] == sheet_name:
+                sheet_gid = s['properties']['sheetId']
+                row_count = s['properties']['gridProperties']['rowCount']
+                break
+        if sheet_gid is None:
+            print(f"[sheets_manager] Tab '{sheet_name}' not found for sort")
+            return False
+
+        # Find the date column index
+        headers = get_sheet_headers(spreadsheet_id, sheet_name)
+        if not headers or date_column not in headers:
+            print(f"[sheets_manager] Column '{date_column}' not found for sort")
+            return False
+
+        col_idx = headers.index(date_column)
+
+        # Sort range: all data rows (skip header row 0), all columns
+        request = {
+            'sortRange': {
+                'range': {
+                    'sheetId': sheet_gid,
+                    'startRowIndex': 1,       # Skip header
+                    'endRowIndex': row_count,
+                    'startColumnIndex': 0,
+                    'endColumnIndex': len(headers),
+                },
+                'sortSpecs': [{
+                    'dimensionIndex': col_idx,
+                    'sortOrder': 'ASCENDING' if ascending else 'DESCENDING',
+                }]
+            }
+        }
+
+        service.spreadsheets().batchUpdate(
+            spreadsheetId=spreadsheet_id,
+            body={'requests': [request]}
+        ).execute()
+
+        order = 'ascending' if ascending else 'descending'
+        print(f"[sheets_manager] Sorted sheet by '{date_column}' ({order})")
+        return True
+
+    except Exception as e:
+        print(f"[sheets_manager] Error sorting sheet: {e}")
+        return False
+
+
+def delete_column(spreadsheet_id: str, sheet_name: str, column_name: str) -> bool:
+    """
+    Delete a column from a Google Sheet by header name.
+    Uses the Sheets API deleteDimension request.
+
+    Args:
+        spreadsheet_id: The Google Sheet ID
+        sheet_name: Name of the sheet tab
+        column_name: Header name of the column to delete
+
+    Returns:
+        True if column was deleted successfully.
+    """
+    try:
+        service = get_sheets_service()
+
+        # Get sheet metadata for sheetId
+        meta = service.spreadsheets().get(spreadsheetId=spreadsheet_id).execute()
+        sheet_gid = None
+        for s in meta.get('sheets', []):
+            if s['properties']['title'] == sheet_name:
+                sheet_gid = s['properties']['sheetId']
+                break
+        if sheet_gid is None:
+            print(f"[sheets_manager] Tab '{sheet_name}' not found for column delete")
+            return False
+
+        # Find the column index
+        headers = get_sheet_headers(spreadsheet_id, sheet_name)
+        if not headers or column_name not in headers:
+            print(f"[sheets_manager] Column '{column_name}' not found in headers")
+            return False
+
+        col_idx = headers.index(column_name)
+
+        # Delete the column
+        request = {
+            'deleteDimension': {
+                'range': {
+                    'sheetId': sheet_gid,
+                    'dimension': 'COLUMNS',
+                    'startIndex': col_idx,
+                    'endIndex': col_idx + 1,
+                }
+            }
+        }
+
+        service.spreadsheets().batchUpdate(
+            spreadsheetId=spreadsheet_id,
+            body={'requests': [request]}
+        ).execute()
+
+        print(f"[sheets_manager] Deleted column '{column_name}' (index {col_idx})")
+        return True
+
+    except Exception as e:
+        print(f"[sheets_manager] Error deleting column: {e}")
+        return False
+
+
 def deduplicate_sheet(
     spreadsheet_id: str,
     sheet_name: str = 'Sheet1',
