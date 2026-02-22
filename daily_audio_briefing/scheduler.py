@@ -561,7 +561,8 @@ class Scheduler:
             if task.export_to_sheets and items and task.spreadsheet_id:
                 try:
                     from sheets_manager import (
-                        export_items_to_sheet, is_sheets_available, resolve_sheet_name
+                        export_items_to_sheet, is_sheets_available, resolve_sheet_name,
+                        deduplicate_sheet
                     )
 
                     if is_sheets_available():
@@ -594,6 +595,17 @@ class Scheduler:
                             updated = result.get('updates', {}).get('updatedRows', len(items))
                             task.last_result = f"Success: {len(items)} items → {updated} rows to Sheets"
                             self._log(task.id, f"[Scheduler] {task.last_result}")
+
+                            # Auto-deduplicate the sheet after each export
+                            try:
+                                dedup_result = deduplicate_sheet(
+                                    task.spreadsheet_id, task.sheet_name
+                                )
+                                removed = dedup_result.get('removed_count', 0) if isinstance(dedup_result, dict) else 0
+                                if removed > 0:
+                                    self._log(task.id, f"[Scheduler] Cleaned {removed} duplicate/empty rows")
+                            except Exception as dedup_err:
+                                self._log(task.id, f"[Scheduler] Dedup warning: {dedup_err}")
                     else:
                         task.last_result = f"Extracted {len(items)} items (Sheets not configured)"
                         self._log(task.id, f"[Scheduler] {task.last_result}")
@@ -655,7 +667,8 @@ class Scheduler:
                 from data_csv_processor import DataCSVProcessor, ExtractionConfig, load_custom_instructions
                 from sheets_manager import (
                     export_items_to_sheet, is_sheets_available, resolve_sheet_name,
-                    get_last_date_in_sheet, get_covered_dates_in_sheet
+                    get_last_date_in_sheet, get_covered_dates_in_sheet,
+                    deduplicate_sheet
                 )
 
                 # Load extraction config
@@ -698,6 +711,13 @@ class Scheduler:
                     return
                 if resolved_name != task.sheet_name:
                     task.sheet_name = resolved_name
+
+                # Clean up duplicates and empty rows first
+                self._log(task.id, "[Backfill] Cleaning up duplicates and empty rows...")
+                dedup_result = deduplicate_sheet(task.spreadsheet_id, task.sheet_name)
+                removed = dedup_result.get('removed_count', 0) if isinstance(dedup_result, dict) else 0
+                if removed > 0:
+                    self._log(task.id, f"[Backfill] Removed {removed} duplicate/empty rows")
 
                 # Get dates already covered in the sheet
                 covered_dates = get_covered_dates_in_sheet(task.spreadsheet_id, task.sheet_name)

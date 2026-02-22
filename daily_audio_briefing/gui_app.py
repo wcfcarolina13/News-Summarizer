@@ -8115,6 +8115,20 @@ Open Settings and click '? Start Tutorial'!""",
         btn_backfill.pack(side="left", padx=2)
         add_tooltip(btn_backfill, "Backfill: Crawl the archive and fill in all missing dates")
 
+        # Sheet link button (only if task exports to Sheets)
+        if getattr(task, 'export_to_sheets', False) and getattr(task, 'spreadsheet_id', ''):
+            sheet_id = task.spreadsheet_id
+            sheet_name = getattr(task, 'sheet_name', '')
+            btn_sheet = ctk.CTkButton(
+                btn_frame, text="📊", width=30, fg_color="#0f9d58",
+                command=lambda sid=sheet_id, sn=sheet_name: self._open_sheet(sid, sn)
+            )
+            btn_sheet.pack(side="left", padx=2)
+            sheet_tip = f"Open Google Sheet"
+            if sheet_name:
+                sheet_tip += f" ({sheet_name})"
+            add_tooltip(btn_sheet, sheet_tip)
+
         btn_edit = ctk.CTkButton(
             btn_frame, text="✎", width=30, fg_color="gray",
             command=lambda t=task: self._open_task_editor(t.id)
@@ -8128,6 +8142,17 @@ Open Settings and click '? Start Tutorial'!""",
         )
         btn_delete.pack(side="left", padx=2)
         add_tooltip(btn_delete, "Delete this task")
+
+    def _open_sheet(self, spreadsheet_id: str, sheet_name: str = ''):
+        """Open the associated Google Sheet in the default browser."""
+        import webbrowser
+        url = f"https://docs.google.com/spreadsheets/d/{spreadsheet_id}"
+        if sheet_name:
+            import urllib.parse
+            url += f"/edit#gid=0"  # Default to first tab; gid varies but this opens the sheet
+        else:
+            url += "/edit"
+        webbrowser.open(url)
 
     def _toggle_task_enabled(self, task_id: str, enabled: bool):
         """Toggle a task's enabled state."""
@@ -8728,10 +8753,11 @@ The scheduler automatically extracts data from your configured sources and expor
 
 ## Task Row Buttons
 
-Each task in the list has four action buttons:
+Each task in the list has action buttons:
 
 - **▶ Run** — Execute the task immediately (one-time manual run)
 - **⏪ Backfill** — Crawl the source archive and fill in all missing dates (see below)
+- **📊 Sheet** — Open the associated Google Sheet in your browser (only shown if Sheets export is configured)
 - **✎ Edit** — Open the task editor to change settings
 - **✕ Delete** — Remove the task
 

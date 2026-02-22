@@ -321,6 +321,93 @@ def get_covered_dates_in_sheet(spreadsheet_id: str, sheet_name: str = 'Sheet1',
         return set()
 
 
+def delete_empty_rows(spreadsheet_id: str, sheet_name: str = 'Sheet1') -> int:
+    """
+    Delete rows that are completely empty (no title, no URL, no date) from a sheet.
+    Preserves the header row and any row with meaningful data.
+
+    Returns:
+        Number of rows deleted.
+    """
+    try:
+        service = get_sheets_service()
+
+        # Get sheet metadata to find numeric sheetId
+        meta = service.spreadsheets().get(spreadsheetId=spreadsheet_id).execute()
+        sheet_gid = None
+        for s in meta.get('sheets', []):
+            if s['properties']['title'] == sheet_name:
+                sheet_gid = s['properties']['sheetId']
+                break
+        if sheet_gid is None:
+            print(f"[sheets_manager] Tab '{sheet_name}' not found for empty row cleanup")
+            return 0
+
+        # Read all data
+        all_data = read_sheet(spreadsheet_id, f'{sheet_name}!A:Z')
+        if not all_data or len(all_data) < 2:
+            return 0
+
+        # Find empty rows (skip header at index 0)
+        # A row is "empty" if it has no content in any cell (or only FALSE/empty strings)
+        empty_row_indices = []
+        for i in range(1, len(all_data)):
+            row = all_data[i]
+            has_content = False
+            for cell in row:
+                val = str(cell).strip() if cell else ''
+                if val and val.upper() != 'FALSE':
+                    has_content = True
+                    break
+            if not has_content:
+                empty_row_indices.append(i)
+
+        if not empty_row_indices:
+            return 0
+
+        # Build batch delete requests — must go in REVERSE order to keep indices valid
+        requests_list = []
+        # Group consecutive rows into ranges for efficiency
+        ranges = []
+        start = empty_row_indices[0]
+        end = start
+        for idx in empty_row_indices[1:]:
+            if idx == end + 1:
+                end = idx
+            else:
+                ranges.append((start, end))
+                start = idx
+                end = idx
+        ranges.append((start, end))
+
+        # Reverse so we delete from bottom to top
+        for start, end in reversed(ranges):
+            requests_list.append({
+                'deleteDimension': {
+                    'range': {
+                        'sheetId': sheet_gid,
+                        'dimension': 'ROWS',
+                        'startIndex': start,  # 0-based, inclusive
+                        'endIndex': end + 1,  # exclusive
+                    }
+                }
+            })
+
+        # Execute batch
+        service.spreadsheets().batchUpdate(
+            spreadsheetId=spreadsheet_id,
+            body={'requests': requests_list}
+        ).execute()
+
+        print(f"[sheets_manager] Deleted {len(empty_row_indices)} empty rows in {len(ranges)} ranges")
+        return len(empty_row_indices)
+
+    except Exception as e:
+        print(f"[sheets_manager] Error deleting empty rows: {e}")
+        return 0
+
+
+
 def get_sheet_headers_with_format(spreadsheet_id: str, sheet_name: str = 'Sheet1') -> List[Dict[str, Any]]:
     """Get headers with formatting info (data validation like checkboxes).
 
@@ -457,10 +544,18 @@ def deduplicate_sheet(
 
     url_idx = headers.index(url_column)
 
-    # Deduplicate keeping first occurrence
+    # Deduplicate keeping first occurrence + remove empty rows
     seen = set()
     unique_rows = []
     for row in data_rows:
+        # Skip completely empty rows (only FALSE or blank cells)
+        has_content = any(
+            str(c).strip() and str(c).strip().upper() != 'FALSE'
+            for c in row
+        )
+        if not has_content:
+            continue
+
         url_val = row[url_idx].strip() if len(row) > url_idx and row[url_idx] else ''
         if url_val and url_val in seen:
             continue  # Skip duplicate

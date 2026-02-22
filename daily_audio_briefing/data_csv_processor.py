@@ -345,7 +345,8 @@ class BeehiivExtractor(BaseExtractor):
         stop_crawling = False
 
         while not stop_crawling:
-            archive_url = f"{base_domain}/?page={page}" if page > 0 else base_domain
+            # Use /archive endpoint with pagination (beehiiv's proper archive)
+            archive_url = f"{base_domain}/archive?page={page}" if page > 0 else f"{base_domain}/archive"
             if on_progress:
                 on_progress(f"[Backfill] Scanning archive page {page}...")
 
@@ -361,10 +362,13 @@ class BeehiivExtractor(BaseExtractor):
 
             # Find post links with their dates
             page_posts = []
+            raw_link_count = 0  # Track total /p/ links before dedup
             for a_tag in soup.find_all('a', href=True):
                 href = a_tag['href']
                 if '/p/' not in href:
                     continue
+
+                raw_link_count += 1
 
                 # Build full URL
                 if href.startswith('/'):
@@ -413,9 +417,18 @@ class BeehiivExtractor(BaseExtractor):
 
                 page_posts.append({"url": post_url, "date": post_date})
 
-            if not page_posts:
-                # No more posts on this page — end of archive
+            if raw_link_count == 0:
+                # Truly empty page — end of archive
                 break
+
+            if not page_posts and raw_link_count > 0:
+                # Page had links but all were duplicates (e.g. page 0 == page 1)
+                # Keep going — next page likely has new posts
+                page += 1
+                _time.sleep(0.5)
+                if page >= 50:
+                    break
+                continue
 
             all_posts.extend(page_posts)
             page += 1
