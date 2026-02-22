@@ -26,16 +26,21 @@ if sys.platform == 'darwin':
     # Ensure proper Tcl/Tk library paths in frozen app
     if getattr(sys, 'frozen', False):
         bundle_dir = os.path.dirname(sys.executable)
-        # For .app bundles, go up to Frameworks
+        # For .app bundles, MacOS/ is inside Contents/, Frameworks/ is a sibling
         if bundle_dir.endswith('MacOS'):
             frameworks_dir = os.path.join(os.path.dirname(bundle_dir), 'Frameworks')
             if os.path.exists(frameworks_dir):
-                tcl_lib = os.path.join(frameworks_dir, 'tcl8.6')
-                tk_lib = os.path.join(frameworks_dir, 'tk8.6')
-                if os.path.exists(tcl_lib):
-                    os.environ['TCL_LIBRARY'] = tcl_lib
-                if os.path.exists(tk_lib):
-                    os.environ['TK_LIBRARY'] = tk_lib
+                # PyInstaller 6.x uses _tcl_data/_tk_data; older versions use tcl8.6/tk8.6
+                for tcl_name in ('_tcl_data', 'tcl8.6'):
+                    tcl_lib = os.path.join(frameworks_dir, tcl_name)
+                    if os.path.exists(tcl_lib) and 'TCL_LIBRARY' not in os.environ:
+                        os.environ['TCL_LIBRARY'] = tcl_lib
+                        break
+                for tk_name in ('_tk_data', 'tk8.6'):
+                    tk_lib = os.path.join(frameworks_dir, tk_name)
+                    if os.path.exists(tk_lib) and 'TK_LIBRARY' not in os.environ:
+                        os.environ['TK_LIBRARY'] = tk_lib
+                        break
 
 elif sys.platform == 'win32':
     # Windows: Add common tool paths

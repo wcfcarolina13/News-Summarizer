@@ -271,6 +271,170 @@ class BeehiivExtractor(BaseExtractor):
     name = "beehiiv"
     supported_domains = ["beehiiv.com"]
 
+    def _find_latest_post_url(self, archive_html: str, base_url: str) -> str:
+        """Given a beehiiv archive/homepage HTML, find the URL of the latest newsletter post."""
+        soup = BeautifulSoup(archive_html, 'html.parser')
+        parsed_base = urlparse(base_url)
+        base_domain = f"{parsed_base.scheme}://{parsed_base.netloc}"
+
+        # Look for links to /p/ paths (individual posts)
+        for a_tag in soup.find_all('a', href=True):
+            href = a_tag['href']
+            # Match absolute or relative /p/ links
+            if '/p/' in href:
+                if href.startswith('/'):
+                    return base_domain + href
+                elif href.startswith('http'):
+                    return href
+        return ""
+
+    def preprocess_url(self, url: str) -> str:
+        """If given a beehiiv homepage/archive, find and return the latest post URL."""
+        parsed = urlparse(url)
+        path = parsed.path.rstrip('/')
+
+        # If URL already points to a specific post, use as-is
+        if '/p/' in path:
+            return url
+
+        # This is a homepage/archive URL — fetch it and find the latest post
+        print(f"    [Beehiiv] Archive page detected, finding latest newsletter post...")
+        try:
+            headers = {
+                'User-Agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36',
+                'Accept': 'text/html,application/xhtml+xml',
+            }
+            resp = requests.get(url, headers=headers, timeout=15)
+            resp.raise_for_status()
+            latest_url = self._find_latest_post_url(resp.text, url)
+            if latest_url:
+                print(f"    [Beehiiv] Latest post: {latest_url[:80]}...")
+                return latest_url
+            else:
+                print(f"    [Beehiiv] No posts found on archive page, using original URL")
+                return url
+        except Exception as e:
+            print(f"    [Beehiiv] Error fetching archive: {e}")
+            return url
+
+    def get_archive_posts(self, base_url: str, since_date: str = None, on_progress=None) -> List[Dict[str, str]]:
+        """
+        Crawl the beehiiv archive and return all post URLs with dates.
+
+        Args:
+            base_url: The beehiiv newsletter base URL (e.g. https://cryptosum.beehiiv.com)
+            since_date: Only return posts on or after this date (YYYY-MM-DD). None = all posts.
+            on_progress: Optional callback(message) for progress updates.
+
+        Returns:
+            List of dicts: [{"url": "https://...", "date": "2026-02-20"}, ...]
+            Ordered oldest-first for chronological processing.
+        """
+        import time as _time
+
+        parsed = urlparse(base_url)
+        base_domain = f"{parsed.scheme}://{parsed.netloc}"
+        headers = {
+            'User-Agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36',
+            'Accept': 'text/html,application/xhtml+xml',
+        }
+
+        all_posts = []
+        seen_slugs = set()  # Track /p/slug to avoid duplicates
+        page = 0
+        stop_crawling = False
+
+        while not stop_crawling:
+            archive_url = f"{base_domain}/?page={page}" if page > 0 else base_domain
+            if on_progress:
+                on_progress(f"[Backfill] Scanning archive page {page}...")
+
+            try:
+                resp = requests.get(archive_url, headers=headers, timeout=15)
+                resp.raise_for_status()
+            except Exception as e:
+                if on_progress:
+                    on_progress(f"[Backfill] Error fetching page {page}: {e}")
+                break
+
+            soup = BeautifulSoup(resp.text, 'html.parser')
+
+            # Find post links with their dates
+            page_posts = []
+            for a_tag in soup.find_all('a', href=True):
+                href = a_tag['href']
+                if '/p/' not in href:
+                    continue
+
+                # Build full URL
+                if href.startswith('/'):
+                    post_url = base_domain + href
+                elif href.startswith('http'):
+                    post_url = href
+                else:
+                    continue
+
+                # Extract slug for dedup (e.g. /p/goldman-ceo-owns-bitcoin)
+                slug_match = re.search(r'/p/([^/?#]+)', post_url)
+                slug = slug_match.group(1) if slug_match else post_url
+                if slug in seen_slugs:
+                    continue
+                seen_slugs.add(slug)
+
+                # Try to find date from nearby <time> element
+                post_date = ""
+                parent = a_tag.parent
+                for _ in range(5):  # Walk up to 5 levels to find <time>
+                    if parent is None:
+                        break
+                    time_tag = parent.find('time')
+                    if time_tag:
+                        dt_str = time_tag.get('datetime', '') or time_tag.get_text(strip=True)
+                        try:
+                            # Parse various date formats
+                            for fmt in ('%Y-%m-%dT%H:%M:%S.%fZ', '%Y-%m-%dT%H:%M:%SZ',
+                                        '%Y-%m-%d', '%B %d, %Y', '%b %d, %Y'):
+                                try:
+                                    from datetime import datetime as dt_cls
+                                    parsed_dt = dt_cls.strptime(dt_str[:26], fmt)
+                                    post_date = parsed_dt.strftime('%Y-%m-%d')
+                                    break
+                                except ValueError:
+                                    continue
+                        except Exception:
+                            pass
+                        break
+                    parent = parent.parent
+
+                # Check if this post is before our cutoff date
+                if since_date and post_date and post_date < since_date:
+                    stop_crawling = True
+                    break
+
+                page_posts.append({"url": post_url, "date": post_date})
+
+            if not page_posts:
+                # No more posts on this page — end of archive
+                break
+
+            all_posts.extend(page_posts)
+            page += 1
+
+            # Rate limit: be polite
+            _time.sleep(0.5)
+
+            # Safety: max 50 pages (600 posts)
+            if page >= 50:
+                break
+
+        # Return oldest-first for chronological processing
+        all_posts.reverse()
+
+        if on_progress:
+            on_progress(f"[Backfill] Found {len(all_posts)} posts in archive")
+
+        return all_posts
+
     def extract(self, url: str, html: str, custom_instructions: Dict = None) -> List[ExtractedItem]:
         """Extract all links and topics from a Beehiiv newsletter."""
         soup = self._get_soup(html)

@@ -288,6 +288,15 @@ python gui_app.py
 
 ---
 
+## Roadmap
+
+1. **Alpha (Current)** — Admin-hosted. API keys and credentials managed centrally. macOS desktop app only.
+2. **User Accounts** — Login system. Per-user API keys and Google credentials. Windows desktop build.
+3. **Full Cloud** — Server-side audio generation. All features available via web browser.
+4. **SaaS** — Multi-tenant platform. Per-user billing, subscription tiers, mobile apps.
+
+---
+
 ## License
 
 This project is provided as-is for personal use.

@@ -82,7 +82,6 @@
     "facebook.com",
     "linkedin.com",
     "instagram.com",
-    "beehiiv.com",
     "tiktok.com",
     "polymarket.com",
     "kalshi.com",
@@ -92,6 +91,17 @@
   ],
 
   "require_url": true,
+
+  "source_url_patterns": [
+    "cryptosum.beehiiv.com",
+    "crypto-sum.beehiiv.com"
+  ],
+
+  "capabilities": {
+    "csv_export": true,
+    "grid_enrichment": true,
+    "research_articles": true
+  },
 
   "csv_columns": [
     "url",

@@ -12,6 +12,7 @@ Setup:
 """
 
 import os
+import sys
 import json
 from typing import List, Dict, Any, Optional
 
@@ -26,7 +27,27 @@ except ImportError:
 
 
 SCOPES = ['https://www.googleapis.com/auth/spreadsheets']
-CREDENTIALS_FILE = os.path.join(os.path.dirname(__file__), 'google_credentials.json')
+
+def _find_credentials_file():
+    """Find google_credentials.json, checking multiple locations."""
+    # 1. Script/bundle directory
+    script_dir = os.path.join(os.path.dirname(__file__), 'google_credentials.json')
+    if os.path.exists(script_dir):
+        return script_dir
+    # 2. App data directory (frozen app stores creds here)
+    if getattr(sys, 'frozen', False):
+        if sys.platform == 'darwin':
+            data_dir = os.path.expanduser('~/Library/Application Support/Daily Audio Briefing')
+        elif sys.platform == 'win32':
+            data_dir = os.path.join(os.environ.get('APPDATA', ''), 'Daily Audio Briefing')
+        else:
+            data_dir = os.path.expanduser('~/.daily-audio-briefing')
+        data_path = os.path.join(data_dir, 'google_credentials.json')
+        if os.path.exists(data_path):
+            return data_path
+    return script_dir  # Default (may not exist)
+
+CREDENTIALS_FILE = _find_credentials_file()
 
 # Cached service to avoid repeated discovery doc parsing + HTTP client creation
 _cached_service = None
@@ -232,6 +253,138 @@ def get_sheet_headers(spreadsheet_id: str, sheet_name: str = 'Sheet1') -> List[s
     return values[0] if values else []
 
 
+def get_last_date_in_sheet(spreadsheet_id: str, sheet_name: str = 'Sheet1',
+                           date_column: str = 'date_published') -> str:
+    """
+    Find the most recent date_published value in a sheet.
+
+    Returns:
+        Date string (YYYY-MM-DD) or "" if no dates found.
+    """
+    try:
+        headers = get_sheet_headers(spreadsheet_id, sheet_name)
+        if not headers or date_column not in headers:
+            return ""
+
+        col_idx = headers.index(date_column)
+        col_letter = _col_letter(col_idx + 1)
+
+        # Read just the date column
+        values = read_sheet(spreadsheet_id, f'{sheet_name}!{col_letter}:{col_letter}')
+        if not values or len(values) < 2:
+            return ""
+
+        # Find the latest date (skip header)
+        latest = ""
+        for row in values[1:]:
+            if row and row[0].strip():
+                date_val = row[0].strip()[:10]  # Take YYYY-MM-DD part
+                if date_val > latest:
+                    latest = date_val
+
+        return latest
+    except Exception as e:
+        print(f"[sheets_manager] Error reading last date: {e}")
+        return ""
+
+
+def get_covered_dates_in_sheet(spreadsheet_id: str, sheet_name: str = 'Sheet1',
+                               date_column: str = 'date_published') -> set:
+    """
+    Get the set of all unique dates already present in a sheet.
+
+    Returns:
+        Set of date strings (YYYY-MM-DD) that have at least one row in the sheet.
+    """
+    try:
+        headers = get_sheet_headers(spreadsheet_id, sheet_name)
+        if not headers or date_column not in headers:
+            return set()
+
+        col_idx = headers.index(date_column)
+        col_letter = _col_letter(col_idx + 1)
+
+        values = read_sheet(spreadsheet_id, f'{sheet_name}!{col_letter}:{col_letter}')
+        if not values or len(values) < 2:
+            return set()
+
+        dates = set()
+        for row in values[1:]:
+            if row and row[0].strip():
+                date_val = row[0].strip()[:10]
+                if len(date_val) == 10 and date_val[4] == '-':
+                    dates.add(date_val)
+
+        return dates
+    except Exception as e:
+        print(f"[sheets_manager] Error reading covered dates: {e}")
+        return set()
+
+
+def get_sheet_headers_with_format(spreadsheet_id: str, sheet_name: str = 'Sheet1') -> List[Dict[str, Any]]:
+    """Get headers with formatting info (data validation like checkboxes).
+
+    Returns a list of dicts: [{"name": "url", "format": "text"}, {"name": "Processed", "format": "checkbox"}, ...]
+    """
+    try:
+        service = get_sheets_service()
+        # Get sheet metadata to find sheetId
+        meta = service.spreadsheets().get(spreadsheetId=spreadsheet_id).execute()
+        sheet_id = None
+        for s in meta.get('sheets', []):
+            if s['properties']['title'] == sheet_name:
+                sheet_id = s['properties']['sheetId']
+                break
+        if sheet_id is None:
+            return []
+
+        # Get headers (text values)
+        headers = get_sheet_headers(spreadsheet_id, sheet_name)
+        if not headers:
+            return []
+
+        # Get data validation for column 2 (row index 1, first data row) to detect checkboxes
+        # We check row 2 because the header row itself doesn't have data validation
+        resp = service.spreadsheets().get(
+            spreadsheetId=spreadsheet_id,
+            ranges=[f'{sheet_name}!A2:{_col_letter(len(headers))}2'],
+            fields='sheets.data.rowData.values.dataValidation'
+        ).execute()
+
+        # Parse validation rules
+        formats = []
+        row_data = []
+        try:
+            row_data = resp['sheets'][0]['data'][0].get('rowData', [{}])[0].get('values', [])
+        except (KeyError, IndexError):
+            pass
+
+        for i, name in enumerate(headers):
+            fmt = "text"
+            if i < len(row_data):
+                dv = row_data[i].get('dataValidation', {})
+                condition = dv.get('condition', {})
+                if condition.get('type') == 'BOOLEAN':
+                    fmt = "checkbox"
+            formats.append({"name": name, "format": fmt})
+
+        return formats
+    except Exception as e:
+        print(f"[sheets_manager] Error reading header formats: {e}")
+        # Fall back to plain headers without format info
+        headers = get_sheet_headers(spreadsheet_id, sheet_name)
+        return [{"name": h, "format": "text"} for h in headers]
+
+
+def _col_letter(n: int) -> str:
+    """Convert 1-based column number to letter (1→A, 26→Z, 27→AA)."""
+    result = ''
+    while n > 0:
+        n, remainder = divmod(n - 1, 26)
+        result = chr(65 + remainder) + result
+    return result
+
+
 def get_existing_urls(spreadsheet_id: str, sheet_name: str = 'Sheet1', url_column: str = 'url') -> set:
     """
     Read all existing URLs from a sheet to enable deduplication.
@@ -251,17 +404,18 @@ def get_existing_urls(spreadsheet_id: str, sheet_name: str = 'Sheet1', url_colum
             return set()
 
         url_idx = headers.index(url_column)
+        col_letter = _col_letter(url_idx + 1)
 
-        # Read all data (just the URL column would be ideal, but Sheets API reads full rows)
-        all_data = read_sheet(spreadsheet_id, f'{sheet_name}!A:Z')
+        # Read just the URL column (much faster than A:Z for large sheets)
+        all_data = read_sheet(spreadsheet_id, f'{sheet_name}!{col_letter}:{col_letter}')
         if not all_data or len(all_data) < 2:  # header only or empty
             return set()
 
-        # Extract URLs from the correct column (skip header row)
+        # Extract URLs (skip header row), ignoring empty rows
         existing = set()
         for row in all_data[1:]:
-            if len(row) > url_idx and row[url_idx]:
-                existing.add(row[url_idx].strip())
+            if row and row[0] and row[0].strip():
+                existing.add(row[0].strip())
 
         return existing
     except Exception as e:
@@ -413,6 +567,16 @@ def export_items_to_sheet(
                 append_to_sheet(spreadsheet_id, f'{sheet_name}!A1', [cols])
             except HttpError:
                 pass  # Tab may not exist — resolve_sheet_name should handle this
+
+    # If the sheet already has headers, align data to the SHEET's column order
+    # (not the config's column order) so appended rows match existing columns.
+    try:
+        existing_headers = get_sheet_headers(spreadsheet_id, sheet_name)
+        if existing_headers:
+            print(f"[sheets_manager] Aligning to sheet headers ({len(existing_headers)} cols)")
+            cols = existing_headers
+    except Exception:
+        pass  # Fall back to config columns
 
     # Deduplication: skip items whose URL already exists in the sheet
     if deduplicate and dedup_column in cols:

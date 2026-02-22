@@ -7,6 +7,7 @@ import glob
 import datetime
 import json
 import shutil
+from urllib.parse import urlparse, parse_qs
 import tkinter.filedialog as filedialog
 import qrcode
 from PIL import Image # PIL is imported by qrcode, but explicit import helps CTkImage
@@ -51,6 +52,28 @@ def get_resource_path(filename):
         return os.path.join(os.path.dirname(os.path.abspath(__file__)), filename)
 
 
+def parse_briefing_url(url_string: str) -> dict:
+    """Parse a dailybriefing:// URL into action parameters.
+
+    Supported URLs:
+        dailybriefing://connect?server=https://example.onrender.com
+
+    Returns dict with 'action' and action-specific keys, or empty dict if invalid.
+    """
+    try:
+        parsed = urlparse(url_string)
+        if parsed.scheme != 'dailybriefing':
+            return {}
+        action = parsed.netloc or parsed.hostname or ''
+        params = parse_qs(parsed.query, keep_blank_values=False)
+        result = {'action': action}
+        for key, values in params.items():
+            result[key] = values[0] if len(values) == 1 else values
+        return result
+    except Exception:
+        return {}
+
+
 from podcast_manager import PodcastServer # Import your podcast manager
 from file_manager import FileManager
 from audio_generator import AudioGenerator
@@ -79,6 +102,21 @@ except Exception:
 
 # Google Drive sign-in and sync removed
 # from drive_manager import DriveManager
+
+# App version — displayed in sidebar and first-run wizard
+APP_VERSION = "1.0.0-alpha"
+
+# Cached ffmpeg check — subprocess is slow, only run once per session
+_ffmpeg_cache = None
+def _cached_check_ffmpeg():
+    """Return cached result of check_ffmpeg() to avoid repeated subprocess calls."""
+    global _ffmpeg_cache
+    if _ffmpeg_cache is None:
+        _ffmpeg_cache = check_ffmpeg()
+    return _ffmpeg_cache
+
+# Pre-warm ffmpeg cache on background thread so first Settings visit is instant
+threading.Thread(target=_cached_check_ffmpeg, daemon=True).start()
 
 # Configuration - Dark theme to match web interface
 ctk.set_appearance_mode("Dark")
@@ -184,11 +222,13 @@ def add_tooltip(widget, text, delay=1200):
     return ToolTip(widget, text, delay)
 
 class AudioBriefingApp(ctk.CTk):
-    def __init__(self):
+    def __init__(self, launch_url: str = None):
         super().__init__()
+        self._pending_launch_url = launch_url
 
         self.title("Daily Audio Briefing")
         self.geometry("950x900") # Wider default width to fit controls
+        self.minsize(850, 650)  # Prevent shrinking below usable size
 
         # Main window grid - sidebar + page container
         self.grid_columnconfigure(0, weight=0)  # Sidebar fixed width
@@ -237,13 +277,80 @@ class AudioBriefingApp(ctk.CTk):
         # Long-running operation flag - prevents scheduler from overwriting status
         self._long_operation_in_progress = False
 
+        # Placeholder for status label — created in _build_summarize_page() but
+        # referenced by callbacks that may fire before that page is built.
+        self.label_status = None
+
         # Apply saved text scale on startup
         self._apply_text_scale()
 
         # self.podcast_server = PodcastServer()  # Disabled
         # self.drive_manager = None  # Google Drive features removed
 
-        # ============ SUMMARIZE PAGE ============
+        # Track which pages have been built (for deferred loading)
+        self._pages_built = set()
+
+        # ============ HOME PAGE (built immediately — visible on startup) ============
+        self._build_home_page()
+        self._pages_built.add("home")
+
+        # Defer all other page construction so the window paints instantly.
+        # Pages are built in priority order via after() callbacks.
+        # If user navigates before a page is built, _navigate_to() triggers build on demand.
+        self._deferred_build_queue = [
+            ("summarize", self._build_summarize_page),
+            ("audio", self._build_audio_page),
+            ("extract", self._build_extract_page),
+            ("scheduler", self._build_scheduler_page_widgets),
+            ("settings", self._build_settings_page),
+            ("guide", self._build_guide_page),
+        ]
+        self._schedule_deferred_builds()
+
+    def _schedule_deferred_builds(self):
+        """Schedule deferred page builds so UI renders immediately."""
+        if not self._deferred_build_queue:
+            # All pages built — run post-build setup
+            print(f"[DEBUG] All deferred builds complete. pages_built={self._pages_built}", flush=True)
+            self.after(50, self._post_build_setup)
+            return
+
+        page_id, builder = self._deferred_build_queue.pop(0)
+        if page_id not in self._pages_built:
+            try:
+                print(f"[DEBUG] Building page: {page_id}", flush=True)
+                builder()
+                self._pages_built.add(page_id)
+                print(f"[DEBUG] Built page: {page_id} OK", flush=True)
+                # Flush geometry computation so hidden pages have correct layout
+                # when later shown. Without this, CTkScrollableFrame pages built
+                # while grid_remove()'d won't compute their scroll regions until
+                # an explicit update_idletasks() happens (e.g. navigating to Settings).
+                self.update_idletasks()
+            except Exception as e:
+                print(f"[DEBUG] ERROR building page {page_id}: {e}", flush=True)
+                import traceback; traceback.print_exc(); sys.stdout.flush()
+
+        # Give the event loop 100ms between page builds so the UI stays
+        # responsive and paint events are processed between builds.
+        self.after(100, self._schedule_deferred_builds)
+
+    def _ensure_page_built(self, page_name: str):
+        """Force-build a page if user navigates before deferred build reaches it."""
+        if page_name in self._pages_built:
+            return
+        # Find and run the builder
+        for i, (pid, builder) in enumerate(self._deferred_build_queue):
+            if pid == page_name:
+                print(f"[DEBUG] _ensure_page_built: force-building {page_name}", flush=True)
+                builder()
+                self._pages_built.add(page_name)
+                self._deferred_build_queue.pop(i)
+                self.update_idletasks()
+                return
+
+    def _build_summarize_page(self):
+        """Build the Summarize page (deferred from __init__ for faster startup)."""
         # Page header
         self.label_header = ctk.CTkLabel(
             self.pages["summarize"],
@@ -663,6 +770,8 @@ class AudioBriefingApp(ctk.CTk):
         
         # Initialize state
         self.on_toggle_range()
+        self.load_current_summary()
+        self.load_api_key()
 
         # Row 4: Upload Text File button (audio transcription moved to Advanced section)
         self.btn_upload_file = ctk.CTkButton(self.frame_yt_api, text="Upload Text File (.txt)", command=self.upload_text_file)
@@ -672,7 +781,27 @@ class AudioBriefingApp(ctk.CTk):
         # Users can now paste YouTube URLs or article URLs directly and they'll be auto-detected
         # Note: Transcription features moved to collapsible "Advanced" section at bottom
 
-        # ============ AUDIO PAGE ============
+        # Open Folder button — on Summarize page (convenient after generating content)
+        self.btn_open = ctk.CTkButton(
+            self.pages["summarize"], text="Open Output Folder",
+            fg_color="transparent", border_width=2,
+            text_color=COLORS["text_primary"],
+            hover_color=COLORS["bg_tertiary"],
+            corner_radius=8,
+            command=self.open_output_folder
+        )
+        self.btn_open.grid(row=3, column=0, padx=20, pady=(10, 10))
+
+        # Status label — on Summarize page
+        sum_status_frame = ctk.CTkFrame(self.pages["summarize"], fg_color="transparent")
+        sum_status_frame.grid(row=4, column=0, padx=20, pady=(5, 5), sticky="ew")
+        sum_status_frame.grid_columnconfigure(0, weight=1)
+
+        self.label_status = ctk.CTkLabel(sum_status_frame, text="Ready", text_color=COLORS["text_primary"], font=ctk.CTkFont(size=14, weight="bold"))
+        self.label_status.grid(row=0, column=0, sticky="w")
+
+    def _build_audio_page(self):
+        """Build the Audio page (deferred from __init__ for faster startup)."""
         self.label_audio_header = ctk.CTkLabel(
             self.pages["audio"],
             text="Convert Text/Summaries to Audio",
@@ -720,7 +849,8 @@ class AudioBriefingApp(ctk.CTk):
         self.btn_quality = ctk.CTkButton(self.frame_audio_controls, text="Generate Quality (Kokoro)", command=self.start_quality_generation)
         self.btn_quality.grid(row=4, column=0, columnspan=2, padx=10, pady=(5, 10), sticky="ew")
 
-        # ============ EXTRACT PAGE ============
+    def _build_extract_page(self):
+        """Build the Extract/Data Extractor page (deferred from __init__ for faster startup)."""
         ctk.CTkLabel(
             self.pages["extract"],
             text="Data Extractor",
@@ -899,7 +1029,8 @@ class AudioBriefingApp(ctk.CTk):
         self.label_transcription.grid(row=3, column=0, sticky="w", pady=(5, 0))
         self.label_transcription.bind("<Button-1>", lambda e: self.show_transcription_guide())
 
-        # ============ SCHEDULER PAGE ============
+    def _build_scheduler_page_widgets(self):
+        """Build the Scheduler page widgets (deferred from __init__ for faster startup)."""
         ctk.CTkLabel(
             self.pages["scheduler"],
             text="Scheduler",
@@ -989,9 +1120,12 @@ class AudioBriefingApp(ctk.CTk):
         )
         self.scheduler_empty_label.grid(row=0, column=0, pady=20)
 
+        # --- Collapsible Task Execution Log ---
+        self._build_task_log_panel()
+
         # Background Scheduler Section
         bg_scheduler_frame = ctk.CTkFrame(self.scheduler_content, fg_color=("gray85", "gray20"))
-        bg_scheduler_frame.grid(row=3, column=0, sticky="ew", pady=(10, 5))
+        bg_scheduler_frame.grid(row=4, column=0, sticky="ew", pady=(10, 5))
         bg_scheduler_frame.grid_columnconfigure(1, weight=1)
 
         ctk.CTkLabel(
@@ -1047,44 +1181,24 @@ class AudioBriefingApp(ctk.CTk):
         # Initialize background scheduler state
         self._init_background_scheduler_state()
 
-        # Initialize scheduler (but don't start it yet)
-        self._init_scheduler()
+        # Scheduler lazy-initialized on first Scheduler page visit
+        self._scheduler = None
+        self._scheduler_initialized = False
+        self._task_running_id = None
+        self._backfill_stop = False
 
         # Cloud Scheduler Card (on Scheduler page, below the local scheduler)
         self._build_cloud_scheduler_card()
 
-        # Open Folder button — on Summarize page (convenient after generating content)
-        self.btn_open = ctk.CTkButton(
-            self.pages["summarize"], text="Open Output Folder",
-            fg_color="transparent", border_width=2,
-            text_color=COLORS["text_primary"],
-            hover_color=COLORS["bg_tertiary"],
-            corner_radius=8,
-            command=self.open_output_folder
-        )
-        self.btn_open.grid(row=3, column=0, padx=20, pady=(10, 10))
-
-        # Status label — on Summarize page
-        sum_status_frame = ctk.CTkFrame(self.pages["summarize"], fg_color="transparent")
-        sum_status_frame.grid(row=4, column=0, padx=20, pady=(5, 5), sticky="ew")
-        sum_status_frame.grid_columnconfigure(0, weight=1)
-
-        self.label_status = ctk.CTkLabel(sum_status_frame, text="Ready", text_color=COLORS["text_primary"], font=ctk.CTkFont(size=14, weight="bold"))
-        self.label_status.grid(row=0, column=0, sticky="w")
-
-        # ============ SETTINGS PAGE ============
-        self._build_settings_page()
-
-        # ============ HOME PAGE ============
-        self._build_home_page()
-
-        # ============ GUIDE PAGE ============
-        self._build_guide_page()
-
-        # Compression status — tracked for settings page
-        self.compression_enabled = check_ffmpeg()
-        compression_text = "✓ Compression enabled" if self.compression_enabled else "⚠ Compression disabled"
-        compression_color = "green" if self.compression_enabled else "orange"
+    def _post_build_setup(self):
+        """Run after all deferred page builds complete. Sets up cross-page references."""
+        print(f"[DEBUG] _post_build_setup running. pages_built={self._pages_built}", flush=True)
+        # Compression status — tracked for settings page.
+        # Use cache directly to avoid any blocking — background thread should be done by now.
+        ffmpeg_ok = _ffmpeg_cache if _ffmpeg_cache is not None else False
+        self.compression_enabled = ffmpeg_ok
+        compression_text = "✓ Compression enabled" if ffmpeg_ok else "⚠ Compression disabled"
+        compression_color = "green" if ffmpeg_ok else "orange"
 
         self.label_compression = ctk.CTkLabel(
             self.pages["settings"],
@@ -1101,6 +1215,62 @@ class AudioBriefingApp(ctk.CTk):
 
         # Schedule placeholder check after UI fully loads (handles cached content)
         self.after(100, self._check_placeholder_on_startup)
+
+        # Process launch URL if provided (deferred to after UI is fully built)
+        if self._pending_launch_url:
+            self.after(500, lambda: self._handle_launch_url(self._pending_launch_url))
+
+        # Register macOS URL scheme handler for when app is already running
+        if sys.platform == 'darwin':
+            try:
+                self.createcommand('::tk::mac::LaunchURL', self._handle_launch_url)
+            except Exception:
+                pass  # Not fatal — URL scheme just won't work for already-running app
+
+        # Show first-run wizard if this is the first launch
+        if not self.settings.get("first_run_completed", False):
+            self.after(1000, self._show_first_run_wizard)
+
+        # macOS frozen app activation fix — without this, the window appears
+        # but doesn't receive click events until the user clicks to activate it.
+        if sys.platform == 'darwin':
+            self.after(200, self._activate_window)
+
+    def _activate_window(self):
+        """Bring window to front and make it the active/key window on macOS.
+
+        PyInstaller apps on macOS often fail to become the active application
+        on launch, causing click events to be silently ignored until the user
+        manually clicks to activate. This forces activation via multiple
+        strategies for maximum compatibility.
+        """
+        activated = False
+        try:
+            from AppKit import NSApplication
+            NSApplication.sharedApplication().activateIgnoringOtherApps_(True)
+            activated = True
+        except ImportError:
+            pass
+
+        if not activated:
+            try:
+                import subprocess
+                subprocess.Popen(
+                    ['osascript', '-e',
+                     'tell application "System Events" to set frontmost of '
+                     'the first process whose unix id is '
+                     f'{os.getpid()} to true'],
+                    stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL
+                )
+            except Exception:
+                pass
+
+        # Tk-level activation as complement — ensures the Tk window itself
+        # is raised within the app even if Cocoa activation already worked.
+        self.lift()
+        self.attributes('-topmost', True)
+        self.after(100, lambda: self.attributes('-topmost', False))
+        self.focus_force()
 
     def _check_placeholder_on_startup(self):
         """Check and update placeholder visibility after startup (for cached content)."""
@@ -1144,6 +1314,11 @@ class AudioBriefingApp(ctk.CTk):
 
         # Navigation buttons
         self.nav_buttons = {}
+        def _make_nav_cmd(p):
+            def cmd():
+                print(f"[DEBUG] Nav button clicked: {p}", flush=True)
+                self._navigate_to(p)
+            return cmd
         for i, (page_id, label) in enumerate(NAV_PAGES):
             btn = ctk.CTkButton(
                 self.sidebar_frame, text=label,
@@ -1153,7 +1328,7 @@ class AudioBriefingApp(ctk.CTk):
                 text_color=COLORS["text_secondary"],
                 hover_color=COLORS["bg_tertiary"],
                 corner_radius=8,
-                command=lambda p=page_id: self._navigate_to(p)
+                command=_make_nav_cmd(page_id)
             )
             btn.grid(row=i + 2, column=0, padx=10, pady=2, sticky="ew")
             self.nav_buttons[page_id] = btn
@@ -1173,7 +1348,7 @@ class AudioBriefingApp(ctk.CTk):
         self.sidebar_status_label.pack(anchor="w")
 
         self.sidebar_version_label = ctk.CTkLabel(
-            status_frame, text="v1.0 Alpha",
+            status_frame, text=f"v{APP_VERSION}",
             font=ctk.CTkFont(size=10),
             text_color=COLORS["text_muted"]
         )
@@ -1187,7 +1362,10 @@ class AudioBriefingApp(ctk.CTk):
                 fg_color=COLORS["bg_primary"],
                 corner_radius=0
             )
-            page.grid(row=0, column=0, sticky="nsew")
+            # Do NOT grid pages here — only the active page should be gridded.
+            # Previously we did grid() + grid_remove() which caused z-order issues
+            # in frozen (PyInstaller) builds where the last-created page could
+            # intercept events from the sidebar.
             page.grid_columnconfigure(0, weight=1)
             # Widen scrollbar
             try:
@@ -1195,18 +1373,42 @@ class AudioBriefingApp(ctk.CTk):
             except Exception:
                 pass
             self.pages[page_id] = page
-            page.grid_remove()  # All hidden initially
+            self._bind_page_mousewheel(page)
 
-        # Show home page by default
-        self.pages["home"].grid()
+        # Show home page by default — it's the only page that gets gridded
+        self.pages["home"].grid(row=0, column=0, sticky="nsew")
         self._current_page = "home"
         self.nav_buttons["home"].configure(
             fg_color=COLORS["bg_tertiary"],
             text_color=COLORS["accent"]
         )
 
+    def _bind_page_mousewheel(self, page):
+        """Bind mouse-wheel scrolling to a CTkScrollableFrame page."""
+        try:
+            canvas = page._parent_canvas
+        except AttributeError:
+            return
+
+        def _on_mousewheel(event):
+            # macOS: event.delta is positive=up, negative=down
+            if event.delta:
+                canvas.yview_scroll(int(-1 * (event.delta / 120)), "units")
+            elif event.num == 4:   # Linux scroll up
+                canvas.yview_scroll(-3, "units")
+            elif event.num == 5:   # Linux scroll down
+                canvas.yview_scroll(3, "units")
+
+        canvas.bind("<MouseWheel>", _on_mousewheel)
+        canvas.bind("<Button-4>", _on_mousewheel)
+        canvas.bind("<Button-5>", _on_mousewheel)
+        page.bind("<MouseWheel>", _on_mousewheel)
+        page.bind("<Button-4>", _on_mousewheel)
+        page.bind("<Button-5>", _on_mousewheel)
+
     def _navigate_to(self, page_name: str):
         """Switch to a page (hides current, shows target, highlights nav)."""
+        print(f"[DEBUG] _navigate_to({page_name}) current={self._current_page} pages_built={self._pages_built}", flush=True)
         if page_name == self._current_page:
             return
 
@@ -1218,10 +1420,14 @@ class AudioBriefingApp(ctk.CTk):
                     fg_color="transparent",
                     text_color=COLORS["text_secondary"]
                 )
+            # Flush the hide immediately so user sees page disappear before new page renders
+            self.update_idletasks()
 
         # Show target page
         if page_name in self.pages:
-            self.pages[page_name].grid()
+            # Ensure page is built (deferred loading — build on first visit if needed)
+            self._ensure_page_built(page_name)
+            self.pages[page_name].grid(row=0, column=0, sticky="nsew")
             if page_name in self.nav_buttons:
                 self.nav_buttons[page_name].configure(
                     fg_color=COLORS["bg_tertiary"],
@@ -1231,6 +1437,9 @@ class AudioBriefingApp(ctk.CTk):
 
             # Page-specific refresh hooks
             if page_name == "scheduler":
+                if not self._scheduler_initialized:
+                    self._init_scheduler()
+                    self._scheduler_initialized = True
                 self._refresh_scheduler_tasks()
             elif page_name == "settings":
                 self._refresh_settings_page()
@@ -1260,7 +1469,7 @@ class AudioBriefingApp(ctk.CTk):
         """Refresh settings page content (called when navigating to Settings)."""
         # Update compression status
         if hasattr(self, 'label_compression'):
-            self.compression_enabled = check_ffmpeg()
+            self.compression_enabled = _cached_check_ffmpeg()
             compression_text = "✓ Compression enabled" if self.compression_enabled else "⚠ Compression disabled"
             compression_color = "green" if self.compression_enabled else "orange"
             self.label_compression.configure(text=compression_text, text_color=compression_color)
@@ -1320,12 +1529,12 @@ class AudioBriefingApp(ctk.CTk):
         status_content.grid(row=1, column=0, padx=16, pady=(0, 16), sticky="ew")
         status_content.grid_columnconfigure(1, weight=1)
 
-        # Compression status
-        ffmpeg_ok = check_ffmpeg()
+        # Compression status — don't block main thread waiting for ffmpeg check.
+        # Show a neutral placeholder, then update once the background thread finishes.
         self._home_ffmpeg_dot = ctk.CTkLabel(
             status_content,
-            text="●" if ffmpeg_ok else "●",
-            text_color=COLORS["success"] if ffmpeg_ok else COLORS["warning"],
+            text="●",
+            text_color=COLORS["text_secondary"],
             font=ctk.CTkFont(size=14)
         )
         self._home_ffmpeg_dot.grid(row=0, column=0, padx=(0, 8), sticky="w")
@@ -1333,6 +1542,15 @@ class AudioBriefingApp(ctk.CTk):
             status_content, text="ffmpeg (audio compression)",
             font=ctk.CTkFont(size=12), text_color=COLORS["text_secondary"]
         ).grid(row=0, column=1, sticky="w")
+
+        # Update ffmpeg dot once background pre-warm thread completes
+        def _update_ffmpeg_dot():
+            if _ffmpeg_cache is not None:
+                color = COLORS["success"] if _ffmpeg_cache else COLORS["warning"]
+                self._home_ffmpeg_dot.configure(text_color=color)
+            else:
+                self.after(200, _update_ffmpeg_dot)  # Check again later
+        self.after(200, _update_ffmpeg_dot)
 
         # Open output folder button
         ctk.CTkButton(
@@ -1392,7 +1610,7 @@ class AudioBriefingApp(ctk.CTk):
 
         # Show dependency statuses
         deps = [
-            ("ffmpeg", check_ffmpeg(), "Audio compression"),
+            ("ffmpeg", _cached_check_ffmpeg(), "Audio compression"),
             ("gTTS", True, "Fast text-to-speech"),  # Always available
         ]
         # Check optional deps
@@ -1417,6 +1635,27 @@ class AudioBriefingApp(ctk.CTk):
                 sys_content, text=f"{name} — {desc}",
                 font=ctk.CTkFont(size=12), text_color=COLORS["text_secondary"]
             ).grid(row=i, column=1, sticky="w", pady=2)
+
+        # Setup Wizard card
+        setup_card = self._create_card(page, title="Setup")
+        setup_card.grid(row=3, column=0, padx=20, pady=(0, 12), sticky="ew")
+
+        setup_content = ctk.CTkFrame(setup_card, fg_color="transparent")
+        setup_content.grid(row=1, column=0, padx=16, pady=(0, 16), sticky="ew")
+
+        ctk.CTkLabel(
+            setup_content,
+            text="Re-run the initial setup to check or install dependencies (ffmpeg, Kokoro).",
+            font=ctk.CTkFont(size=12),
+            text_color=COLORS["text_secondary"],
+            wraplength=500, justify="left"
+        ).grid(row=0, column=0, sticky="w", pady=(0, 8))
+
+        ctk.CTkButton(
+            setup_content, text="Run Setup Wizard", width=160,
+            fg_color=COLORS["accent"], hover_color="#2563eb",
+            command=self._show_first_run_wizard
+        ).grid(row=1, column=0, sticky="w")
 
     def _on_settings_scale_change(self, value):
         """Handle text scale slider change on Settings page."""
@@ -1575,6 +1814,45 @@ class AudioBriefingApp(ctk.CTk):
             return self._cloud_client
         return self._scheduler
 
+    def _handle_launch_url(self, url_string: str):
+        """Handle a dailybriefing:// URL scheme invocation.
+
+        Called either at startup (from sys.argv) or at runtime
+        (from ::tk::mac::LaunchURL when app is already running).
+        """
+        params = parse_briefing_url(url_string)
+        if not params or not params.get('action'):
+            return
+
+        action = params['action']
+
+        if action == 'connect':
+            server_url = params.get('server', '')
+            if not server_url:
+                return
+
+            # Navigate to scheduler page
+            self._navigate_to('scheduler')
+
+            # Populate the server URL entry
+            if hasattr(self, 'cloud_url_entry'):
+                self.cloud_url_entry.delete(0, 'end')
+                self.cloud_url_entry.insert(0, server_url)
+
+            # Save to settings
+            self.settings['server_url'] = server_url
+            self._save_settings()
+
+            # Auto-test connection after a short delay (let UI update)
+            self.after(200, self._test_cloud_connection)
+
+            # Update status
+            if hasattr(self, 'cloud_status_label'):
+                self.cloud_status_label.configure(
+                    text="Connecting via desktop link...",
+                    text_color=COLORS["accent"]
+                )
+
     def _build_guide_page(self):
         """Build the Guide/Help page."""
         page = self.pages["guide"]
@@ -1648,112 +1926,305 @@ class AudioBriefingApp(ctk.CTk):
                 wraplength=500, justify="left"
             ).grid(row=i, column=1, sticky="w", pady=3)
 
+        # Roadmap card
+        roadmap_card = self._create_card(page, title="Roadmap")
+        roadmap_card.grid(row=4, column=0, padx=20, pady=(0, 12), sticky="ew")
+
+        roadmap_phases = [
+            ("1. Alpha (Current)",
+             "Admin-hosted. API keys and credentials managed centrally. macOS desktop app only."),
+            ("2. User Accounts",
+             "Login system. Per-user API keys and Google credentials. Windows desktop build."),
+            ("3. Full Cloud",
+             "Server-side audio generation. All features available via web browser."),
+            ("4. SaaS",
+             "Multi-tenant platform. Per-user billing, subscription tiers, mobile apps."),
+        ]
+        rm_content = ctk.CTkFrame(roadmap_card, fg_color="transparent")
+        rm_content.grid(row=1, column=0, padx=16, pady=(0, 16), sticky="ew")
+        for i, (phase, desc) in enumerate(roadmap_phases):
+            ctk.CTkLabel(
+                rm_content, text=phase,
+                font=ctk.CTkFont(size=13, weight="bold"),
+                text_color=COLORS["text_primary"]
+            ).grid(row=i*2, column=0, sticky="w", pady=(6 if i > 0 else 0, 0))
+            ctk.CTkLabel(
+                rm_content, text=desc,
+                font=ctk.CTkFont(size=12),
+                text_color=COLORS["text_secondary"],
+                wraplength=600, justify="left"
+            ).grid(row=i*2+1, column=0, sticky="w", pady=(0, 2))
+
+    def _show_first_run_wizard(self):
+        """Show a first-run setup wizard for dependency installation."""
+        import webbrowser
+        global _ffmpeg_cache
+
+        wiz = ctk.CTkToplevel(self)
+        wiz.title("Setup Wizard")
+        wiz.geometry("550x620")
+        wiz.transient(self)
+        wiz.grab_set()
+        wiz.lift()
+        wiz.attributes('-topmost', True)
+        wiz.resizable(False, False)
+
+        # Main container with padding
+        container = ctk.CTkFrame(wiz, fg_color=COLORS["bg_primary"])
+        container.pack(fill="both", expand=True, padx=20, pady=20)
+
+        # Welcome header
+        ctk.CTkLabel(
+            container, text=f"Welcome to Daily Audio Briefing",
+            font=ctk.CTkFont(size=18, weight="bold"),
+            text_color=COLORS["text_primary"]
+        ).pack(anchor="w", pady=(0, 4))
+
+        ctk.CTkLabel(
+            container, text=f"Version {APP_VERSION}",
+            font=ctk.CTkFont(size=12),
+            text_color=COLORS["text_muted"]
+        ).pack(anchor="w", pady=(0, 16))
+
+        # Description
+        ctk.CTkLabel(
+            container,
+            text="The app works out of the box, but installing these optional\n"
+                 "dependencies unlocks advanced features:",
+            font=ctk.CTkFont(size=13),
+            text_color=COLORS["text_secondary"],
+            justify="left"
+        ).pack(anchor="w", pady=(0, 16))
+
+        # Dependency checklist card
+        dep_card = ctk.CTkFrame(container, fg_color=COLORS["bg_secondary"], corner_radius=12,
+                                border_width=1, border_color=COLORS["border"])
+        dep_card.pack(fill="x", pady=(0, 12))
+        dep_card.grid_columnconfigure(1, weight=1)
+
+        # --- ffmpeg ---
+        ffmpeg_ok = _cached_check_ffmpeg()
+        dot_color = COLORS["success"] if ffmpeg_ok else COLORS["warning"]
+        status_text = "Installed" if ffmpeg_ok else "Not found"
+
+        ctk.CTkLabel(dep_card, text="●", text_color=dot_color,
+                      font=ctk.CTkFont(size=16)).grid(row=0, column=0, padx=(16, 8), pady=(16, 4), sticky="w")
+        ctk.CTkLabel(dep_card, text="ffmpeg — Audio Compression",
+                      font=ctk.CTkFont(size=13, weight="bold"),
+                      text_color=COLORS["text_primary"]).grid(row=0, column=1, pady=(16, 4), sticky="w")
+        ctk.CTkLabel(dep_card, text=f"Status: {status_text}. Compresses audio files to smaller MP3 format.",
+                      font=ctk.CTkFont(size=11),
+                      text_color=COLORS["text_secondary"]).grid(row=1, column=1, sticky="w", pady=(0, 4))
+        if not ffmpeg_ok:
+            ctk.CTkButton(dep_card, text="Open Download Page", width=140,
+                          fg_color=COLORS["accent"], hover_color="#2563eb",
+                          command=lambda: webbrowser.open("https://ffmpeg.org/download.html")
+                          ).grid(row=2, column=1, sticky="w", pady=(0, 12))
+        else:
+            ctk.CTkLabel(dep_card, text="✓ Ready to use",
+                          font=ctk.CTkFont(size=11), text_color=COLORS["success"]
+                          ).grid(row=2, column=1, sticky="w", pady=(0, 12))
+
+        # --- Kokoro ---
+        kokoro_path = os.path.join(get_data_directory(), "kokoro-v1.0.onnx")
+        kokoro_ok = os.path.exists(kokoro_path)
+        dot_color_k = COLORS["success"] if kokoro_ok else COLORS["warning"]
+        status_text_k = "Installed" if kokoro_ok else "Not found"
+
+        ctk.CTkLabel(dep_card, text="●", text_color=dot_color_k,
+                      font=ctk.CTkFont(size=16)).grid(row=3, column=0, padx=(16, 8), pady=(8, 4), sticky="w")
+        ctk.CTkLabel(dep_card, text="Kokoro Model — Quality Text-to-Speech",
+                      font=ctk.CTkFont(size=13, weight="bold"),
+                      text_color=COLORS["text_primary"]).grid(row=3, column=1, pady=(8, 4), sticky="w")
+        ctk.CTkLabel(dep_card, text=f"Status: {status_text_k}. Natural-sounding neural voice (vs. robotic gTTS).",
+                      font=ctk.CTkFont(size=11),
+                      text_color=COLORS["text_secondary"]).grid(row=4, column=1, sticky="w", pady=(0, 4))
+        if not kokoro_ok:
+            ctk.CTkButton(dep_card, text="Open Download Page", width=140,
+                          fg_color=COLORS["accent"], hover_color="#2563eb",
+                          command=lambda: webbrowser.open("https://github.com/thewh1teagle/kokoro-onnx/releases")
+                          ).grid(row=5, column=1, sticky="w", pady=(0, 16))
+        else:
+            ctk.CTkLabel(dep_card, text="✓ Ready to use",
+                          font=ctk.CTkFont(size=11), text_color=COLORS["success"]
+                          ).grid(row=5, column=1, sticky="w", pady=(0, 16))
+
+        # What happens without them
+        ctk.CTkLabel(
+            container,
+            text="Without ffmpeg: audio files will be larger (WAV instead of MP3).\n"
+                 "Without Kokoro: only the fast gTTS voice is available.",
+            font=ctk.CTkFont(size=11),
+            text_color=COLORS["text_muted"],
+            justify="left"
+        ).pack(anchor="w", pady=(0, 12))
+
+        # Privacy note
+        privacy_frame = ctk.CTkFrame(container, fg_color="#1a2332", corner_radius=8)
+        privacy_frame.pack(fill="x", pady=(0, 16))
+        ctk.CTkLabel(
+            privacy_frame,
+            text="🔒 Privacy: All processing happens on your device. Only the Gemini API\n"
+                 "key is used for external API calls. No data is shared without your knowledge.",
+            font=ctk.CTkFont(size=11),
+            text_color="#7cb3e0",
+            justify="left"
+        ).pack(padx=12, pady=10)
+
+        # Buttons
+        btn_frame = ctk.CTkFrame(container, fg_color="transparent")
+        btn_frame.pack(fill="x")
+
+        def finish_wizard():
+            """Save first_run_completed and close."""
+            global _ffmpeg_cache
+            self.settings["first_run_completed"] = True
+            self._save_settings()
+            # Invalidate ffmpeg cache so Settings page re-checks after potential install
+            _ffmpeg_cache = None
+            wiz.destroy()
+
+        ctk.CTkButton(
+            btn_frame, text="Continue", width=120,
+            fg_color=COLORS["accent"], hover_color="#2563eb",
+            command=finish_wizard
+        ).pack(side="right", padx=(8, 0))
+
+        ctk.CTkButton(
+            btn_frame, text="Skip for Now", width=120,
+            fg_color="gray", hover_color="#555555",
+            command=finish_wizard
+        ).pack(side="right")
+
     def _init_tooltips(self):
-        """Initialize tooltips for all buttons in the application."""
+        """Initialize tooltips for all buttons in the application.
+
+        Uses _safe_tooltip() to guard against missing widgets — deferred page
+        builds might not have created all widgets if an error occurred.
+        """
+        def _safe_tooltip(attr_name, text):
+            widget = getattr(self, attr_name, None)
+            if widget is not None:
+                add_tooltip(widget, text)
+
         # News Summary section
-        add_tooltip(self.btn_fetch_article,
+        _safe_tooltip("btn_fetch_article",
             "Fetch article content from a URL and add it to the text area. Useful for importing news articles.")
-        add_tooltip(self.btn_settings,
+        _safe_tooltip("btn_settings",
             "Open application settings including output folder and default options.")
         # text_toggle_btn removed — text area always visible on Summarize page
 
         # API Key section
-        add_tooltip(self.btn_save_key,
+        _safe_tooltip("btn_save_key",
             "Save your Gemini API key for future sessions.")
-        add_tooltip(self.btn_toggle_key,
+        _safe_tooltip("btn_toggle_key",
             "Show or hide the API key text.")
-        add_tooltip(self.btn_key_manager,
+        _safe_tooltip("btn_key_manager",
             "Manage multiple API keys for different services.")
-        add_tooltip(self.model_combo,
+        _safe_tooltip("model_combo",
             "Select AI model quality. Fast: Quick responses, high limits. Balanced: Better quality. Best: Highest quality but limited to 50/day.")
 
         # YouTube/Content section
-        add_tooltip(self.btn_get_summaries,
+        _safe_tooltip("btn_get_summaries",
             "Fetch summaries from your configured sources (YouTube, RSS, article archives).")
-        add_tooltip(self.btn_edit_sources,
+        _safe_tooltip("btn_edit_sources",
             "Add or edit your content sources (YouTube channels, RSS feeds, article archives).")
-        add_tooltip(self.btn_edit_instructions,
+        _safe_tooltip("btn_edit_instructions",
             "Customize the AI instructions for how summaries should be generated.")
-        add_tooltip(self.btn_upload_file,
+        _safe_tooltip("btn_upload_file",
             "Upload a text file (.txt) to load into the News Summary area.")
 
         # Transcription tooltips
-        add_tooltip(self.btn_upload_audio,
+        _safe_tooltip("btn_upload_audio",
             "Upload audio/video files (.mp3, .wav, .m4a) for transcription.")
-        add_tooltip(self.btn_clear_selected,
+        _safe_tooltip("btn_clear_selected",
             "Clear the currently selected audio file.")
-        add_tooltip(self.btn_transcribe,
+        _safe_tooltip("btn_transcribe",
             "Transcribe the selected audio file to text using AI (requires faster-whisper).")
         # btn_specific_urls tooltip removed - button consolidated into textbox
-        add_tooltip(self.btn_start_cal,
+        _safe_tooltip("btn_start_cal",
             "Open calendar to select start date.")
-        add_tooltip(self.btn_end_cal,
+        _safe_tooltip("btn_end_cal",
             "Open calendar to select end date.")
-        add_tooltip(self.chk_range,
+        _safe_tooltip("chk_range",
             "Enable to filter by specific date range instead of number of days/videos.")
 
         # Audio Generation section
-        add_tooltip(self.btn_fast,
+        _safe_tooltip("btn_fast",
             "Generate audio quickly using Google Text-to-Speech. Free and fast, but lower quality voice.")
-        add_tooltip(self.btn_fast_sample,
+        _safe_tooltip("btn_fast_sample",
             "Play a sample of gTTS to hear what the fast voice sounds like.")
-        add_tooltip(self.btn_sample,
+        _safe_tooltip("btn_sample",
             "Play a sample of the selected Kokoro voice.")
-        add_tooltip(self.btn_convert_dates,
+        _safe_tooltip("btn_convert_dates",
             "Select specific dates from your summaries and convert them to audio files.")
-        add_tooltip(self.btn_quality,
+        _safe_tooltip("btn_quality",
             "Generate high-quality audio using Kokoro TTS. Better voice quality but requires more processing.")
 
         # Data Extractor section
-        add_tooltip(self.btn_tab_url,
+        _safe_tooltip("btn_tab_url",
             "INPUT MODE: Extract from URL(s). Click to select this mode. Paste newsletter URLs and the app will fetch and extract content.")
-        add_tooltip(self.btn_tab_html,
+        _safe_tooltip("btn_tab_html",
             "INPUT MODE: Paste HTML. Click to select this mode. Paste raw HTML source code directly (useful when URL fetching fails).")
-        add_tooltip(self.extract_config_combo,
+        _safe_tooltip("extract_config_combo",
             "Select extraction config. 'ExecSum' is optimized for finance newsletters with trained filters.")
-        add_tooltip(self.chk_grid_enrich,
+        _safe_tooltip("chk_grid_enrich",
             "Enrich extracted items with additional data from The Grid database.\n(Not available with ExecSum config - uses separate processor)")
-        add_tooltip(self.chk_research_articles,
+        _safe_tooltip("chk_research_articles",
             "Use AI to research and categorize each extracted article.\n(Not available with ExecSum config - uses separate processor)")
-        add_tooltip(self.btn_extract,
+        _safe_tooltip("btn_extract",
             "Extract links and headlines from the pasted URL(s). Auto-detects URLs from any format - paste messy text, it will find them.")
-        add_tooltip(self.btn_export_csv,
+        _safe_tooltip("btn_export_csv",
             "Save extracted items to a CSV file.")
-        add_tooltip(self.btn_export_sheets,
+        _safe_tooltip("btn_export_sheets",
             "Export extracted items directly to a Google Sheet.")
-        add_tooltip(self.btn_copy_text,
+        _safe_tooltip("btn_copy_text",
             "Copy all extracted items to clipboard.")
 
         # Fetch options
-        add_tooltip(self.entry_value,
+        _safe_tooltip("entry_value",
             "Enter the number of hours, days, or videos to fetch summaries for.")
-        add_tooltip(self.combo_mode,
+        _safe_tooltip("combo_mode",
             "Select the time unit: Hours (recent), Days (by date), or Videos (count per channel).")
-        add_tooltip(self.start_date_entry,
+        _safe_tooltip("start_date_entry",
             "Start date for date range filtering (format: YYYY-MM-DD).")
-        add_tooltip(self.end_date_entry,
+        _safe_tooltip("end_date_entry",
             "End date for date range filtering (format: YYYY-MM-DD).")
 
         # Audio section
-        add_tooltip(self.combo_voices,
+        _safe_tooltip("combo_voices",
             "Select the Kokoro TTS voice for quality audio generation.")
 
         # URL banner buttons
-        add_tooltip(self.btn_toggle_view,
+        _safe_tooltip("btn_toggle_view",
             "Toggle between raw text and AI-cleaned text suitable for audio.")
-        add_tooltip(self.btn_fetch_urls,
+        _safe_tooltip("btn_fetch_urls",
             "Fetch and summarize content from detected article URLs.")
-        add_tooltip(self.btn_ignore_urls,
+        _safe_tooltip("btn_ignore_urls",
             "Keep URLs as plain text without fetching their content.")
-        add_tooltip(self.btn_extract_data,
+        _safe_tooltip("btn_extract_data",
             "Extract structured data from newsletter URLs using the matching extraction config.")
 
         # Data Extractor extras
-        add_tooltip(self.btn_manage_configs,
+        _safe_tooltip("btn_manage_configs",
             "Open the Config Manager to create, edit, or delete extraction configurations.")
 
+        # Scheduler section
+        _safe_tooltip("btn_add_task",
+            "Create a new scheduled extraction task.")
+        _safe_tooltip("scheduler_mode_seg",
+            "Switch between Local scheduler (runs on this Mac) and Cloud scheduler (runs on Render server).")
+        _safe_tooltip("_task_log_toggle",
+            "Expand or collapse the task execution log.")
+        _safe_tooltip("_task_log_copy",
+            "Copy the task log to clipboard.")
+        _safe_tooltip("_task_log_clear",
+            "Clear the task log.")
+        _safe_tooltip("_task_log_stop",
+            "Stop a running backfill operation after the current post finishes.")
+
         # Bottom buttons
-        add_tooltip(self.btn_open,
+        _safe_tooltip("btn_open",
             "Open the folder where generated audio files and summaries are saved.")
 
     def _update_status(self, message, color="gray"):
@@ -1763,7 +2234,8 @@ class AudioBriefingApp(ctk.CTk):
             message: Status message to display
             color: Text color for the message
         """
-        self.after(0, lambda: self.label_status.configure(text=message, text_color=color))
+        if self.label_status:
+            self.after(0, lambda: self.label_status.configure(text=message, text_color=color))
     
     def on_mode_changed(self, *args):
         """Handle mode dropdown changes (Hours/Days/Videos)."""
@@ -1802,15 +2274,16 @@ class AudioBriefingApp(ctk.CTk):
         except Exception:
             pass
 
-        self.load_current_summary()
-        self.load_api_key()
-
     def _open_calendar_for(self, target_entry):
         import calendar as _cal
         dlg = ctk.CTkToplevel(self)
         dlg.title("Select Date")
-        dlg.geometry("360x340")
+        dlg.geometry("420x420")
+        dlg.transient(self)  # Owned by main window — proper z-layering on macOS
         dlg.grab_set()  # Make modal - prevents events from passing to underlying widgets
+        dlg.lift()
+        dlg.attributes('-topmost', True)
+        dlg.resizable(False, False)
         body = ctk.CTkFrame(dlg); body.pack(fill="both", expand=True, padx=10, pady=10)
         top = ctk.CTkFrame(body); top.pack(fill="x")
         today = datetime.date.today()
@@ -2020,20 +2493,32 @@ class AudioBriefingApp(ctk.CTk):
 
     def _load_settings(self) -> dict:
         """Load app settings from settings.json."""
-        settings_path = os.path.join(os.path.dirname(__file__), "settings.json")
         default_settings = {
             "auto_fetch_urls": False,  # Auto-fetch URLs in Direct Audio mode
             "text_scale": 100,  # Text scaling percentage (50-150%)
             "server_url": "",  # Cloud scheduler server URL
+            "first_run_completed": False,  # First-run wizard shown
         }
+        # In frozen mode, user settings live in the data directory (Application Support)
+        # In dev mode, they live next to the script
+        settings_path = os.path.join(get_data_directory(), "settings.json")
         try:
             if os.path.exists(settings_path):
                 with open(settings_path, 'r') as f:
                     saved = json.load(f)
-                    # Merge with defaults to handle new settings
                     return {**default_settings, **saved}
         except Exception:
             pass
+        # Fallback: check bundled defaults (frozen mode, first launch)
+        if getattr(sys, 'frozen', False):
+            bundled_path = get_resource_path("settings.json")
+            try:
+                if bundled_path != settings_path and os.path.exists(bundled_path):
+                    with open(bundled_path, 'r') as f:
+                        saved = json.load(f)
+                        return {**default_settings, **saved}
+            except Exception:
+                pass
         return default_settings
 
     def _apply_text_scale(self, scale_percent: int = None):
@@ -2069,7 +2554,7 @@ class AudioBriefingApp(ctk.CTk):
 
     def _save_settings(self):
         """Save app settings to settings.json."""
-        settings_path = os.path.join(os.path.dirname(__file__), "settings.json")
+        settings_path = os.path.join(get_data_directory(), "settings.json")
         try:
             with open(settings_path, 'w') as f:
                 json.dump(self.settings, f, indent=2)
@@ -4753,7 +5238,7 @@ Transcript:
         title.pack(anchor="w", pady=(0,8))
 
         # Check current status
-        has_ffmpeg = check_ffmpeg()
+        has_ffmpeg = _cached_check_ffmpeg()
         has_whisper, _ = check_system_whisper()
         is_frozen = getattr(sys, 'frozen', False)
 
@@ -7369,11 +7854,20 @@ Open Settings and click '? Start Tutorial'!""",
     # ========== Scheduler Methods ==========
 
     def _init_scheduler(self):
-        """Initialize the scheduler backend."""
+        """Initialize the scheduler backend and restore persisted active state."""
         try:
             from scheduler import get_scheduler
-            self._scheduler = get_scheduler(on_task_complete=self._on_scheduler_task_complete)
+            self._scheduler = get_scheduler(
+                on_task_complete=self._on_scheduler_task_complete,
+                on_progress=self._on_scheduler_progress
+            )
             self._refresh_scheduler_tasks()
+
+            # Restore scheduler active state from settings
+            if self.settings.get("scheduler_active", False):
+                self._scheduler.start()
+                self.scheduler_enabled_var.set(True)
+                self.scheduler_status_label.configure(text="● Running", text_color="green")
         except Exception as e:
             print(f"[Scheduler] Init error: {e}")
             self._scheduler = None
@@ -7384,28 +7878,59 @@ Open Settings and click '? Start Tutorial'!""",
             self._init_scheduler()
             if not self._scheduler:
                 self.scheduler_enabled_var.set(False)
-                self.label_status.configure(text="Scheduler initialization failed", text_color="red")
+                if self.label_status:
+                    self.label_status.configure(text="Scheduler initialization failed", text_color="red")
                 return
 
         if self.scheduler_enabled_var.get():
             self._scheduler.start()
             self.scheduler_status_label.configure(text="● Running", text_color="green")
-            self.label_status.configure(text="Scheduler started", text_color="green")
+            if self.label_status:
+                self.label_status.configure(text="Scheduler started", text_color="green")
         else:
             self._scheduler.stop()
             self.scheduler_status_label.configure(text="● Stopped", text_color="gray")
-            self.label_status.configure(text="Scheduler stopped", text_color="gray")
+            if self.label_status:
+                self.label_status.configure(text="Scheduler stopped", text_color="gray")
+
+        # Persist state so scheduler auto-starts on next launch
+        self.settings["scheduler_active"] = self.scheduler_enabled_var.get()
+        self._save_settings()
 
     def _on_scheduler_task_complete(self, task, success, message):
         """Callback when a scheduled task completes."""
         color = "green" if success else "red"
-        # Don't overwrite status during long-running operations like audio conversion
-        if not self._long_operation_in_progress:
-            self.after(0, lambda: self.label_status.configure(text=f"Task '{task.name}': {message}", text_color=color))
-        else:
-            # Just print to console when a long operation is in progress
-            print(f"[Scheduler] Task '{task.name}': {message}")
+        icon = "✅" if success else "❌"
+
+        # Stop the running animation
+        self._task_running_id = None
+
+        # Hide stop button if visible
+        if hasattr(self, '_task_log_stop'):
+            self.after(0, lambda: self._task_log_stop.grid_remove())
+
+        # Show result on Scheduler page
+        self.after(0, lambda: self._show_scheduler_status(
+            f"{icon} {task.name}: {message}", color))
+
+        # Auto-collapse log and hide panel after success (keep visible on error)
+        if success:
+            self.after(10000, lambda: self._hide_scheduler_status())
+
+        # Also update Summarize page status if visible
+        if not self._long_operation_in_progress and self.label_status:
+            self.after(0, lambda: self.label_status.configure(
+                text=f"Task '{task.name}': {message}", text_color=color))
+
         self.after(0, self._refresh_scheduler_tasks)
+
+    def _hide_scheduler_status(self):
+        """Hide the scheduler run status panel (but keep log if expanded)."""
+        if self._task_running_id is not None:
+            return  # Don't hide while task is running
+        if hasattr(self, '_task_log_frame') and not self._task_log_expanded:
+            # Only fully hide if log is collapsed
+            self._task_log_frame.grid_remove()
 
     # ========== Background Scheduler Methods ==========
 
@@ -7540,7 +8065,17 @@ Open Settings and click '? Start Tutorial'!""",
         info_frame = ctk.CTkFrame(row_frame, fg_color="transparent")
         info_frame.grid(row=0, column=1, sticky="ew", padx=5, pady=5)
 
-        name_label = ctk.CTkLabel(info_frame, text=task.name, font=ctk.CTkFont(weight="bold"))
+        # Build name with capability badges
+        task_display_name = task.name
+        badges = []
+        if getattr(task, 'enrich_with_grid', False):
+            badges.append("Grid")
+        if getattr(task, 'research_articles', False):
+            badges.append("Research")
+        if badges:
+            task_display_name += f"  [{' + '.join(badges)}]"
+
+        name_label = ctk.CTkLabel(info_frame, text=task_display_name, font=ctk.CTkFont(weight="bold"))
         name_label.pack(anchor="w")
 
         # Format next run time
@@ -7566,20 +8101,33 @@ Open Settings and click '? Start Tutorial'!""",
         btn_frame = ctk.CTkFrame(row_frame, fg_color="transparent")
         btn_frame.grid(row=0, column=2, padx=5, pady=5)
 
-        ctk.CTkButton(
+        btn_run = ctk.CTkButton(
             btn_frame, text="▶", width=30, fg_color="green",
             command=lambda t=task: self._run_task_now(t.id)
-        ).pack(side="left", padx=2)
+        )
+        btn_run.pack(side="left", padx=2)
+        add_tooltip(btn_run, "Run this task now (single extraction)")
 
-        ctk.CTkButton(
+        btn_backfill = ctk.CTkButton(
+            btn_frame, text="⏪", width=30, fg_color="#0d6efd",
+            command=lambda t=task: self._backfill_task(t.id)
+        )
+        btn_backfill.pack(side="left", padx=2)
+        add_tooltip(btn_backfill, "Backfill: Crawl the archive and fill in all missing dates")
+
+        btn_edit = ctk.CTkButton(
             btn_frame, text="✎", width=30, fg_color="gray",
             command=lambda t=task: self._open_task_editor(t.id)
-        ).pack(side="left", padx=2)
+        )
+        btn_edit.pack(side="left", padx=2)
+        add_tooltip(btn_edit, "Edit task settings")
 
-        ctk.CTkButton(
+        btn_delete = ctk.CTkButton(
             btn_frame, text="✕", width=30, fg_color="#dc3545",
             command=lambda t=task: self._delete_task(t.id)
-        ).pack(side="left", padx=2)
+        )
+        btn_delete.pack(side="left", padx=2)
+        add_tooltip(btn_delete, "Delete this task")
 
     def _toggle_task_enabled(self, task_id: str, enabled: bool):
         """Toggle a task's enabled state."""
@@ -7589,13 +8137,218 @@ Open Settings and click '? Start Tutorial'!""",
             self._refresh_scheduler_tasks()
 
     def _run_task_now(self, task_id: str):
-        """Run a task immediately."""
+        """Run a task immediately with visual feedback on Scheduler page."""
         scheduler = self._get_active_scheduler()
         if scheduler:
             task = scheduler.get_task(task_id)
             if task:
-                self.label_status.configure(text=f"Running task: {task.name}...", text_color="orange")
+                # Clear previous log and show running status
+                self._clear_task_log()
+                self._show_scheduler_status(f"⏳ Running: {task.name}...", "orange")
+                # Auto-expand the log so user sees progress
+                if not self._task_log_expanded:
+                    self._toggle_task_log()
+                # Start animated progress indicator
+                self._task_running_id = task_id
+                self._animate_task_status(task.name, 0)
                 scheduler.run_task_now(task_id)
+
+    def _backfill_task(self, task_id: str):
+        """Backfill historical data for a task from the newsletter archive."""
+        scheduler = self._get_active_scheduler()
+        if not scheduler:
+            return
+
+        task = scheduler.get_task(task_id)
+        if not task:
+            return
+
+        # Clear previous log and show running status
+        self._clear_task_log()
+        self._show_scheduler_status(f"⏪ Backfilling: {task.name}...", "#0d6efd")
+        # Auto-expand the log so user sees progress
+        if not self._task_log_expanded:
+            self._toggle_task_log()
+
+        # Stop flag — set to True to cancel mid-backfill
+        self._backfill_stop = False
+
+        # Show stop button
+        if hasattr(self, '_task_log_stop'):
+            self._task_log_stop.grid(row=0, column=2, sticky="e", padx=(4, 0))
+
+        # Start animated progress indicator
+        self._task_running_id = task_id
+        self._animate_task_status(task.name, 0, prefix="⏪ Backfilling")
+
+        scheduler.backfill_task(task_id, stop_flag=lambda: self._backfill_stop)
+
+    def _stop_backfill(self):
+        """Signal the running backfill to stop."""
+        self._backfill_stop = True
+        self._append_task_log("[Backfill] Stop requested — finishing current post...")
+
+    def _build_task_log_panel(self):
+        """Build the collapsible task execution log panel on the Scheduler page."""
+        # Container frame for the log section
+        self._task_log_frame = ctk.CTkFrame(self.scheduler_content, fg_color="transparent")
+        self._task_log_frame.grid(row=3, column=0, sticky="ew", pady=(4, 0))
+        self._task_log_frame.grid_columnconfigure(0, weight=1)
+
+        # Header row: status label + toggle button
+        log_header = ctk.CTkFrame(self._task_log_frame, fg_color="transparent")
+        log_header.grid(row=0, column=0, sticky="ew", padx=20)
+        log_header.grid_columnconfigure(0, weight=1)
+
+        # Status label (⏳ Running / ✅ Done / ❌ Error)
+        self._scheduler_run_status = ctk.CTkLabel(
+            log_header,
+            text="",
+            text_color="gray",
+            font=ctk.CTkFont(size=12)
+        )
+        self._scheduler_run_status.grid(row=0, column=0, sticky="w")
+
+        # Toggle button for expanding/collapsing the log
+        self._task_log_expanded = False
+        self._task_log_toggle = ctk.CTkButton(
+            log_header,
+            text="▶ Log",
+            width=60,
+            height=22,
+            font=ctk.CTkFont(size=11),
+            fg_color="transparent",
+            hover_color=COLORS.get("bg_tertiary", "gray30"),
+            text_color="gray",
+            command=self._toggle_task_log
+        )
+        self._task_log_toggle.grid(row=0, column=1, sticky="e")
+
+        # Stop button (hidden by default, shown during backfill)
+        self._task_log_stop = ctk.CTkButton(
+            log_header,
+            text="Stop",
+            width=50,
+            height=22,
+            font=ctk.CTkFont(size=11),
+            fg_color="#dc3545",
+            hover_color="#a71d2a",
+            text_color="white",
+            command=self._stop_backfill
+        )
+        # Don't grid yet — only shown during backfill (uses column 2)
+
+        # Copy button
+        self._task_log_copy = ctk.CTkButton(
+            log_header,
+            text="Copy",
+            width=50,
+            height=22,
+            font=ctk.CTkFont(size=11),
+            fg_color="transparent",
+            hover_color=COLORS.get("bg_tertiary", "gray30"),
+            text_color="gray",
+            command=self._copy_task_log
+        )
+        self._task_log_copy.grid(row=0, column=3, sticky="e", padx=(4, 0))
+
+        # Clear button
+        self._task_log_clear = ctk.CTkButton(
+            log_header,
+            text="Clear",
+            width=50,
+            height=22,
+            font=ctk.CTkFont(size=11),
+            fg_color="transparent",
+            hover_color=COLORS.get("bg_tertiary", "gray30"),
+            text_color="gray",
+            command=self._clear_task_log
+        )
+        self._task_log_clear.grid(row=0, column=4, sticky="e", padx=(4, 0))
+
+        # Collapsible log textbox (hidden by default)
+        self._task_log_textbox = ctk.CTkTextbox(
+            self._task_log_frame,
+            height=150,
+            font=ctk.CTkFont(family="Courier", size=11),
+            fg_color=COLORS.get("bg_tertiary", "gray20"),
+            text_color=COLORS.get("text_secondary", "gray70"),
+            corner_radius=6,
+            wrap="word",
+            state="disabled"
+        )
+        # Don't grid it yet — collapsed by default
+
+        # Internal log lines buffer
+        self._task_log_lines = []
+
+        # Initially hide the whole frame until a task starts
+        self._task_log_frame.grid_remove()
+
+    def _toggle_task_log(self):
+        """Toggle the log textbox visibility."""
+        self._task_log_expanded = not self._task_log_expanded
+        if self._task_log_expanded:
+            self._task_log_textbox.grid(row=1, column=0, sticky="ew", padx=20, pady=(4, 4))
+            self._task_log_toggle.configure(text="▼ Log")
+        else:
+            self._task_log_textbox.grid_remove()
+            self._task_log_toggle.configure(text="▶ Log")
+
+    def _append_task_log(self, message: str):
+        """Append a line to the task execution log (thread-safe via after())."""
+        self._task_log_lines.append(message)
+        # Trim buffer to prevent memory leak
+        if len(self._task_log_lines) > 200:
+            self._task_log_lines = self._task_log_lines[-200:]
+
+        # Update textbox on main thread
+        def _update():
+            if not hasattr(self, '_task_log_textbox'):
+                return
+            self._task_log_textbox.configure(state="normal")
+            self._task_log_textbox.insert("end", message + "\n")
+            self._task_log_textbox.see("end")  # Auto-scroll to bottom
+            self._task_log_textbox.configure(state="disabled")
+        self.after(0, _update)
+
+    def _copy_task_log(self):
+        """Copy the task execution log to clipboard."""
+        text = "\n".join(self._task_log_lines)
+        if text.strip():
+            self.clipboard_clear()
+            self.clipboard_append(text)
+            # Brief visual feedback on the button
+            self._task_log_copy.configure(text="Copied!")
+            self.after(1500, lambda: self._task_log_copy.configure(text="Copy"))
+
+    def _clear_task_log(self):
+        """Clear the task execution log."""
+        self._task_log_lines.clear()
+        if hasattr(self, '_task_log_textbox'):
+            self._task_log_textbox.configure(state="normal")
+            self._task_log_textbox.delete("1.0", "end")
+            self._task_log_textbox.configure(state="disabled")
+
+    def _on_scheduler_progress(self, task_id: str, message: str):
+        """Callback from scheduler with progress log lines. Called from background thread."""
+        self._append_task_log(message)
+
+    def _show_scheduler_status(self, text: str, color: str = "gray"):
+        """Show a status message on the Scheduler page."""
+        # Make sure the log panel is visible
+        if hasattr(self, '_task_log_frame'):
+            self._task_log_frame.grid()
+        self._scheduler_run_status.configure(text=text, text_color=color)
+
+    def _animate_task_status(self, task_name: str, dots: int, prefix: str = "⏳ Running"):
+        """Animate the running status with dots to show it's alive."""
+        if self._task_running_id is None:
+            return
+        dot_str = "." * (dots % 4)
+        color = "#0d6efd" if "Backfill" in prefix else "orange"
+        self._show_scheduler_status(f"{prefix}: {task_name}{dot_str}", color)
+        self.after(600, lambda: self._animate_task_status(task_name, dots + 1, prefix))
 
     def _delete_task(self, task_id: str):
         """Delete a scheduled task."""
@@ -7624,8 +8377,8 @@ Open Settings and click '? Start Tutorial'!""",
         # Create dialog
         dialog = ctk.CTkToplevel(self)
         dialog.title("Edit Scheduled Task" if not is_new else "Add Scheduled Task")
-        dialog.geometry("550x580")
-        dialog.minsize(500, 550)
+        dialog.geometry("550x750")
+        dialog.minsize(500, 700)
         dialog.transient(self)
         dialog.grab_set()
 
@@ -7720,8 +8473,147 @@ Open Settings and click '? Start Tutorial'!""",
 
         headers_var = ctk.BooleanVar(value=task.include_headers)
         headers_check = ctk.CTkCheckBox(main_frame, text="Include headers (only needed once for new sheets)", variable=headers_var)
-        headers_check.grid(row=row, column=0, columnspan=2, sticky="w", pady=(0, 15))
+        headers_check.grid(row=row, column=0, columnspan=2, sticky="w", pady=(0, 10))
         row += 1
+
+        # Column Headers Editor
+        ctk.CTkLabel(main_frame, text="Column Headers:", font=ctk.CTkFont(weight="bold")).grid(row=row, column=0, sticky="w", pady=(5, 3))
+        row += 1
+
+        col_desc = ctk.CTkLabel(main_frame, text="Comma-separated list. Leave blank to use config default.", font=("Arial", 10), text_color="gray")
+        col_desc.grid(row=row, column=0, columnspan=2, sticky="w")
+        row += 1
+
+        # Populate with: task custom_columns > config csv_columns > empty
+        initial_columns = ""
+        if task.custom_columns:
+            initial_columns = ", ".join(task.custom_columns)
+        elif task.config_name and task.config_name != "Default":
+            try:
+                import json as _json
+                _cfg_file = task.config_name.lower().replace(" ", "_") + ".json"
+                _cfg_path = os.path.join(os.path.dirname(__file__), "extraction_instructions", _cfg_file)
+                if getattr(sys, 'frozen', False):
+                    _cfg_path = os.path.join(sys._MEIPASS, "extraction_instructions", _cfg_file)
+                if os.path.exists(_cfg_path):
+                    with open(_cfg_path) as _f:
+                        _cfg_data = _json.load(_f)
+                    _default_cols = _cfg_data.get("csv_columns", [])
+                    if _default_cols:
+                        initial_columns = ", ".join(_default_cols)
+            except Exception:
+                pass
+
+        columns_entry = ctk.CTkEntry(main_frame, width=400, placeholder_text="url, description, source_name, date_published, comments")
+        columns_entry.grid(row=row, column=0, columnspan=2, sticky="ew", pady=(0, 5))
+        if initial_columns:
+            columns_entry.insert(0, initial_columns)
+        row += 1
+
+        # Auto-detect + format info row
+        detect_frame = ctk.CTkFrame(main_frame, fg_color="transparent")
+        detect_frame.grid(row=row, column=0, columnspan=2, sticky="ew", pady=(0, 5))
+        detect_frame.grid_columnconfigure(1, weight=1)
+
+        detect_status = ctk.CTkLabel(detect_frame, text="", font=("Arial", 10), text_color="gray")
+        detect_status.grid(row=0, column=1, sticky="w", padx=(8, 0))
+
+        def _auto_detect_columns():
+            """Read headers from the actual Google Sheet."""
+            sid = sheet_id_entry.get().strip()
+            sname = sheet_name_entry.get().strip() or "Sheet1"
+            if not sid:
+                detect_status.configure(text="Enter a Spreadsheet ID first", text_color="orange")
+                return
+            # Extract ID from URL if needed
+            if '/spreadsheets/d/' in sid:
+                try:
+                    from sheets_manager import extract_sheet_id
+                    sid = extract_sheet_id(sid)
+                except Exception:
+                    pass
+
+            detect_status.configure(text="Reading sheet...", text_color="gray")
+            dialog.update_idletasks()
+
+            def _do_detect():
+                try:
+                    from sheets_manager import get_sheet_headers_with_format, is_sheets_available
+                    if not is_sheets_available():
+                        return None, "Sheets not configured (no credentials)"
+                    cols = get_sheet_headers_with_format(sid, sname)
+                    return cols, None
+                except Exception as e:
+                    return None, str(e)[:80]
+
+            def _apply_result(cols, err):
+                if err:
+                    detect_status.configure(text=f"Error: {err}", text_color="red")
+                    return
+                if not cols:
+                    detect_status.configure(text="No headers found in sheet", text_color="orange")
+                    return
+                # Build display string and format info
+                names = [c["name"] for c in cols]
+                format_parts = []
+                for c in cols:
+                    if c["format"] == "checkbox":
+                        format_parts.append(f'{c["name"]} [checkbox]')
+                    else:
+                        format_parts.append(c["name"])
+
+                columns_entry.delete(0, "end")
+                columns_entry.insert(0, ", ".join(names))
+                detect_status.configure(
+                    text=f"Detected {len(cols)} columns: " + ", ".join(format_parts),
+                    text_color="green"
+                )
+
+            import threading
+            def _thread():
+                cols, err = _do_detect()
+                dialog.after(0, lambda: _apply_result(cols, err))
+            threading.Thread(target=_thread, daemon=True).start()
+
+        detect_btn = ctk.CTkButton(detect_frame, text="Auto-detect from Sheet", width=160, height=26,
+                                   font=ctk.CTkFont(size=11), fg_color=COLORS.get("accent", "#3B82F6"),
+                                   command=_auto_detect_columns)
+        detect_btn.grid(row=0, column=0, sticky="w")
+
+        row += 1
+
+        # Capabilities Section
+        ctk.CTkLabel(main_frame, text="Capabilities:", font=ctk.CTkFont(weight="bold")).grid(row=row, column=0, sticky="w", pady=(10, 5))
+        row += 1
+
+        grid_enrich_var = ctk.BooleanVar(value=task.enrich_with_grid)
+        grid_enrich_check = ctk.CTkCheckBox(main_frame, text="Enrich with Grid (match entities against The Grid database)", variable=grid_enrich_var)
+        grid_enrich_check.grid(row=row, column=0, columnspan=2, sticky="w", pady=(0, 5))
+        row += 1
+
+        research_var = ctk.BooleanVar(value=task.research_articles)
+        research_check = ctk.CTkCheckBox(main_frame, text="Research Articles (find ecosystem mentions in articles)", variable=research_var)
+        research_check.grid(row=row, column=0, columnspan=2, sticky="w", pady=(0, 5))
+        row += 1
+
+        ctk.CTkLabel(main_frame, text="These use free APIs — no Gemini costs.", font=("Arial", 10), text_color="gray").grid(row=row, column=0, columnspan=2, sticky="w", pady=(0, 15))
+        row += 1
+
+        # Enable/disable capabilities based on config selection
+        def on_config_change(choice):
+            disabled_configs = ["default", "execsum"]
+            if choice.lower() in disabled_configs:
+                grid_enrich_var.set(False)
+                research_var.set(False)
+                grid_enrich_check.configure(state="disabled")
+                research_check.configure(state="disabled")
+            else:
+                grid_enrich_check.configure(state="normal")
+                research_check.configure(state="normal")
+
+        config_combo.configure(command=on_config_change)
+        # Apply initial state
+        on_config_change(config_var.get())
 
         # Buttons
         btn_frame = ctk.CTkFrame(dialog, fg_color="transparent")
@@ -7747,6 +8639,15 @@ Open Settings and click '? Start Tutorial'!""",
                 except:
                     pass
 
+            new_grid_enrich = grid_enrich_var.get()
+            new_research = research_var.get()
+
+            # Parse custom columns from comma-separated string
+            cols_text = columns_entry.get().strip()
+            new_custom_columns = None
+            if cols_text:
+                new_custom_columns = [c.strip() for c in cols_text.split(",") if c.strip()]
+
             if is_new:
                 new_task = ScheduledTask(
                     id="",
@@ -7760,6 +8661,9 @@ Open Settings and click '? Start Tutorial'!""",
                     spreadsheet_id=new_sheet_id,
                     sheet_name=new_sheet_name,
                     include_headers=new_headers,
+                    enrich_with_grid=new_grid_enrich,
+                    research_articles=new_research,
+                    custom_columns=new_custom_columns,
                 )
                 self._get_active_scheduler().add_task(new_task)
                 self.label_status.configure(text=f"Created task: {new_name}", text_color="green")
@@ -7774,6 +8678,9 @@ Open Settings and click '? Start Tutorial'!""",
                     "spreadsheet_id": new_sheet_id,
                     "sheet_name": new_sheet_name,
                     "include_headers": new_headers,
+                    "enrich_with_grid": new_grid_enrich,
+                    "research_articles": new_research,
+                    "custom_columns": new_custom_columns,
                 })
                 self.label_status.configure(text=f"Updated task: {new_name}", text_color="green")
 
@@ -7810,30 +8717,84 @@ The scheduler automatically extracts data from your configured sources and expor
 
 ## Quick Start
 
-1. **Add a Task** - Click "+ Add Task" in the Scheduler section
-2. **Set the Source URL** - Paste your Telegram channel, newsletter archive, or RSS feed URL
-3. **Choose a Config** - Select an extraction config (or use Default)
-4. **Set the Schedule** - Choose how often to run (hourly, daily, etc.)
-5. **Enable Sheets Export** - Paste your Google Sheet URL
-6. **Save and Enable** - Toggle "Scheduler Active" to start
+1. **Add a Task** — Click "+ Add Task" in the Scheduler section
+2. **Set the Source URL** — Paste your newsletter archive, Telegram channel, or RSS feed URL
+3. **Choose a Config** — Select an extraction config (e.g., CryptoSum, RWA, ExecSum)
+4. **Set the Schedule** — Choose frequency and time (e.g., daily at 09:00)
+5. **Enable Sheets Export** — Paste your Google Sheet URL and sheet tab name
+6. **Save and Enable** — Toggle "Scheduler Active" to start
+
+---
+
+## Task Row Buttons
+
+Each task in the list has four action buttons:
+
+- **▶ Run** — Execute the task immediately (one-time manual run)
+- **⏪ Backfill** — Crawl the source archive and fill in all missing dates (see below)
+- **✎ Edit** — Open the task editor to change settings
+- **✕ Delete** — Remove the task
+
+---
+
+## Backfill (Gap Detection)
+
+The ⏪ button launches the backfill system, which automatically catches up your sheet by filling in missing dates.
+
+**How it works:**
+1. Reads all dates currently in your sheet
+2. Crawls the source archive to find every published post
+3. Identifies posts from dates NOT already in your sheet
+4. Processes and exports them one at a time, oldest first
+5. Applies Grid enrichment and article research if enabled
+
+**Key features:**
+- **Gap-aware** — Detects and fills gaps anywhere in the date range, not just after the last entry
+- **Deduplication** — Skips posts whose URLs already exist in the sheet
+- **Chunked processing** — One post at a time with pauses to avoid rate limits
+- **Stoppable** — Click the red "Stop" button to halt after the current post finishes
+
+Use backfill when you've fallen behind on updates or need to populate historical data.
+
+---
+
+## Advanced Capabilities
+
+Tasks can optionally enable two advanced features (set in the task editor):
+
+- **Grid Enrichment** — Cross-references extracted items against The Grid database for additional metadata (token info, asset details, etc.)
+- **Research Articles** — Fetches full article content for items that mention ecosystem projects, adding deeper context to the extraction
+
+These appear as capability badges (e.g., `[Grid + Research]`) on the task row.
+
+---
+
+## Task Log
+
+The collapsible log panel below the task list shows real-time output from task runs and backfills.
+
+- **Toggle** — Expand/collapse the log panel
+- **Copy** — Copy the full log to your clipboard
+- **Clear** — Clear the log contents
+- **Stop** — Halt a running backfill (appears only during backfill)
 
 ---
 
 ## Supported Source Types
+
+### Newsletter Archives (Beehiiv, Substack)
+```
+https://newsletter.example.com/archive
+https://cryptosum.beehiiv.com
+```
+The scheduler fetches the latest posts. Backfill crawls paginated archives.
 
 ### Telegram Channels
 ```
 https://t.me/YourChannel
 https://t.me/s/YourChannel
 ```
-The scheduler fetches recent messages and extracts any article links.
-
-### Newsletter Archives
-```
-https://newsletter.example.com/archive
-https://newsletter.example.com/authors/...
-```
-Works with Beehiiv, Substack, and similar platforms.
+Fetches recent messages and extracts article links.
 
 ### RSS Feeds
 ```
@@ -7865,14 +8826,26 @@ To export to Google Sheets, you need:
    - Add the service account email (found in the JSON file)
    - Give it "Editor" access
 
+**Sheet Notes:** The system can read cell notes on column headers. Use column W for feedback notes (e.g., "Feedback for Bots") and column X for skip flags.
+
+---
+
+## Scheduler Modes
+
+- **Local** — Runs on your machine while the app is open
+- **Cloud** — Connects to a remote server that runs tasks 24/7 (requires server setup)
+
+Switch modes using the segmented button at the top of the Scheduler page.
+
 ---
 
 ## Tips
 
-- **Test First**: Use the "▶" button to run a task manually before scheduling
-- **Headers**: Only check "Include headers" for new sheets; uncheck for append mode
+- **Test First**: Use ▶ to run a task manually before relying on the schedule
+- **Backfill First**: For new sheets, use ⏪ to populate historical data, then let the schedule maintain it
+- **Headers**: Only check "Include headers" for new/empty sheets
 - **Time Format**: Use 24-hour format (e.g., 09:00, 14:30, 22:00)
-- **Keep Running**: The scheduler only runs while the app is open
+- **Keep Running**: The local scheduler only runs while the app is open
 
 ---
 
@@ -7886,7 +8859,15 @@ To export to Google Sheets, you need:
 **Sheets export failing?**
 - Confirm google_credentials.json exists in the app folder
 - Make sure you shared the sheet with the service account email
-- Check the sheet ID is correct
+- Check the sheet ID and tab name are correct
+
+**Backfill finding 0 posts?**
+- The archive may be empty or the source doesn't support pagination
+- Check if the source URL points to a valid archive page
+
+**0 rows exported after a run?**
+- This usually means deduplication is working — all extracted items already exist in the sheet
+- Check the log for "X items → 0 rows to Sheets" confirmation
 """
 
         # Render the guide text with basic markdown
@@ -7902,6 +8883,10 @@ To export to Google Sheets, you need:
     def _on_textbox_change(self, event=None):
         """Handle textbox content changes - detect URLs, update placeholder and banner."""
         try:
+            # Only process when user is on a page with the textbox
+            if self._current_page not in ("summarize", "audio"):
+                return
+
             # Safety check - ensure widgets are initialized
             if not hasattr(self, 'inline_status_label') or not hasattr(self, 'url_banner_frame'):
                 return
@@ -8867,6 +9852,44 @@ Missing requirements:
         return {}
 
 if __name__ == "__main__":
-    app = AudioBriefingApp()
+    # On macOS frozen apps, ensure we are the foreground application.
+    # Without this, macOS may not deliver mouse events to the window.
+    if sys.platform == 'darwin' and getattr(sys, 'frozen', False):
+        try:
+            # Modern Cocoa approach — works on macOS 10.14+
+            from Foundation import NSBundle
+            bundle = NSBundle.mainBundle()
+            info = bundle.localizedInfoDictionary() or bundle.infoDictionary()
+            if info and not info.get('LSUIElement'):
+                # Ensure this is recognized as a regular app
+                pass
+        except ImportError:
+            pass
+        try:
+            # Activate as foreground app via Cocoa (PyObjC)
+            from AppKit import NSApplication
+            NSApplication.sharedApplication().activateIgnoringOtherApps_(True)
+        except ImportError:
+            # PyObjC not available — use osascript as fallback
+            try:
+                import subprocess
+                subprocess.Popen(
+                    ['osascript', '-e',
+                     'tell application "System Events" to set frontmost of '
+                     'the first process whose unix id is '
+                     f'{os.getpid()} to true'],
+                    stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL
+                )
+            except Exception:
+                pass  # Continue anyway — _activate_window() will retry via Tk
+
+    # Check sys.argv for a dailybriefing:// URL (passed by macOS on app launch via URL scheme)
+    launch_url = None
+    for arg in sys.argv[1:]:
+        if arg.startswith('dailybriefing://'):
+            launch_url = arg
+            break
+
+    app = AudioBriefingApp(launch_url=launch_url)
     app.mainloop()
 

@@ -54,6 +54,10 @@ class ScheduledTask:
     include_headers: bool = False  # Only include headers on first export
     custom_columns: Optional[List[str]] = None  # Per-task column override (None = use config default)
 
+    # Capabilities (optional enrichment steps during task execution)
+    enrich_with_grid: bool = False  # Run Grid entity matching after extraction
+    research_articles: bool = False  # Run article research for ecosystem mentions
+
     # Runtime state (not persisted)
     last_run: Optional[str] = None  # ISO format datetime
     next_run: Optional[str] = None  # ISO format datetime
@@ -77,6 +81,8 @@ class ScheduledTask:
             "sheet_name": self.sheet_name,
             "include_headers": self.include_headers,
             "custom_columns": self.custom_columns,
+            "enrich_with_grid": self.enrich_with_grid,
+            "research_articles": self.research_articles,
             "last_run": self.last_run,
             "next_run": self.next_run,
             "last_result": self.last_result,
@@ -101,6 +107,8 @@ class ScheduledTask:
             sheet_name=data.get("sheet_name", "Sheet1"),
             include_headers=data.get("include_headers", False),
             custom_columns=data.get("custom_columns"),
+            enrich_with_grid=data.get("enrich_with_grid", False),
+            research_articles=data.get("research_articles", False),
             last_run=data.get("last_run"),
             next_run=data.get("next_run"),
             last_result=data.get("last_result", ""),
@@ -137,12 +145,14 @@ class Scheduler:
     """Background scheduler for automated extraction tasks."""
 
     def __init__(self, on_task_complete: Optional[Callable] = None,
+                 on_progress: Optional[Callable] = None,
                  server_mode: bool = False, data_dir: Optional[str] = None):
         """
         Initialize the scheduler.
 
         Args:
             on_task_complete: Callback function(task, success, message) called after each task runs
+            on_progress: Callback function(task_id, message) called with progress log lines during execution
             server_mode: If True, log to stdout and skip OS-level daemon operations
             data_dir: Override data directory for config/task files (used in server mode)
         """
@@ -153,6 +163,7 @@ class Scheduler:
         self._thread: Optional[threading.Thread] = None
         self._stop_event = threading.Event()
         self._on_task_complete = on_task_complete
+        self._on_progress = on_progress
         self._lock = threading.Lock()
         self._task_running = False  # Mutex: prevent concurrent task execution
         self._tasks_loaded = False
@@ -475,6 +486,15 @@ class Scheduler:
                 print(f"[Scheduler] Error in run loop: {e}")
                 self._stop_event.wait(60)
 
+    def _log(self, task_id: str, message: str):
+        """Print and optionally forward progress to the GUI callback."""
+        print(message)
+        if self._on_progress:
+            try:
+                self._on_progress(task_id, message)
+            except Exception:
+                pass
+
     def _execute_task(self, task: ScheduledTask):
         """Execute a scheduled task. Guarded by mutex to prevent concurrent runs."""
         # Mutex: skip if another task is already running (prevents OOM on 512MB)
@@ -483,7 +503,7 @@ class Scheduler:
             return
         self._task_running = True
 
-        print(f"[Scheduler] Running task: {task.name}")
+        self._log(task.id, f"[Scheduler] Running task: {task.name}")
         task.last_run = datetime.now().isoformat()
 
         try:
@@ -504,15 +524,38 @@ class Scheduler:
                 config_path = os.path.join(os.path.dirname(__file__), "extraction_instructions", config_file)
                 if os.path.exists(config_path):
                     custom_instructions = load_custom_instructions(config_path)
+                    self._log(task.id, f"[Scheduler] Loaded config: {task.config_name}")
 
             # Normalize URL - ensure it has a scheme
             source_url = task.source_url.strip()
             if source_url and not source_url.startswith(('http://', 'https://')):
                 source_url = 'https://' + source_url
 
+            self._log(task.id, f"[Scheduler] Fetching: {source_url[:80]}...")
+
             # Extract items
             items = processor.process_url(source_url, custom_instructions)
             task.items_extracted = len(items)
+            self._log(task.id, f"[Scheduler] Extracted {len(items)} items")
+
+            # Enrich with Grid entity matching (if enabled)
+            if task.enrich_with_grid and items:
+                try:
+                    self._log(task.id, f"[Scheduler] Enriching {len(items)} items with Grid data...")
+                    items = processor.enrich_with_grid(items)
+                    matched = sum(1 for i in items if i.custom_fields.get('grid_matched'))
+                    self._log(task.id, f"[Scheduler] Grid enrichment: {matched}/{len(items)} items matched")
+                except Exception as e:
+                    self._log(task.id, f"[Scheduler] Grid enrichment error (continuing): {e}")
+
+            # Research articles for ecosystem mentions (if enabled)
+            if task.research_articles and items:
+                try:
+                    self._log(task.id, f"[Scheduler] Researching articles for {len(items)} items...")
+                    items = processor.research_articles(items, all_items=True)
+                    self._log(task.id, f"[Scheduler] Article research complete")
+                except Exception as e:
+                    self._log(task.id, f"[Scheduler] Article research error (continuing): {e}")
 
             # Export to Google Sheets if enabled
             if task.export_to_sheets and items and task.spreadsheet_id:
@@ -522,10 +565,11 @@ class Scheduler:
                     )
 
                     if is_sheets_available():
+                        self._log(task.id, f"[Scheduler] Exporting to Google Sheets...")
                         # Auto-detect renamed sheet tabs
                         resolved_name = resolve_sheet_name(task.spreadsheet_id, task.sheet_name)
                         if resolved_name and resolved_name != task.sheet_name:
-                            print(f"[Scheduler] Sheet tab renamed: '{task.sheet_name}' → '{resolved_name}'")
+                            self._log(task.id, f"[Scheduler] Sheet tab renamed: '{task.sheet_name}' → '{resolved_name}'")
                             task.sheet_name = resolved_name
 
                         if not resolved_name:
@@ -549,12 +593,16 @@ class Scheduler:
 
                             updated = result.get('updates', {}).get('updatedRows', len(items))
                             task.last_result = f"Success: {len(items)} items → {updated} rows to Sheets"
+                            self._log(task.id, f"[Scheduler] {task.last_result}")
                     else:
                         task.last_result = f"Extracted {len(items)} items (Sheets not configured)"
+                        self._log(task.id, f"[Scheduler] {task.last_result}")
                 except Exception as e:
                     task.last_result = f"Extracted {len(items)} items, Sheets error: {str(e)[:50]}"
+                    self._log(task.id, f"[Scheduler] {task.last_result}")
             else:
                 task.last_result = f"Success: Extracted {len(items)} items"
+                self._log(task.id, f"[Scheduler] {task.last_result}")
 
             # Calculate next run
             task.next_run = self._calculate_next_run(task)
@@ -572,12 +620,225 @@ class Scheduler:
             if self._on_task_complete:
                 self._on_task_complete(task, False, task.last_result)
 
-            print(f"[Scheduler] Task failed: {e}")
+            self._log(task.id, f"[Scheduler] Task failed: {e}")
 
         finally:
             self._task_running = False
             # Force garbage collection after task to reclaim memory (512MB limit)
             gc.collect()
+
+    def backfill_task(self, task_id: str, stop_flag: Optional[Callable] = None) -> bool:
+        """
+        Backfill historical data for a task by crawling the archive.
+
+        Finds the last date_published in the target sheet, then processes all
+        newsletter issues from that date forward, one at a time, with dedup.
+
+        Args:
+            task_id: ID of the task to backfill
+            stop_flag: Optional callable that returns True to abort mid-backfill
+
+        Returns:
+            True if started successfully
+        """
+        task = self.get_task(task_id)
+        if not task:
+            return False
+
+        def _run_backfill():
+            if self._task_running:
+                self._log(task.id, "[Backfill] Skipping — another task is running")
+                return
+            self._task_running = True
+
+            try:
+                from data_csv_processor import DataCSVProcessor, ExtractionConfig, load_custom_instructions
+                from sheets_manager import (
+                    export_items_to_sheet, is_sheets_available, resolve_sheet_name,
+                    get_last_date_in_sheet, get_covered_dates_in_sheet
+                )
+
+                # Load extraction config
+                custom_instructions = None
+                if task.config_name != "Default":
+                    config_file = task.config_name.lower().replace(" ", "_") + ".json"
+                    config_path = os.path.join(os.path.dirname(__file__), "extraction_instructions", config_file)
+                    if os.path.exists(config_path):
+                        custom_instructions = load_custom_instructions(config_path)
+
+                # Determine the source URL base
+                source_url = task.source_url.strip()
+                if source_url and not source_url.startswith(('http://', 'https://')):
+                    source_url = 'https://' + source_url
+
+                # Find the extractor for this URL
+                config = ExtractionConfig()
+                processor = DataCSVProcessor(config)
+                extractor = processor._get_extractor(source_url)
+
+                if not hasattr(extractor, 'get_archive_posts'):
+                    self._log(task.id, "[Backfill] This source type doesn't support archive backfill")
+                    if self._on_task_complete:
+                        self._on_task_complete(task, False, "Backfill not supported for this source type")
+                    return
+
+                # Check Sheets
+                if not task.export_to_sheets or not task.spreadsheet_id:
+                    self._log(task.id, "[Backfill] Task has no Sheets export configured")
+                    return
+
+                if not is_sheets_available():
+                    self._log(task.id, "[Backfill] Google Sheets not configured")
+                    return
+
+                # Resolve sheet name
+                resolved_name = resolve_sheet_name(task.spreadsheet_id, task.sheet_name)
+                if not resolved_name:
+                    self._log(task.id, f"[Backfill] Sheet tab '{task.sheet_name}' not found")
+                    return
+                if resolved_name != task.sheet_name:
+                    task.sheet_name = resolved_name
+
+                # Get dates already covered in the sheet
+                covered_dates = get_covered_dates_in_sheet(task.spreadsheet_id, task.sheet_name)
+                if covered_dates:
+                    earliest = min(covered_dates)
+                    latest = max(covered_dates)
+                    self._log(task.id, f"[Backfill] Sheet has {len(covered_dates)} dates covered ({earliest} to {latest})")
+                    # Fetch archive from the earliest date — to find gaps
+                    since_date = earliest
+                else:
+                    self._log(task.id, "[Backfill] Sheet is empty — fetching entire archive")
+                    since_date = None
+
+                # Get all archive posts
+                posts = extractor.get_archive_posts(
+                    source_url,
+                    since_date=since_date,
+                    on_progress=lambda msg: self._log(task.id, msg)
+                )
+
+                if not posts:
+                    self._log(task.id, "[Backfill] No posts found to backfill")
+                    task.last_result = "Backfill: No new posts found"
+                    self.save_tasks()
+                    if self._on_task_complete:
+                        self._on_task_complete(task, True, task.last_result)
+                    return
+
+                # Filter to only posts whose dates are NOT already in the sheet
+                # Posts without dates are included (we can't know if they're covered)
+                if covered_dates:
+                    missing_posts = [
+                        p for p in posts
+                        if not p.get('date') or p['date'] not in covered_dates
+                    ]
+                    skipped = len(posts) - len(missing_posts)
+                    if skipped > 0:
+                        self._log(task.id, f"[Backfill] Skipping {skipped} posts (dates already in sheet)")
+                    posts = missing_posts
+
+                if not posts:
+                    self._log(task.id, "[Backfill] All dates are already covered — nothing to backfill")
+                    task.last_result = "Backfill: All dates covered"
+                    self.save_tasks()
+                    if self._on_task_complete:
+                        self._on_task_complete(task, True, task.last_result)
+                    return
+
+                self._log(task.id, f"[Backfill] Processing {len(posts)} missing posts...")
+
+                # Get columns: task override > config default
+                columns = task.custom_columns
+                if not columns and custom_instructions:
+                    columns = custom_instructions.get('csv_columns')
+
+                total_items = 0
+                total_new_rows = 0
+                errors = 0
+
+                for i, post in enumerate(posts, 1):
+                    # Check stop flag
+                    if stop_flag and stop_flag():
+                        self._log(task.id, f"[Backfill] Stopped by user after {i-1}/{len(posts)} posts")
+                        break
+
+                    post_url = post['url']
+                    post_date = post.get('date', '?')
+                    self._log(task.id, f"[Backfill] [{i}/{len(posts)}] {post_date}: {post_url[-50:]}...")
+
+                    try:
+                        # Extract items from this single post
+                        items = processor.process_url(post_url, custom_instructions)
+                        if not items:
+                            self._log(task.id, f"[Backfill]   → 0 items (empty)")
+                            continue
+
+                        total_items += len(items)
+
+                        # Grid enrichment
+                        if task.enrich_with_grid:
+                            try:
+                                items = processor.enrich_with_grid(items)
+                            except Exception:
+                                pass
+
+                        # Research articles
+                        if task.research_articles:
+                            try:
+                                items = processor.research_articles(items, all_items=True)
+                            except Exception:
+                                pass
+
+                        # Export to Sheets (dedup handles overlap)
+                        result = export_items_to_sheet(
+                            items=items,
+                            spreadsheet_id=task.spreadsheet_id,
+                            sheet_name=task.sheet_name,
+                            columns=columns,
+                            include_headers=task.include_headers
+                        )
+
+                        new_rows = result.get('updates', {}).get('updatedRows', 0)
+                        if isinstance(new_rows, dict):
+                            new_rows = 0
+                        total_new_rows += new_rows
+                        self._log(task.id, f"[Backfill]   → {len(items)} items, {new_rows} new rows")
+
+                    except Exception as e:
+                        errors += 1
+                        self._log(task.id, f"[Backfill]   → Error: {str(e)[:80]}")
+
+                    # Brief pause between posts to avoid hammering APIs
+                    import time as _time
+                    _time.sleep(1)
+
+                    # Garbage collection every 5 posts
+                    if i % 5 == 0:
+                        gc.collect()
+
+                task.last_result = f"Backfill: {total_items} items from {len(posts)} posts → {total_new_rows} new rows"
+                if errors:
+                    task.last_result += f" ({errors} errors)"
+                self._log(task.id, f"[Backfill] Complete: {task.last_result}")
+                task.last_run = datetime.now().isoformat()
+                self.save_tasks()
+
+                if self._on_task_complete:
+                    self._on_task_complete(task, True, task.last_result)
+
+            except Exception as e:
+                self._log(task.id, f"[Backfill] Fatal error: {e}")
+                task.last_result = f"Backfill error: {str(e)[:100]}"
+                self.save_tasks()
+                if self._on_task_complete:
+                    self._on_task_complete(task, False, task.last_result)
+            finally:
+                self._task_running = False
+                gc.collect()
+
+        threading.Thread(target=_run_backfill, daemon=True).start()
+        return True
 
     def run_task_now(self, task_id: str) -> bool:
         """Manually trigger a task to run immediately."""
@@ -594,11 +855,16 @@ _scheduler: Optional[Scheduler] = None
 
 
 def get_scheduler(on_task_complete: Optional[Callable] = None,
+                  on_progress: Optional[Callable] = None,
                   server_mode: bool = False, data_dir: Optional[str] = None) -> Scheduler:
     """Get the global scheduler instance."""
     global _scheduler
     if _scheduler is None:
-        _scheduler = Scheduler(on_task_complete, server_mode=server_mode, data_dir=data_dir)
-    elif on_task_complete:
-        _scheduler._on_task_complete = on_task_complete
+        _scheduler = Scheduler(on_task_complete, on_progress=on_progress,
+                               server_mode=server_mode, data_dir=data_dir)
+    else:
+        if on_task_complete:
+            _scheduler._on_task_complete = on_task_complete
+        if on_progress:
+            _scheduler._on_progress = on_progress
     return _scheduler

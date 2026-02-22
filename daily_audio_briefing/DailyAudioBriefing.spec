@@ -206,13 +206,25 @@ if sys.platform == 'darwin':
     app = BUNDLE(
         coll,
         name='Daily Audio Briefing.app',
-        icon=None,  # Add icon path here if you have one: 'icon.icns'
+        icon='AppIcon.icns',
         bundle_identifier='com.dailyaudiobriefing.app',
         info_plist={
             'NSHighResolutionCapable': True,
             'CFBundleShortVersionString': '1.0.0',
             'CFBundleVersion': '1.0.0',
             'NSRequiresAquaSystemAppearance': False,  # Support dark mode
+            'NSPrincipalClass': 'NSApplication',  # Required for proper event delivery
+            'LSApplicationCategoryType': 'public.app-category.news',
+            'LSEnvironment': {
+                'TK_SILENCE_DEPRECATION': '1',
+            },
+            'CFBundleURLTypes': [
+                {
+                    'CFBundleURLName': 'com.dailyaudiobriefing.app.url',
+                    'CFBundleTypeRole': 'Viewer',
+                    'CFBundleURLSchemes': ['dailybriefing'],
+                }
+            ],
         },
     )
 
@@ -238,7 +250,7 @@ elif sys.platform == 'win32':
         target_arch=None,
         codesign_identity=None,
         entitlements_file=None,
-        icon=None,  # Add icon path here if you have one: 'icon.ico'
+        icon='AppIcon.ico',
     )
 
 else:

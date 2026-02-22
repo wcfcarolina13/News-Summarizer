@@ -140,7 +140,7 @@ gunicorn web_app:app --bind 0.0.0.0:$PORT --timeout 120 --workers 1 --preload
 ## Pending Work
 
 **High Priority:**
-1. Rebuild macOS app — major features added since last build (sidebar nav redesign, cloud scheduler, daemon, newsletter rewrite, audio fixes)
+1. ~~Rebuild macOS app~~ ✅ Rebuilt with all UX fixes + custom icons (Feb 2026)
 2. Test multi-URL feature in GUI
 3. ~~Commit outstanding changes~~ ✅ Pushed to `server-deploy` branch
 4. ~~Deploy to Render.com~~ ✅ Live at https://news-summarizer-zgny.onrender.com
@@ -150,20 +150,44 @@ gunicorn web_app:app --bind 0.0.0.0:$PORT --timeout 120 --workers 1 --preload
 8. ~~Desktop app redesign — sidebar nav + 7 pages matching web app~~ ✅ Done
 9. ~~Cloud scheduler client — desktop connects to Render server~~ ✅ Done
 10. ~~Web app desktop-only badges + download guide~~ ✅ Done
+11. ~~First-run wizard + versioning~~ ✅ APP_VERSION, dependency checklist, privacy note
+12. ~~Roadmap (desktop Guide, web Guide, README)~~ ✅ 4-phase roadmap
+13. ~~Custom app icons~~ ✅ AppIcon.icns/ico from news_summarizer_favicons PNGs
+
+**Desktop UX (completed Feb 2026):**
+- ~~Frozen app not clickable~~ ✅ NSPrincipalClass + hook-tk-fix.py + settings path fix
+- ~~Calendar click-through~~ ✅ transient/grab_set/lift/topmost
+- ~~Window minimum size~~ ✅ minsize(850, 650)
+- ~~Navigation speed~~ ✅ Cached ffmpeg (background pre-warm), deferred scheduler init, update_idletasks
+- ~~Mouse scroll wheel~~ ✅ _bind_page_mousewheel() for CTkScrollableFrame on macOS
+- ~~Cached text reappearing~~ ✅ Removed load_current_summary() from on_toggle_range()
+- ~~Setup wizard buttons cut off~~ ✅ Increased geometry to 550x620
 
 **Server/Infra:**
-8. ~~Set up UptimeRobot keep-alive ping after Render deploy~~ ✅ Self-ping built-in + UptimeRobot
-9. ~~Test Sheets export via env var credentials on server~~ ✅ Working (scheduler exports to Sheets)
-10. Verify web app feature parity with desktop version
-11. ~~Persistent storage solution for Render (tasks lost on redeploy)~~ ✅ Google Sheets persistence with 3-tier fallback
-12. ~~Fix Render OOM crashes (512MB)~~ ✅ Removed yt-dlp, lean server config, deferred Sheets loading
-13. ~~Fix worker timeout on cold start~~ ✅ Deferred load_tasks() to background thread
-14. ~~Sheet tab rename detection~~ ✅ Auto-resolves renamed tabs (single-tab spreadsheets)
-15. ~~Sheet tab validation + create-tab in web UI~~ ✅ Blue checkmark / amber warning with Create button
-16. ~~Inline config editor in scheduler~~ ✅ Edit columns, patterns, blocked domains in task editor
-17. ~~Auto-dismiss notifications~~ ✅ 5s timeout for success/info, clear on tab change
-18. ~~Favicon serving on Render~~ ✅ Dedicated Flask routes instead of inline base64
-19. ~~Server crash loop (every few hours)~~ ✅ Fixed lock contention, added task mutex, gc.collect(), 10MB response cap, memory monitoring in /health
+- ~~Set up UptimeRobot keep-alive ping~~ ✅ Self-ping built-in + UptimeRobot
+- ~~Test Sheets export via env var credentials~~ ✅ Working
+- Verify web app feature parity with desktop version
+- ~~Persistent storage (tasks lost on redeploy)~~ ✅ Google Sheets persistence with 3-tier fallback
+- ~~Fix Render OOM crashes~~ ✅ Fixed lock contention, task mutex, gc.collect(), 10MB cap, memory monitoring
+- ~~Fix worker timeout on cold start~~ ✅ Deferred load_tasks() to background thread
+- ~~Sheet tab rename detection~~ ✅ Auto-resolves renamed tabs
+- ~~Sheet tab validation + create-tab in web UI~~ ✅ Blue checkmark / amber warning
+- ~~Inline config editor in scheduler~~ ✅ Edit columns, patterns, blocked domains
+- ~~Auto-dismiss notifications~~ ✅ 5s timeout for success/info
+- ~~Favicon serving on Render~~ ✅ Dedicated Flask routes
+- Slow memory leak on free tier — ~2.4MB/hour, OOM every ~12-24h. Service auto-recovers. Consider proactive watchdog restart or plan upgrade.
+
+**Scheduler Capabilities (completed Feb 2026):**
+- ~~Cryptosum scheduled task~~ ✅ Daily extraction from cryptosum.beehiiv.com → Google Sheets
+- ~~Grid enrichment in scheduler~~ ✅ `enrich_with_grid` flag on ScheduledTask, runs in _execute_task()
+- ~~Research articles in scheduler~~ ✅ `research_articles` flag on ScheduledTask, ecosystem mention detection
+- ~~Task editor capabilities UI~~ ✅ Checkboxes for Grid/Research in task editor dialog
+- ~~Capability badges in task list~~ ✅ Shows [Grid + Research] badges on task rows
+
+**Roadmap — Web App Scheduler:**
+- Port scheduler capabilities UI to web dashboard
+- Unified local+cloud task management in web UI
+- Re-enable Render deployment when budget allows
 
 **Critical — API Cost Protection:**
 12. API usage rate limiter — hard cap to prevent unexpected bills from scheduler bursts

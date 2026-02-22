@@ -2,8 +2,50 @@
 # Purpose: Keep the News Summarizer project focused and trim during development
 
 ## Current Focus
-- UI Polish: Streamlined layout with clearer section separation
-- Audio Content Integration: Seamless flow from text/URL input to audio generation
+- Desktop app UX polish and rebuild cycle
+- Server memory management on Render free tier (512MB)
+- Custom app icons and branding
+
+## Recently Completed (Session Feb 13-17, 2026 — Desktop Rebuild & UX Polish)
+
+### Phase 2: Frozen App Click Fix
+- PROBLEM: PyInstaller-built macOS app launched but nothing was clickable
+- ROOT CAUSE: Missing `NSPrincipalClass: NSApplication` in Info.plist — macOS never delivered events to the app
+- FIX 1: Added `NSPrincipalClass`, `LSApplicationCategoryType`, `LSEnvironment`, `CFBundleURLTypes` to DailyAudioBriefing.spec
+- FIX 2: Created `hook-tk-fix.py` runtime hook to fix Tcl/Tk data paths in frozen mode
+- FIX 3: Fixed settings path — `get_data_directory()` was returning wrong path for `sys._MEIPASS` mode
+- FIX 4: Added `TransformProcessType` call to promote process to foreground app
+
+### Phase 3: 7 UX Issues (all implemented)
+1. **Navigation speed** — Added `_cached_check_ffmpeg()` module-level cache + `update_idletasks()` in `_navigate_to()`
+2. **Cached text guard** — Added page guard in `_on_textbox_change()` (later found insufficient — fixed properly in Phase 4)
+3. **Calendar click-through** — Added `transient()`, `grab_set()`, `lift()`, `topmost`, `resizable(False, False)`, larger geometry
+4. **Window minimum size** — `self.minsize(850, 650)`
+5. **Web desktop-only badges** — Desktop App badges on voice selector/Play Sample, Download App header button, feature comparison table
+6. **First-run wizard** — `_show_first_run_wizard()` modal with dependency checklist (ffmpeg, Kokoro), privacy note, Continue/Skip buttons
+7. **Roadmap** — Added to Desktop Guide page, Web Guide page, and README.md (4-phase: Alpha → User Accounts → Full Cloud → SaaS)
+- Added `APP_VERSION = "1.0.0-alpha"` constant, sidebar version label
+
+### Phase 4: 4 Remaining UX Fixes
+1. **Wizard buttons cut off** — Increased geometry from 550x520 → 550x620
+2. **Mouse scroll wheel** — Added `_bind_page_mousewheel()` method binding `<MouseWheel>`, `<Button-4>`, `<Button-5>` to each page's `_parent_canvas`; CTkScrollableFrame on macOS doesn't auto-bind
+3. **Cached text STILL reappearing** — Real root cause: `on_toggle_range()` unconditionally called `load_current_summary()` which reloaded `summary.txt` into textbox on every checkbox toggle. Removed those calls from `on_toggle_range()`, moved to one-time init
+4. **Slow first-launch** — Deferred `_init_scheduler()` to first Scheduler page visit (lazy-init with `_scheduler_initialized` flag); pre-warmed ffmpeg cache on background daemon thread at module level
+
+### Phase 5: Custom App Icons
+- Generated `AppIcon.icns` (31KB) from existing favicon PNGs using `iconutil` — all macOS sizes including @2x Retina
+- Generated `AppIcon.ico` (5KB, 6 sizes: 16-256px) using manual PNG-in-ICO format (Pillow's ICO writer was buggy)
+- Updated `DailyAudioBriefing.spec` — `icon='AppIcon.icns'` (macOS BUNDLE) and `icon='AppIcon.ico'` (Windows EXE)
+- Source PNGs at `/news_summarizer_favicons/` (newspaper + AI sparkle design)
+
+### Server OOM Analysis (Feb 16-17, 2026)
+- Render sent memory limit exceeded email — auto-restart triggered
+- Metrics showed slow memory leak: ~200KB every 5 min from health checks alone (~2.4MB/hour)
+- Baseline after Sheets loading: ~380-460MB; climbed to 502MB over ~17 hours before OOM kill at 512MB limit
+- After auto-restart: dropped to 165MB baseline, then back to ~384MB after Sheets load
+- Existing mitigations: `gc.collect()`, 10MB response cap, `max_workers=2`, task mutex
+- Conclusion: free tier 512MB is tight; service auto-recovers; no data loss (Sheets persistence)
+- Options: accept ~daily crashes, add proactive memory watchdog restart, or upgrade to Starter plan ($7/mo)
 
 ## Recently Completed (Session Jan 19, 2026)
 - Audio Conversion Status Fix:
@@ -265,6 +307,49 @@ The Audio Content section now intelligently detects URLs matching extraction con
 - view_archive() - finds Archive folder, restores to data directory
 - convert_summaries_to_audio() - output path, opens folder after conversion
 - All nested functions within these (archive cleanup, unarchive, etc.)
+
+---
+
+# Session — 2026-02-21: Backfill, Tooltips, Guide Update
+
+## Features Added
+
+### Backfill System (⏪ button)
+- **Archive crawler**: `BeehiivExtractor.get_archive_posts()` crawls paginated archive pages (`?page=0`, `?page=1`, etc.), extracts post URLs with dates from `<time>` tags, rate-limited at 0.5s between pages
+- **Slug-based dedup in crawler**: Same URL appears twice per page (title link + read more link). Fixed by deduplicating on `/p/slug` portion via regex instead of full URL
+- **Gap-aware backfill**: `Scheduler.backfill_task()` reads ALL dates already in the sheet via `get_covered_dates_in_sheet()`, fetches archive from earliest date, filters to only posts whose dates aren't already covered. This fills gaps anywhere in the date range, not just after the last entry.
+- **Stoppable**: Red "Stop" button appears during backfill, sets `_backfill_stop` flag checked between posts
+- **Chunked**: Processes one post at a time with 1s pauses, GC every 5 posts
+
+### Copy Button on Task Log
+- Copy button in log header copies full log to clipboard
+- Shows "Copied!" feedback for 1.5s
+
+### Tooltips
+- Added scheduler-specific tooltips: Add Task, scheduler mode, log toggle/copy/clear/stop
+- Added tooltips on dynamic task row buttons: ▶ Run, ⏪ Backfill, ✎ Edit, ✕ Delete
+
+### Guide Page Updated
+- Documented all task row buttons (▶, ⏪, ✎, ✕)
+- Backfill section: how it works, gap detection, dedup, chunked processing, Stop button
+- Advanced Capabilities section: Grid enrichment, Research articles, capability badges
+- Task Log section: toggle, copy, clear, stop
+- Scheduler modes: Local vs Cloud
+- New troubleshooting entries: 0 rows (dedup), backfill 0 posts
+- Sheet notes: columns W (Feedback for Bots) and X (SKIP)
+
+## Key Files Modified
+- `gui_app.py` — Copy button, ⏪ button, Stop button, backfill logic, tooltips, guide text
+- `data_csv_processor.py` — `get_archive_posts()`, slug-based dedup
+- `sheets_manager.py` — `get_last_date_in_sheet()`, `get_covered_dates_in_sheet()`, optimized `get_existing_urls()`
+- `scheduler.py` — `backfill_task()` with gap-aware logic, stop flag support
+- `scheduled_tasks.json` — Re-added `enrich_with_grid` and `research_articles` flags
+
+## Problem/Solution
+- **0 rows to Sheets after task run**: Deduplication working correctly — all 43 items from Feb 20 CryptoSum already existed in the sheet from previous test runs
+- **Archive crawler duplicates**: Same post URL appeared 2x per page. Fixed with slug-based dedup via `re.search(r'/p/([^/?#]+)', post_url)`
+- **Backfill missed gaps**: Initial version only checked last date. Sheet had data on Dec 30-31, Jan 5-6, Feb 20 with a 45-day gap. Fixed by getting ALL covered dates and filtering archive posts against the full set
+- **Grid+Research flags keep dropping**: Old app (without these fields in ScheduledTask model) overwrites JSON on save. Re-added after each build.
 
 ## Do NOT
 - Break the working development mode (Launch Audio Briefing.command)
