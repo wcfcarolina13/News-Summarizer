@@ -908,7 +908,7 @@ class Scheduler:
                     get_sheets_service, get_sheet_headers,
                     sort_sheet_by_date
                 )
-                from data_csv_processor import DataProcessor, ExtractedItem
+                from data_csv_processor import DataCSVProcessor, ExtractionConfig, ExtractedItem
 
                 self._log(task.id, "[Re-enrich] Reading sheet data...")
 
@@ -982,7 +982,8 @@ class Scheduler:
                     return
 
                 # Process in batches of 50
-                processor = DataProcessor(config_name=task.config_name)
+                config = ExtractionConfig()
+                processor = DataCSVProcessor(config)
                 batch_size = 50
                 total_matched = 0
                 total_processed = 0
