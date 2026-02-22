@@ -1092,6 +1092,161 @@ class Scheduler:
         threading.Thread(target=_run_reenrich, daemon=True).start()
         return True
 
+    def retitle_task(self, task_id: str, stop_flag: Optional[Callable] = None) -> bool:
+        """Re-fetch source posts and update truncated titles in the sheet.
+
+        For Telegram tasks, paginates through all historical messages to build
+        a URL→full_title map, then updates truncated sheet titles.
+
+        Args:
+            task_id: The task to re-title
+            stop_flag: Optional callable that returns True to stop
+
+        Returns:
+            True if retitle started successfully.
+        """
+        task = self.get_task(task_id)
+        if not task:
+            return False
+
+        if self._task_running:
+            self._log(task.id, "[Re-title] Another task is already running")
+            return False
+
+        if not task.spreadsheet_id:
+            self._log(task.id, "[Re-title] No spreadsheet configured")
+            return False
+
+        self._task_running = True
+
+        def _run_retitle():
+            try:
+                from data_csv_processor import DataCSVProcessor, ExtractionConfig
+                from sheets_manager import get_sheets_service, get_sheet_headers
+
+                self._log(task.id, "[Re-title] Fetching all source posts with full titles...")
+
+                # Create processor and fetch all posts with pagination
+                config = ExtractionConfig()
+                if task.source_url and 't.me' in task.source_url:
+                    # Set a start_date far in the past to trigger full pagination
+                    config.start_date = '2020-01-01'
+                processor = DataCSVProcessor(config)
+
+                # Process the URL (with pagination for Telegram)
+                items = processor.process_url(task.source_url)
+                self._log(task.id, f"[Re-title] Fetched {len(items)} posts from source")
+
+                if not items:
+                    self._log(task.id, "[Re-title] No posts fetched — nothing to update")
+                    return
+
+                # Build URL → full title map
+                url_to_title = {}
+                for item in items:
+                    if item.url and item.title:
+                        url_to_title[item.url.strip()] = item.title
+                self._log(task.id, f"[Re-title] Built map of {len(url_to_title)} URL→title pairs")
+
+                # Read sheet data
+                service = get_sheets_service()
+                headers = get_sheet_headers(task.spreadsheet_id, task.sheet_name)
+                if not headers:
+                    self._log(task.id, "[Re-title] No headers found in sheet")
+                    return
+
+                title_idx = headers.index('title') if 'title' in headers else -1
+                url_idx = headers.index('url') if 'url' in headers else -1
+
+                if title_idx < 0 or url_idx < 0:
+                    self._log(task.id, "[Re-title] Missing 'title' or 'url' column")
+                    return
+
+                # Read all data
+                result = service.spreadsheets().values().get(
+                    spreadsheetId=task.spreadsheet_id,
+                    range=f"'{task.sheet_name}'!A:Z"
+                ).execute()
+
+                rows = result.get('values', [])
+                if len(rows) < 2:
+                    self._log(task.id, "[Re-title] No data rows")
+                    return
+
+                data_rows = rows[1:]
+                title_col_letter = chr(65 + title_idx) if title_idx < 26 else chr(64 + title_idx // 26) + chr(65 + title_idx % 26)
+
+                # Find truncated titles and match to full titles
+                updates = []
+                for row_num, row in enumerate(data_rows, start=2):
+                    if stop_flag and stop_flag():
+                        self._log(task.id, "[Re-title] Stopped by user")
+                        break
+
+                    if len(row) <= max(title_idx, url_idx):
+                        continue
+
+                    current_title = row[title_idx] if len(row) > title_idx else ''
+                    row_url = row[url_idx].strip() if len(row) > url_idx else ''
+
+                    # Only update if title appears truncated
+                    if not current_title or '...' not in current_title:
+                        continue
+
+                    # Look up full title
+                    full_title = url_to_title.get(row_url, '')
+                    if full_title and full_title != current_title:
+                        updates.append({
+                            'range': f"'{task.sheet_name}'!{title_col_letter}{row_num}",
+                            'values': [[full_title]]
+                        })
+
+                self._log(task.id, f"[Re-title] Found {len(updates)} titles to update")
+
+                if not updates:
+                    self._log(task.id, "[Re-title] No truncated titles matched — nothing to update")
+                    task.last_result = f"Re-title: 0 titles updated (no matches in {len(url_to_title)} fetched posts)"
+                    self.save_tasks()
+                    if self._on_task_complete:
+                        self._on_task_complete(task, True, task.last_result)
+                    return
+
+                # Batch write updates (500 cells per batch)
+                total_written = 0
+                for i in range(0, len(updates), 500):
+                    chunk = updates[i:i + 500]
+                    service.spreadsheets().values().batchUpdate(
+                        spreadsheetId=task.spreadsheet_id,
+                        body={
+                            'valueInputOption': 'RAW',
+                            'data': chunk
+                        }
+                    ).execute()
+                    total_written += len(chunk)
+                    self._log(task.id, f"[Re-title] Updated {total_written}/{len(updates)} titles")
+
+                task.last_result = f"Re-title: {len(updates)} titles updated from {len(url_to_title)} fetched posts"
+                self._log(task.id, f"[Re-title] Complete: {task.last_result}")
+                self.save_tasks()
+
+                if self._on_task_complete:
+                    self._on_task_complete(task, True, task.last_result)
+
+            except Exception as e:
+                self._log(task.id, f"[Re-title] Fatal error: {e}")
+                import traceback
+                traceback.print_exc()
+                task.last_result = f"Re-title error: {str(e)[:100]}"
+                self.save_tasks()
+                if self._on_task_complete:
+                    self._on_task_complete(task, False, task.last_result)
+            finally:
+                self._task_running = False
+                gc.collect()
+
+        threading.Thread(target=_run_retitle, daemon=True).start()
+        return True
+
     def run_task_now(self, task_id: str) -> bool:
         """Manually trigger a task to run immediately."""
         task = self.get_task(task_id)

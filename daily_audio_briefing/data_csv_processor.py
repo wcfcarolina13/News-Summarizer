@@ -936,10 +936,8 @@ class TelegramExtractor(BaseExtractor):
                         continue
                     seen_urls.add(cleaned_url)
 
-                    # Use first ~100 chars of message as title
-                    title = message_text[:100]
-                    if len(message_text) > 100:
-                        title = title.rsplit(' ', 1)[0] + "..."
+                    # Use full message text as title (no truncation)
+                    title = message_text
 
                     item = ExtractedItem(
                         title=title,
@@ -948,7 +946,7 @@ class TelegramExtractor(BaseExtractor):
                         source_name=source_name,
                         source_url=url,
                         category="Telegram",
-                        description=message_text[:500] if len(message_text) > 100 else "",
+                        description="",  # Title already carries the full text
                         date_published=date_published,
                     )
                     items.append(item)
@@ -963,9 +961,7 @@ class TelegramExtractor(BaseExtractor):
                     continue
                 seen_urls.add(msg_url)
 
-                title = message_text[:100]
-                if len(message_text) > 100:
-                    title = title.rsplit(' ', 1)[0] + "..."
+                title = message_text
 
                 item = ExtractedItem(
                     title=title,
@@ -974,7 +970,7 @@ class TelegramExtractor(BaseExtractor):
                     source_name=source_name,
                     source_url=url,
                     category="Telegram",
-                    description=message_text[:500] if len(message_text) > 100 else "",
+                    description="",  # Title already carries the full text
                     date_published=date_published,
                 )
                 items.append(item)

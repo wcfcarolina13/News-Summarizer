@@ -8129,6 +8129,16 @@ Open Settings and click '? Start Tutorial'!""",
                 sheet_tip += f" ({sheet_name})"
             add_tooltip(btn_sheet, sheet_tip)
 
+        # Re-title button (for Telegram tasks — re-fetches full titles)
+        source_url = getattr(task, 'source_url', '')
+        if 't.me' in source_url and getattr(task, 'export_to_sheets', False):
+            btn_retitle = ctk.CTkButton(
+                btn_frame, text="✏️", width=30, fg_color="#fd7e14",
+                command=lambda t=task: self._retitle_task(t.id)
+            )
+            btn_retitle.pack(side="left", padx=2)
+            add_tooltip(btn_retitle, "Re-title: Re-fetch all posts and fix truncated titles in the sheet")
+
         # Re-enrich button (only if task has Grid enrichment enabled)
         if getattr(task, 'enrich_with_grid', False):
             btn_reenrich = ctk.CTkButton(
@@ -8251,6 +8261,32 @@ Open Settings and click '? Start Tutorial'!""",
         self._animate_task_status(task.name, 0, prefix="🔄 Re-enriching")
 
         scheduler.reenrich_task(task_id, stop_flag=lambda: self._backfill_stop)
+
+    def _retitle_task(self, task_id: str):
+        """Re-fetch source posts and update truncated titles in the sheet."""
+        scheduler = self._get_active_scheduler()
+        if not scheduler:
+            return
+
+        task = scheduler.get_task(task_id)
+        if not task:
+            return
+
+        # Clear previous log and show running status
+        self._clear_task_log()
+        self._show_scheduler_status(f"✏️ Re-titling: {task.name}...", "#fd7e14")
+        if not self._task_log_expanded:
+            self._toggle_task_log()
+
+        self._backfill_stop = False
+
+        if hasattr(self, '_task_log_stop'):
+            self._task_log_stop.grid(row=0, column=2, sticky="e", padx=(4, 0))
+
+        self._task_running_id = task_id
+        self._animate_task_status(task.name, 0, prefix="✏️ Re-titling")
+
+        scheduler.retitle_task(task_id, stop_flag=lambda: self._backfill_stop)
 
     def _build_task_log_panel(self):
         """Build the collapsible task execution log panel on the Scheduler page."""
@@ -8797,6 +8833,7 @@ Each task in the list has action buttons:
 - **▶ Run** — Execute the task immediately (one-time manual run)
 - **⏪ Backfill** — Crawl the source archive and fill in all missing dates (see below)
 - **📊 Sheet** — Open the associated Google Sheet in your browser (only shown if Sheets export is configured)
+- **✏️ Re-title** — Re-fetch all posts from source and fix truncated titles in the sheet (Telegram tasks only)
 - **🔄 Re-enrich** — Run Grid entity matching on rows that are missing enrichment data (only shown if Grid enrichment is enabled)
 - **✎ Edit** — Open the task editor to change settings
 - **✕ Delete** — Remove the task
