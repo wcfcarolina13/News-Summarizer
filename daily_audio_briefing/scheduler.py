@@ -165,7 +165,7 @@ class Scheduler:
         self._on_task_complete = on_task_complete
         self._on_progress = on_progress
         self._lock = threading.Lock()
-        self._task_running = False  # Mutex: prevent concurrent task execution
+        self._running_tasks: set = set()  # Per-task mutex: track running task IDs
         self._tasks_loaded = False
 
         # In server mode, defer load_tasks() to the background thread so
@@ -497,11 +497,11 @@ class Scheduler:
 
     def _execute_task(self, task: ScheduledTask):
         """Execute a scheduled task. Guarded by mutex to prevent concurrent runs."""
-        # Mutex: skip if another task is already running (prevents OOM on 512MB)
-        if self._task_running:
-            print(f"[Scheduler] Skipping '{task.name}' — another task is still running")
+        # Per-task mutex: skip if THIS task is already running
+        if task.id in self._running_tasks:
+            print(f"[Scheduler] Skipping '{task.name}' — already running")
             return
-        self._task_running = True
+        self._running_tasks.add(task.id)
 
         self._log(task.id, f"[Scheduler] Running task: {task.name}")
         task.last_run = datetime.now().isoformat()
@@ -638,7 +638,7 @@ class Scheduler:
             self._log(task.id, f"[Scheduler] Task failed: {e}")
 
         finally:
-            self._task_running = False
+            self._running_tasks.discard(task.id)
             # Force garbage collection after task to reclaim memory (512MB limit)
             gc.collect()
 
@@ -661,10 +661,10 @@ class Scheduler:
             return False
 
         def _run_backfill():
-            if self._task_running:
-                self._log(task.id, "[Backfill] Skipping — another task is running")
+            if task.id in self._running_tasks:
+                self._log(task.id, "[Backfill] Skipping — this task is already running")
                 return
-            self._task_running = True
+            self._running_tasks.add(task.id)
 
             try:
                 from data_csv_processor import DataCSVProcessor, ExtractionConfig, load_custom_instructions
@@ -869,7 +869,7 @@ class Scheduler:
                 if self._on_task_complete:
                     self._on_task_complete(task, False, task.last_result)
             finally:
-                self._task_running = False
+                self._running_tasks.discard(task.id)
                 gc.collect()
 
         threading.Thread(target=_run_backfill, daemon=True).start()
@@ -892,15 +892,15 @@ class Scheduler:
         if not task:
             return False
 
-        if self._task_running:
-            self._log(task.id, "[Re-enrich] Another task is already running")
+        if task.id in self._running_tasks:
+            self._log(task.id, "[Re-enrich] This task is already running")
             return False
 
         if not task.spreadsheet_id:
             self._log(task.id, "[Re-enrich] No spreadsheet configured")
             return False
 
-        self._task_running = True
+        self._running_tasks.add(task.id)
 
         def _run_reenrich():
             try:
@@ -1086,7 +1086,7 @@ class Scheduler:
                 if self._on_task_complete:
                     self._on_task_complete(task, False, task.last_result)
             finally:
-                self._task_running = False
+                self._running_tasks.discard(task.id)
                 gc.collect()
 
         threading.Thread(target=_run_reenrich, daemon=True).start()
@@ -1109,15 +1109,15 @@ class Scheduler:
         if not task:
             return False
 
-        if self._task_running:
-            self._log(task.id, "[Re-title] Another task is already running")
+        if task.id in self._running_tasks:
+            self._log(task.id, "[Re-title] This task is already running")
             return False
 
         if not task.spreadsheet_id:
             self._log(task.id, "[Re-title] No spreadsheet configured")
             return False
 
-        self._task_running = True
+        self._running_tasks.add(task.id)
 
         def _run_retitle():
             try:
@@ -1322,7 +1322,7 @@ class Scheduler:
                 if self._on_task_complete:
                     self._on_task_complete(task, False, task.last_result)
             finally:
-                self._task_running = False
+                self._running_tasks.discard(task.id)
                 gc.collect()
 
         threading.Thread(target=_run_retitle, daemon=True).start()

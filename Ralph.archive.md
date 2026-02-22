@@ -351,6 +351,59 @@ The Audio Content section now intelligently detects URLs matching extraction con
 - **Backfill missed gaps**: Initial version only checked last date. Sheet had data on Dec 30-31, Jan 5-6, Feb 20 with a 45-day gap. Fixed by getting ALL covered dates and filtering archive posts against the full set
 - **Grid+Research flags keep dropping**: Old app (without these fields in ScheduledTask model) overwrites JSON on save. Re-added after each build.
 
+---
+
+# Session — 2026-02-21 (evening): Sheet Cleanup, Re-enrich, Re-title
+
+## Summary
+Massive CryptoSum sheet cleanup session + RWA title truncation fix. Added several new scheduler capabilities for maintaining sheet data quality.
+
+## Changes
+
+### CryptoSum Sheet Cleanup
+- **Removed title column** — Contained only useless 2-3 letter source abbreviations (TB, DC, CT). Used Sheets API `deleteDimension` to delete it, then `moveDimension` to move `url` to column A. Config already had `csv_columns` starting with `url`.
+- **SKIP marking** — Analyzed 29 existing SKIP=TRUE rows, then marked 555 additional rows as SKIP=TRUE with reasoning in "Feedback for Bots" column. Criteria: "Headline Roundup" items with no Grid entity match = general news, skip. Sponsored/ad content = skip. Launches/VC/M&A = keep.
+- **Date sorting** — Added `sort_sheet_by_date()` to sheets_manager.py using Sheets API `sortRange` for server-side sorting. Integrated into both `_execute_task` and `backfill_task` pipelines.
+- **Dedup enhancement** — Consolidated duplicate `deduplicate_sheet()` functions (new batch-delete at line 410 shadowed existing clear+rewrite at line 633). Enhanced the clear+rewrite version to also remove empty rows.
+- **RWA dedup** — Cleaned RWA sheet from 10,142 → 842 rows (9,300 duplicates removed).
+
+### Grid Re-enrichment System
+- **`reenrich_task()`** in scheduler.py — Reads existing sheet rows, identifies those missing `grid_matched` data, creates ExtractedItem objects, runs Grid entity matching in batches of 50, writes grid columns back via Sheets API batchUpdate.
+- **🔄 Re-enrich button** (purple) — Shown on tasks with `enrich_with_grid` enabled.
+- **Result**: 150 rows processed, 112 matched to Grid entities.
+- **Bug fix**: Initial import used `DataProcessor` (doesn't exist) instead of `DataCSVProcessor`. Also needed `ExtractionConfig` import and correct constructor args.
+
+### Flag Persistence Fix
+- **Root cause**: `enrich_with_grid` and `research_articles` flags kept being dropped because the Application Support runtime copy of `scheduled_tasks.json` didn't have them — defaulted to `false` on load, then overwrote the file on save.
+- **Fix**: Explicitly added flags to BOTH the project dir and Application Support copies. The ScheduledTask model already handled serialization correctly (lines 84-85, 110-111).
+
+### Telegram Title Truncation Fix
+- **Root cause**: `TelegramExtractor.extract()` had `title = message_text[:100]` with `...` appended. 841/842 RWA rows were truncated.
+- **Fix**: Removed the 100-char cap, title now uses full `message_text`.
+- **`retitle_task()`** in scheduler.py — Paginates through ALL historical Telegram messages (manual page-by-page with `?before=` param), builds URL→full_title map, batch-updates truncated titles in sheet.
+- **✏️ Re-title button** (orange) — Shown on Telegram-sourced tasks.
+- **Stop fix**: Initial version used single blocking `process_url()` call with no stop checks. Replaced with manual pagination loop that checks `stop_flag` between pages. 50-page safety cap.
+
+### New sheets_manager Utilities
+- `delete_column()` — Deletes a column by header name using Sheets API `deleteDimension`
+- `sort_sheet_by_date()` — Sorts all data rows by a date column using Sheets API `sortRange`
+- Auto-dedup + sort integrated into `_execute_task` and `backfill_task`
+
+## Key Files Modified
+- `data_csv_processor.py` — Removed TelegramExtractor title truncation, archive URL fix (`/archive?page=N`), duplicate page logic
+- `sheets_manager.py` — `delete_column()`, `sort_sheet_by_date()`, enhanced `deduplicate_sheet()`, removed duplicate function
+- `scheduler.py` — `reenrich_task()`, `retitle_task()` with manual pagination, auto-dedup/sort in pipelines, import fixes
+- `gui_app.py` — 📊 Sheet button, 🔄 Re-enrich button, ✏️ Re-title button, `_reenrich_task()`, `_retitle_task()`, Guide updates
+
+## Problem/Solution
+- **702 empty rows in CryptoSum**: Deleted by enhanced `deduplicate_sheet()` which now removes empty rows (only FALSE/blank cells)
+- **Archive crawler only finding 12 posts**: Used homepage `/?page=N` instead of `/archive?page=N`. Beehiiv homepage only shows recent posts.
+- **Archive crawler stopping after page 1**: Pages 0 and 1 return identical content. After page 0, all page 1 slugs already seen → `page_posts` empty → break. Fixed by tracking `raw_link_count`.
+- **Duplicate `deduplicate_sheet()` functions**: Python loads last definition, so old clear+rewrite version ran. New batch-delete version at line 410 was never called. Removed the new one, enhanced the old one.
+- **Re-enrich import crash**: `DataProcessor` doesn't exist — it's `DataCSVProcessor`. Constructor takes `ExtractionConfig()`, not `config_name` string.
+- **Re-title unstoppable**: Single `process_url()` call paginated internally with no stop checks. Replaced with manual page loop.
+- **Global task mutex**: `_task_running` boolean prevents running re-enrich + re-title simultaneously even on different tasks/sheets. Noted for fix.
+
 ## Do NOT
 - Break the working development mode (Launch Audio Briefing.command)
 - Change the output folder structure (Week_N_YYYY format)
