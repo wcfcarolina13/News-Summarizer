@@ -1124,18 +1124,99 @@ class Scheduler:
                 from data_csv_processor import DataCSVProcessor, ExtractionConfig
                 from sheets_manager import get_sheets_service, get_sheet_headers
 
-                self._log(task.id, "[Re-title] Fetching all source posts with full titles...")
+                self._log(task.id, "[Re-title] Fetching source posts page by page...")
 
-                # Create processor and fetch all posts with pagination
+                # Manual pagination so we can check stop_flag between pages
+                import requests as _requests
+                from bs4 import BeautifulSoup
+
                 config = ExtractionConfig()
-                if task.source_url and 't.me' in task.source_url:
-                    # Set a start_date far in the past to trigger full pagination
-                    config.start_date = '2020-01-01'
                 processor = DataCSVProcessor(config)
 
-                # Process the URL (with pagination for Telegram)
-                items = processor.process_url(task.source_url)
-                self._log(task.id, f"[Re-title] Fetched {len(items)} posts from source")
+                # Get the Telegram extractor
+                extractor = None
+                for ext in processor.extractors:
+                    if ext.name == 'telegram':
+                        extractor = ext
+                        break
+
+                if not extractor:
+                    self._log(task.id, "[Re-title] No Telegram extractor found")
+                    return
+
+                # Preprocess URL to t.me/s/ format
+                source_url = extractor.preprocess_url(task.source_url)
+
+                items = []
+                seen_urls = set()
+                oldest_id = None
+                max_pages = 50  # Safety cap
+
+                for page_num in range(max_pages):
+                    if stop_flag and stop_flag():
+                        self._log(task.id, f"[Re-title] Stopped after {page_num} pages ({len(items)} posts)")
+                        break
+
+                    fetch_url = source_url
+                    if oldest_id:
+                        fetch_url = f"{source_url}?before={oldest_id}"
+
+                    try:
+                        resp = _requests.get(fetch_url, timeout=15, headers={
+                            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
+                        })
+                        html = resp.text
+                    except Exception as e:
+                        self._log(task.id, f"[Re-title] Fetch error on page {page_num}: {e}")
+                        break
+
+                    if not html:
+                        break
+
+                    page_items = extractor.extract(fetch_url, html)
+                    if not page_items:
+                        break
+
+                    new_count = 0
+                    for item in page_items:
+                        if item.url not in seen_urls:
+                            seen_urls.add(item.url)
+                            items.append(item)
+                            new_count += 1
+
+                    # Find oldest message ID for next page
+                    soup = BeautifulSoup(html, 'html.parser')
+                    msg_ids = []
+                    for msg in soup.find_all('div', class_='tgme_widget_message_wrap'):
+                        msg_link = msg.find('a', class_='tgme_widget_message_date')
+                        if msg_link:
+                            href = msg_link.get('href', '')
+                            if '/' in href:
+                                try:
+                                    msg_ids.append(int(href.split('/')[-1]))
+                                except ValueError:
+                                    pass
+
+                    if not msg_ids:
+                        break
+
+                    new_oldest = min(msg_ids)
+                    if oldest_id and new_oldest >= oldest_id:
+                        break
+                    oldest_id = new_oldest
+
+                    self._log(task.id, f"[Re-title] Page {page_num + 1}: {new_count} new posts (total: {len(items)})")
+
+                    import time as _time
+                    _time.sleep(0.5)
+
+                self._log(task.id, f"[Re-title] Fetched {len(items)} posts total")
+
+                if stop_flag and stop_flag():
+                    self._log(task.id, "[Re-title] Stopped by user")
+                    task.last_result = f"Re-title: stopped after fetching {len(items)} posts"
+                    self.save_tasks()
+                    return
 
                 if not items:
                     self._log(task.id, "[Re-title] No posts fetched — nothing to update")
