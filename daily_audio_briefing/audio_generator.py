@@ -345,12 +345,7 @@ class AudioGenerator:
                     if sys.platform == "darwin":
                         subprocess.run(["afplay", sample_file])
                     elif sys.platform == "win32":
-                        import winsound
-                        # winsound doesn't support mp3, use a different approach
-                        try:
-                            os.startfile(sample_file)
-                        except:
-                            subprocess.run(["start", sample_file], shell=True)
+                        os.startfile(sample_file)
                     else:
                         subprocess.run(["mpg123", "-q", sample_file])
 

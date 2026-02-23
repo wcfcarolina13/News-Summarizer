@@ -21,6 +21,7 @@ import time
 import signal
 import json
 import logging
+import subprocess
 from datetime import datetime
 from pathlib import Path
 
@@ -442,8 +443,8 @@ def _enable_launch_on_login_macos() -> bool:
         with open(plist_path, 'w') as f:
             f.write(plist_content)
 
-        # Load the agent
-        os.system(f'launchctl load "{plist_path}"')
+        # Load the agent (use subprocess.run to avoid shell injection)
+        subprocess.run(['launchctl', 'load', str(plist_path)])
         return True
     except Exception as e:
         print(f"Error enabling launch on login: {e}")
@@ -456,8 +457,8 @@ def _disable_launch_on_login_macos() -> bool:
 
     try:
         if os.path.exists(plist_path):
-            # Unload the agent
-            os.system(f'launchctl unload "{plist_path}"')
+            # Unload the agent (use subprocess.run to avoid shell injection)
+            subprocess.run(['launchctl', 'unload', str(plist_path)])
             os.remove(plist_path)
         return True
     except Exception as e:

@@ -348,23 +348,31 @@ class TranscriptionService:
         if not self._system_python:
             raise RuntimeError("System Python not found")
 
-        # Create a temporary script to run transcription
-        script = f'''
+        # Validate model_size against known values to prevent injection
+        VALID_MODELS = ('tiny', 'base', 'small', 'medium', 'large', 'large-v2', 'large-v3')
+        if model_size not in VALID_MODELS:
+            raise ValueError(f"Invalid model size: {model_size}. Must be one of {VALID_MODELS}")
+
+        # Pass parameters via sys.argv instead of f-string interpolation
+        # to prevent code injection through crafted file paths or model names
+        script = '''
 import sys
 try:
+    model_size = sys.argv[1]
+    audio_path = sys.argv[2]
     from faster_whisper import WhisperModel
-    model = WhisperModel("{model_size}", device="auto")
-    segments, info = model.transcribe("{audio_path}", vad_filter=True)
+    model = WhisperModel(model_size, device="auto")
+    segments, info = model.transcribe(audio_path, vad_filter=True)
     for seg in segments:
         print(seg.text.strip())
 except Exception as e:
-    print(f"ERROR: {{e}}", file=sys.stderr)
+    print(f"ERROR: {e}", file=sys.stderr)
     sys.exit(1)
 '''
 
         try:
             result = subprocess.run(
-                [self._system_python, '-c', script],
+                [self._system_python, '-c', script, model_size, audio_path],
                 capture_output=True,
                 text=True,
                 timeout=600  # 10 minute timeout for long files
