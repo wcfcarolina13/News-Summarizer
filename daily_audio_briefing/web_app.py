@@ -17,15 +17,19 @@ Deploy: See Procfile, railway.json, render.yaml
 """
 
 import os
+import re
 import sys
 import json
 import uuid
+import socket
 import threading
 import subprocess
 import gc
+import ipaddress
 from datetime import datetime, timedelta
 from pathlib import Path
 from functools import wraps
+from urllib.parse import urlparse
 
 from flask import (
     Flask, render_template, request, jsonify,
@@ -59,10 +63,79 @@ except ImportError:
     SHEETS_IMPORT_OK = False
 
 app = Flask(__name__)
-app.secret_key = os.environ.get('SECRET_KEY', 'dev-key-change-in-production')
+
+# Secret key: require env var in server mode, generate random fallback in dev
+_secret_key = os.environ.get('SECRET_KEY')
+if not _secret_key:
+    if os.environ.get('SERVER_MODE', '').lower() == 'true':
+        _secret_key = os.urandom(32).hex()
+        print("[WARN] SECRET_KEY not set — generated random key (sessions won't persist across restarts)")
+    else:
+        _secret_key = os.urandom(32).hex()
+app.secret_key = _secret_key
+
+# Max request size: 10MB
+app.config['MAX_CONTENT_LENGTH'] = 10 * 1024 * 1024
 
 # Base directory
 BASE_DIR = Path(__file__).parent
+
+# ---- API Key Authentication ----
+# Set API_AUTH_KEY env var to require X-API-Key header on all /api/* routes.
+# If not set, auth is disabled (dev mode backwards compat).
+API_AUTH_KEY = os.environ.get('API_AUTH_KEY')
+
+# Routes that don't require authentication
+PUBLIC_ROUTES = {'index', 'health', 'static', 'favicon', 'favicon_32', 'favicon_apple', 'manifest'}
+
+@app.before_request
+def _check_api_auth():
+    """Require API key for all /api/* routes when API_AUTH_KEY is configured."""
+    if not API_AUTH_KEY:
+        return  # Auth disabled in dev mode
+
+    # Allow public routes (matched by endpoint name)
+    if request.endpoint in PUBLIC_ROUTES:
+        return
+
+    # Allow non-API routes (HTML pages)
+    if not request.path.startswith('/api/'):
+        return
+
+    # Check X-API-Key header
+    provided_key = request.headers.get('X-API-Key') or request.args.get('api_key')
+    if provided_key != API_AUTH_KEY:
+        return jsonify({'error': 'Unauthorized — valid X-API-Key header required'}), 401
+
+
+# ---- Security Helpers ----
+
+_SAFE_NAME_RE = re.compile(r'^[a-zA-Z0-9_-]+$')
+
+def _validate_config_name(name: str) -> bool:
+    """Validate that a config name is safe (no path traversal)."""
+    return bool(_SAFE_NAME_RE.match(name))
+
+def _validate_url(url: str) -> str:
+    """Validate URL for SSRF: must be http(s), no private IPs. Returns cleaned URL or raises ValueError."""
+    parsed = urlparse(url)
+    if parsed.scheme not in ('http', 'https'):
+        raise ValueError(f"Invalid URL scheme: {parsed.scheme}. Only http/https allowed.")
+    if not parsed.hostname:
+        raise ValueError("URL has no hostname.")
+
+    # Resolve hostname and check against private IP ranges
+    try:
+        addr_infos = socket.getaddrinfo(parsed.hostname, None)
+    except socket.gaierror:
+        raise ValueError(f"Cannot resolve hostname: {parsed.hostname}")
+
+    for family, _, _, _, sockaddr in addr_infos:
+        ip = ipaddress.ip_address(sockaddr[0])
+        if ip.is_private or ip.is_loopback or ip.is_link_local or ip.is_reserved:
+            raise ValueError(f"URL resolves to private/reserved IP ({ip}). Blocked for security.")
+
+    return url
 
 # Initialize managers
 file_manager = FileManager()
@@ -452,9 +525,11 @@ def api_extract():
     config_name = data.get('config', 'default')
     enrich_grid = data.get('enrichGrid', False)
 
-    # Load config
+    # Load config (validate name to prevent path traversal)
     custom_instructions = None
     if config_name != 'default':
+        if not _validate_config_name(config_name):
+            return jsonify({'error': 'Invalid config name'}), 400
         config_path = BASE_DIR / 'extraction_instructions' / f'{config_name}.json'
         if config_path.exists():
             custom_instructions = load_custom_instructions(str(config_path))
@@ -475,6 +550,10 @@ def api_extract():
             url = data.get('url', '').strip()
             if not url:
                 return jsonify({'error': 'URL required'}), 400
+            try:
+                url = _validate_url(url)
+            except ValueError as ve:
+                return jsonify({'error': str(ve)}), 400
             items = processor.process_url(url, custom_instructions)
 
         # Optionally enrich with Grid data
@@ -553,10 +632,30 @@ def api_audio_latest():
 
 @app.route('/api/audio/file')
 def api_audio_file():
-    """Serve audio file."""
+    """Serve audio file (restricted to audio output directory only)."""
     path = request.args.get('path')
-    if path and os.path.exists(path):
-        return send_file(path)
+    if not path:
+        return jsonify({'error': 'File not found'}), 404
+
+    # Resolve to absolute real path (follows symlinks, normalizes ..)
+    real_path = os.path.realpath(path)
+
+    # Only serve files from the audio output directory or base dir
+    allowed_bases = [
+        os.path.realpath(str(BASE_DIR)),
+        os.path.realpath(os.path.expanduser(
+            '~/Library/Application Support/Daily Audio Briefing'
+        )),
+    ]
+    if not any(real_path.startswith(base) for base in allowed_bases):
+        return jsonify({'error': 'Access denied'}), 403
+
+    # Only serve audio files
+    if not real_path.endswith(('.mp3', '.wav', '.m4a', '.ogg')):
+        return jsonify({'error': 'Not an audio file'}), 403
+
+    if os.path.exists(real_path):
+        return send_file(real_path)
     return jsonify({'error': 'File not found'}), 404
 
 @app.route('/api/settings/apikey', methods=['GET', 'POST'])
@@ -699,6 +798,8 @@ def api_configs_list():
 @app.route('/api/configs/<name>')
 def api_configs_get(name):
     """Get a single extraction config."""
+    if not _validate_config_name(name):
+        return jsonify({'error': 'Invalid config name'}), 400
     config = get_extraction_config(name)
     if config:
         return jsonify(config)
@@ -708,6 +809,8 @@ def api_configs_get(name):
 @app.route('/api/configs/<name>', methods=['PUT'])
 def api_configs_update(name):
     """Update an extraction config (e.g., csv_columns)."""
+    if not _validate_config_name(name):
+        return jsonify({'error': 'Invalid config name'}), 400
     config_path = BASE_DIR / 'extraction_instructions' / f'{name}.json'
     if not config_path.exists():
         return jsonify({'error': 'Config not found'}), 404

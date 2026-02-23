@@ -24,10 +24,13 @@ logger = logging.getLogger(__name__)
 class CloudSchedulerClient:
     """REST API client for the remote scheduler server."""
 
-    def __init__(self, server_url: str):
+    def __init__(self, server_url: str, api_key: Optional[str] = None):
         self.server_url = server_url.rstrip('/')
         self._session = requests.Session()
-        self._session.headers.update({'Content-Type': 'application/json'})
+        headers = {'Content-Type': 'application/json'}
+        if api_key:
+            headers['X-API-Key'] = api_key
+        self._session.headers.update(headers)
         self._cached_tasks: List[ScheduledTask] = []
         self._timeout = 8  # seconds
 

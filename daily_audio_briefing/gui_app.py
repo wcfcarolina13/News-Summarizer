@@ -227,8 +227,8 @@ class AudioBriefingApp(ctk.CTk):
         self._pending_launch_url = launch_url
 
         self.title("Daily Audio Briefing")
-        self.geometry("950x900") # Wider default width to fit controls
-        self.minsize(850, 650)  # Prevent shrinking below usable size
+        self.geometry("1100x900") # Wide enough for date range controls
+        self.minsize(950, 650)  # Prevent shrinking below usable size
 
         # Main window grid - sidebar + page container
         self.grid_columnconfigure(0, weight=0)  # Sidebar fixed width
@@ -280,6 +280,7 @@ class AudioBriefingApp(ctk.CTk):
         # Placeholder for status label — created in _build_summarize_page() but
         # referenced by callbacks that may fire before that page is built.
         self.label_status = None
+        self.label_audio_status = None  # Audio page status (set in _build_audio_page)
 
         # Apply saved text scale on startup
         self._apply_text_scale()
@@ -848,6 +849,26 @@ class AudioBriefingApp(ctk.CTk):
 
         self.btn_quality = ctk.CTkButton(self.frame_audio_controls, text="Generate Quality (Kokoro)", command=self.start_quality_generation)
         self.btn_quality.grid(row=4, column=0, columnspan=2, padx=10, pady=(5, 10), sticky="ew")
+
+        # Audio page status bar (mirrors label_status on Summarize page)
+        audio_status_frame = ctk.CTkFrame(self.pages["audio"], fg_color="transparent")
+        audio_status_frame.grid(row=2, column=0, padx=20, pady=(5, 10), sticky="ew")
+
+        self.label_audio_status = ctk.CTkLabel(
+            audio_status_frame, text="Ready",
+            text_color=COLORS["text_primary"],
+            font=ctk.CTkFont(size=14, weight="bold")
+        )
+        self.label_audio_status.grid(row=0, column=0, sticky="w")
+
+        # Sync to Drive button
+        self.btn_sync_drive = ctk.CTkButton(
+            audio_status_frame, text="Sync to Drive",
+            width=120, fg_color="gray", hover_color=COLORS["accent"],
+            command=self._sync_to_drive
+        )
+        self.btn_sync_drive.grid(row=0, column=1, sticky="e", padx=(10, 0))
+        audio_status_frame.grid_columnconfigure(1, weight=1)
 
     def _build_extract_page(self):
         """Build the Extract/Data Extractor page (deferred from __init__ for faster startup)."""
@@ -1473,6 +1494,472 @@ class AudioBriefingApp(ctk.CTk):
             compression_text = "✓ Compression enabled" if self.compression_enabled else "⚠ Compression disabled"
             compression_color = "green" if self.compression_enabled else "orange"
             self.label_compression.configure(text=compression_text, text_color=compression_color)
+        # Refresh Drive status (quick, no API call)
+        self._refresh_drive_status()
+
+    # ========== Google Drive Integration Methods ==========
+
+    def _refresh_drive_status(self):
+        """Refresh Drive status indicator (quick check, no API call)."""
+        if not hasattr(self, 'drive_status_dot'):
+            return
+        try:
+            from drive_manager import is_drive_available, is_signed_in, get_user_email
+            if not is_drive_available():
+                self._update_drive_status(False, "Setup required — see Guide")
+                return
+            if not is_signed_in():
+                self._update_drive_status(False, "Not signed in — click 'Sign in with Google'")
+                return
+            shared_id = self.settings.get("drive_folder_id", "")
+            if shared_id:
+                self._update_drive_status(True, "Ready (click Test to verify)")
+            else:
+                self._update_drive_status(True, "Signed in — set a Drive folder below")
+
+            # Update account label too
+            if hasattr(self, 'drive_account_label'):
+                email = get_user_email()
+                if email:
+                    self.drive_account_label.configure(
+                        text=f"Signed in as {email}", text_color=COLORS["success"])
+                else:
+                    self.drive_account_label.configure(
+                        text="Signed in", text_color=COLORS["success"])
+            if hasattr(self, 'btn_drive_sign_in'):
+                self.btn_drive_sign_in.configure(state="disabled")
+            if hasattr(self, 'btn_drive_sign_out'):
+                self.btn_drive_sign_out.configure(state="normal")
+        except ImportError:
+            self._update_drive_status(False, "Drive module not available")
+
+    def _update_drive_status(self, connected: bool, message: str):
+        """Update Drive connection indicator on Settings page."""
+        if hasattr(self, 'drive_status_dot'):
+            color = COLORS["success"] if connected else COLORS["warning"]
+            self.drive_status_dot.configure(text_color=color)
+        if hasattr(self, 'drive_status_label'):
+            self.drive_status_label.configure(text=message)
+
+    def _drive_sign_in(self):
+        """Start OAuth2 sign-in flow (opens browser)."""
+        self._update_status("Opening Google sign-in in browser...", "orange")
+        self.btn_drive_sign_in.configure(state="disabled")
+
+        def task():
+            try:
+                from drive_manager import sign_in
+                result = sign_in()
+                if result['success']:
+                    email = result.get('email', 'Unknown')
+                    self.after(0, lambda: [
+                        self._update_status(f"Signed in to Drive as {email}", "green"),
+                        self._refresh_drive_status(),
+                    ])
+                else:
+                    err = result.get('error', 'Unknown error')[:80]
+                    self.after(0, lambda: [
+                        self._update_status(f"Drive sign-in failed: {err}", "red"),
+                        self.btn_drive_sign_in.configure(state="normal"),
+                    ])
+            except Exception as e:
+                self.after(0, lambda: [
+                    self._update_status(f"Drive sign-in error: {str(e)[:60]}", "red"),
+                    self.btn_drive_sign_in.configure(state="normal"),
+                ])
+
+        threading.Thread(target=task, daemon=True).start()
+
+    def _drive_sign_out(self):
+        """Sign out of Google Drive (remove stored token)."""
+        try:
+            from drive_manager import sign_out
+            sign_out()
+        except Exception:
+            pass
+        self._update_status("Signed out of Drive", "gray")
+        if hasattr(self, 'drive_account_label'):
+            self.drive_account_label.configure(text="Not signed in", text_color=COLORS["text_muted"])
+        if hasattr(self, 'btn_drive_sign_in'):
+            self.btn_drive_sign_in.configure(state="normal")
+        if hasattr(self, 'btn_drive_sign_out'):
+            self.btn_drive_sign_out.configure(state="disabled")
+        self._update_drive_status(False, "Not signed in")
+
+    def _save_drive_folder(self):
+        """Save and verify the Drive folder URL/ID from the entry field."""
+        raw_value = self.drive_folder_entry.get().strip()
+        if not raw_value:
+            self.settings["drive_folder_id"] = ""
+            self._save_settings()
+            if hasattr(self, 'drive_folder_status'):
+                self.drive_folder_status.configure(text="Folder cleared.", text_color=COLORS["text_muted"])
+            return
+
+        try:
+            from drive_manager import extract_folder_id_from_url, verify_folder_access
+        except ImportError:
+            if hasattr(self, 'drive_folder_status'):
+                self.drive_folder_status.configure(text="Drive module not available", text_color=COLORS["danger"])
+            return
+
+        folder_id = extract_folder_id_from_url(raw_value)
+        if not folder_id:
+            if hasattr(self, 'drive_folder_status'):
+                self.drive_folder_status.configure(text="Invalid URL or ID", text_color=COLORS["danger"])
+            return
+
+        # Save the clean folder ID
+        self.settings["drive_folder_id"] = folder_id
+        self._save_settings()
+
+        # Update entry to show clean ID
+        self.drive_folder_entry.delete(0, "end")
+        self.drive_folder_entry.insert(0, folder_id)
+
+        if hasattr(self, 'drive_folder_status'):
+            self.drive_folder_status.configure(text="Verifying folder access...", text_color="orange")
+
+        # Verify access in background
+        def verify():
+            try:
+                result = verify_folder_access(folder_id)
+                if result['accessible']:
+                    msg = f"Folder: {result['name']}"
+                    self.after(0, lambda: self.drive_folder_status.configure(
+                        text=msg, text_color=COLORS["success"]))
+                else:
+                    msg = result.get('error', 'Cannot access folder')
+                    self.after(0, lambda: self.drive_folder_status.configure(
+                        text=msg, text_color=COLORS["danger"]))
+            except Exception as e:
+                self.after(0, lambda: self.drive_folder_status.configure(
+                    text=f"Error: {str(e)[:50]}", text_color=COLORS["danger"]))
+
+        threading.Thread(target=verify, daemon=True).start()
+
+    def _on_drive_auto_upload_toggle(self):
+        """Handle Drive auto-upload toggle change."""
+        enabled = self.drive_auto_upload_var.get()
+        self.settings["drive_auto_upload"] = enabled
+        self._save_settings()
+        status = "enabled" if enabled else "disabled"
+        self._update_status(f"Drive auto-upload {status}", "green")
+
+    def _test_drive_connection(self):
+        """Test Google Drive connection and verify folder access."""
+        self._update_drive_status(False, "Testing connection...")
+
+        def task():
+            try:
+                from drive_manager import (is_signed_in, get_drive_service,
+                                           verify_folder_access, get_storage_quota)
+                if not is_signed_in():
+                    self.after(0, lambda: self._update_drive_status(
+                        False, "Not signed in. Click 'Sign in with Google' first."))
+                    return
+                get_drive_service()
+
+                # Check folder access
+                shared_id = self.settings.get("drive_folder_id", "")
+                if shared_id:
+                    check = verify_folder_access(shared_id)
+                    if check['accessible']:
+                        # Also get quota
+                        try:
+                            quota = get_storage_quota()
+                            used = quota.get('used_gb', 0)
+                            total = quota.get('total_gb', 0)
+                            quota_str = f" — {used:.1f}GB / {total:.1f}GB" if total else ""
+                        except Exception:
+                            quota_str = ""
+                        msg = f"Connected — {check['name']}{quota_str}"
+                        self.after(0, lambda: self._update_drive_status(True, msg))
+                        if hasattr(self, 'drive_folder_status'):
+                            self.after(0, lambda: self.drive_folder_status.configure(
+                                text=f"Folder: {check['name']}", text_color=COLORS["success"]))
+                    else:
+                        msg = f"Folder error: {check['error']}"
+                        self.after(0, lambda: self._update_drive_status(False, msg))
+                else:
+                    msg = "Connected — Set a Drive folder URL to enable uploads"
+                    self.after(0, lambda: self._update_drive_status(True, msg))
+            except Exception as e:
+                err = str(e)[:60]
+                self.after(0, lambda: self._update_drive_status(False, f"Error: {err}"))
+
+        threading.Thread(target=task, daemon=True).start()
+
+    def _sync_to_drive(self):
+        """Manual sync of all Week folders to Google Drive."""
+        shared_id = self.settings.get("drive_folder_id", "")
+        if not shared_id:
+            self._update_status("Set a Drive folder in Settings first.", "orange")
+            return
+
+        self._update_status("Syncing to Drive...", "orange")
+        self.btn_sync_drive.configure(state="disabled")
+
+        def task():
+            try:
+                from drive_manager import is_signed_in, sync_week_folders
+                if not is_signed_in():
+                    self._update_status("Not signed in to Drive. Check Settings.", "red")
+                    return
+                data_dir = get_data_directory()
+                root_name = self.settings.get("drive_root_folder_name", "Daily Audio Briefing")
+                log = sync_week_folders(
+                    data_dir, root_name,
+                    shared_folder_id=shared_id,
+                    status_callback=self._update_status
+                )
+                uploaded = sum(1 for l in log if 'Uploaded' in l)
+                skipped = sum(1 for l in log if 'Skipped' in l or 'exists' in l)
+                self._update_status(
+                    f"Drive sync complete: {uploaded} uploaded, {skipped} skipped",
+                    "green"
+                )
+            except Exception as e:
+                self._update_status(f"Drive sync error: {str(e)[:50]}", "red")
+            finally:
+                self.after(0, lambda: self.btn_sync_drive.configure(state="normal"))
+
+        threading.Thread(target=task, daemon=True).start()
+
+    def _upload_to_drive_after_generation(self, audio_filename: str):
+        """Auto-upload generated audio file to Drive (background, non-blocking).
+
+        Called after successful audio generation if auto-upload is enabled.
+        Errors are logged but don't interrupt the user.
+        """
+        if not self.settings.get("drive_auto_upload", False):
+            return
+
+        shared_id = self.settings.get("drive_folder_id", "")
+        if not shared_id:
+            return  # No folder configured, skip silently
+
+        def task():
+            try:
+                from drive_manager import (is_signed_in, get_or_create_folder,
+                                           upload_file, verify_folder_access)
+                if not is_signed_in():
+                    return
+
+                # Verify folder access
+                check = verify_folder_access(shared_id)
+                if not check['accessible']:
+                    print(f"[Drive] Auto-upload skipped: {check['error']}")
+                    return
+
+                # Find the local file
+                data_dir = get_data_directory()
+                week_num = datetime.datetime.now().isocalendar()[1]
+                year = datetime.datetime.now().year
+                week_folder = f"Week_{week_num}_{year}"
+                local_path = os.path.join(data_dir, week_folder, audio_filename)
+
+                if not os.path.exists(local_path):
+                    # Try directly in data dir
+                    local_path = os.path.join(data_dir, audio_filename)
+                    if not os.path.exists(local_path):
+                        return  # File not found, skip silently
+
+                # Create folder structure: shared_folder / root / Week_N_YYYY
+                root_name = self.settings.get("drive_root_folder_name", "Daily Audio Briefing")
+                root_id = get_or_create_folder(root_name, parent_id=shared_id)
+                week_id = get_or_create_folder(week_folder, parent_id=root_id)
+
+                # Upload
+                result = upload_file(local_path, week_id)
+                if result.get('status') == 'uploaded':
+                    self._update_status(f"Uploaded to Drive: {audio_filename}", "green")
+                # 'skipped' = already exists, stay silent
+
+            except Exception as e:
+                print(f"[Drive] Auto-upload error: {e}")
+                # Don't show error — auto-upload is a bonus feature
+
+        threading.Thread(target=task, daemon=True).start()
+
+    def _show_drive_storage_dialog(self):
+        """Show Drive storage management dialog with quota and old file cleanup."""
+        dialog = ctk.CTkToplevel(self)
+        dialog.title("Drive Storage Management")
+        dialog.geometry("600x520")
+        dialog.minsize(500, 400)
+        dialog.transient(self)
+        dialog.lift()
+        dialog.grab_set()
+        dialog.grid_columnconfigure(0, weight=1)
+
+        # Header
+        ctk.CTkLabel(
+            dialog, text="Google Drive Storage",
+            font=ctk.CTkFont(size=18, weight="bold"),
+            text_color=COLORS["text_primary"]
+        ).grid(row=0, column=0, padx=20, pady=(20, 5), sticky="w")
+
+        # Quota display
+        quota_label = ctk.CTkLabel(
+            dialog, text="Loading storage info...",
+            font=ctk.CTkFont(size=12), text_color=COLORS["text_secondary"]
+        )
+        quota_label.grid(row=1, column=0, padx=20, pady=(0, 10), sticky="w")
+
+        # Old files heading
+        ctk.CTkLabel(
+            dialog, text="Audio files older than 30 days:",
+            font=ctk.CTkFont(size=13, weight="bold"),
+            text_color=COLORS["text_primary"]
+        ).grid(row=2, column=0, padx=20, pady=(10, 5), sticky="w")
+
+        # Scrollable file list
+        files_frame = ctk.CTkScrollableFrame(
+            dialog, height=250,
+            fg_color=COLORS["bg_secondary"],
+            corner_radius=8
+        )
+        files_frame.grid(row=3, column=0, padx=20, pady=(0, 10), sticky="nsew")
+        files_frame.grid_columnconfigure(0, weight=1)
+        dialog.grid_rowconfigure(3, weight=1)
+
+        # Loading indicator in files frame
+        loading_label = ctk.CTkLabel(
+            files_frame, text="Loading files...",
+            text_color=COLORS["text_muted"]
+        )
+        loading_label.grid(row=0, column=0, pady=20)
+
+        # Track checkbox vars
+        file_checkboxes = {}  # file_id -> BooleanVar
+
+        # Action buttons
+        btn_frame = ctk.CTkFrame(dialog, fg_color="transparent")
+        btn_frame.grid(row=4, column=0, padx=20, pady=(0, 20), sticky="ew")
+
+        btn_select_all = ctk.CTkButton(
+            btn_frame, text="Select All", width=100, fg_color="gray",
+            command=lambda: [v.set(True) for v in file_checkboxes.values()]
+        )
+        btn_select_all.pack(side="left", padx=(0, 8))
+
+        btn_deselect = ctk.CTkButton(
+            btn_frame, text="Deselect All", width=100, fg_color="gray",
+            command=lambda: [v.set(False) for v in file_checkboxes.values()]
+        )
+        btn_deselect.pack(side="left", padx=(0, 8))
+
+        def do_delete():
+            ids = [fid for fid, var in file_checkboxes.items() if var.get()]
+            if not ids:
+                return
+            # Simple confirmation
+            confirm = ctk.CTkToplevel(dialog)
+            confirm.title("Confirm Deletion")
+            confirm.geometry("400x150")
+            confirm.transient(dialog)
+            confirm.lift()
+            confirm.grab_set()
+            confirm.grid_columnconfigure(0, weight=1)
+
+            ctk.CTkLabel(
+                confirm,
+                text=f"Delete {len(ids)} file(s) from Google Drive?\nThis cannot be undone.",
+                font=ctk.CTkFont(size=13),
+                text_color=COLORS["text_primary"]
+            ).grid(row=0, column=0, padx=20, pady=(20, 15))
+
+            cfm_btns = ctk.CTkFrame(confirm, fg_color="transparent")
+            cfm_btns.grid(row=1, column=0, padx=20, pady=(0, 20))
+
+            def cancel():
+                confirm.destroy()
+
+            def proceed():
+                confirm.destroy()
+
+                def delete_task():
+                    try:
+                        from drive_manager import delete_files
+                        result = delete_files(ids)
+                        n = result.get('deleted', 0)
+                        self.after(0, lambda: self._update_status(
+                            f"Deleted {n} file(s) from Drive", "green"
+                        ))
+                        # Close storage dialog
+                        self.after(0, dialog.destroy)
+                    except Exception as e:
+                        self.after(0, lambda: self._update_status(
+                            f"Delete error: {str(e)[:50]}", "red"
+                        ))
+
+                threading.Thread(target=delete_task, daemon=True).start()
+
+            ctk.CTkButton(cfm_btns, text="Cancel", fg_color="gray", width=100,
+                          command=cancel).pack(side="left", padx=(0, 10))
+            ctk.CTkButton(cfm_btns, text="Delete", fg_color=COLORS["danger"], width=100,
+                          command=proceed).pack(side="left")
+
+        btn_delete = ctk.CTkButton(
+            btn_frame, text="Delete Selected", width=130,
+            fg_color=COLORS["danger"],
+            command=do_delete
+        )
+        btn_delete.pack(side="right")
+
+        # Load data in background
+        def load_data():
+            try:
+                from drive_manager import get_storage_quota, list_old_audio_files
+                # Update quota
+                quota = get_storage_quota()
+                used_gb = quota.get('used_gb', 0)
+                total_gb = quota.get('total_gb', 0)
+                pct = quota.get('percent_used', 0)
+                if total_gb > 0:
+                    quota_text = f"Using {used_gb:.1f}GB of {total_gb:.1f}GB ({pct:.0f}%)"
+                else:
+                    quota_text = f"Using {used_gb:.1f}GB (unlimited plan)"
+                self.after(0, lambda: quota_label.configure(text=quota_text))
+
+                # Load old files
+                old_files = list_old_audio_files(
+                    root_folder_name=self.settings.get("drive_root_folder_name", "Daily Audio Briefing"),
+                    before_days=30,
+                    shared_folder_id=self.settings.get("drive_folder_id", "")
+                )
+
+                def populate():
+                    loading_label.destroy()
+                    if not old_files:
+                        ctk.CTkLabel(
+                            files_frame, text="No audio files older than 30 days found.",
+                            text_color=COLORS["text_muted"],
+                            font=ctk.CTkFont(size=12)
+                        ).grid(row=0, column=0, pady=20)
+                        return
+                    for i, f in enumerate(old_files):
+                        var = ctk.BooleanVar(value=False)
+                        file_checkboxes[f['id']] = var
+                        label = f"{f['name']}  ({f.get('size_mb', '?')}MB, {f.get('folder', '')})"
+                        ctk.CTkCheckBox(
+                            files_frame, text=label, variable=var,
+                            font=ctk.CTkFont(size=11)
+                        ).grid(row=i, column=0, sticky="w", padx=10, pady=1)
+
+                self.after(0, populate)
+
+            except Exception as e:
+                err = str(e)[:60]
+                self.after(0, lambda: quota_label.configure(
+                    text=f"Error loading Drive info: {err}"
+                ))
+                self.after(0, lambda: loading_label.configure(
+                    text=f"Could not connect to Drive."
+                ))
+
+        threading.Thread(target=load_data, daemon=True).start()
 
     def _build_home_page(self):
         """Build the Home/Dashboard page with quick actions."""
@@ -1657,6 +2144,133 @@ class AudioBriefingApp(ctk.CTk):
             command=self._show_first_run_wizard
         ).grid(row=1, column=0, sticky="w")
 
+        # Google Drive card
+        drive_card = self._create_card(page, title="Google Drive")
+        drive_card.grid(row=4, column=0, padx=20, pady=(0, 12), sticky="ew")
+
+        drive_content = ctk.CTkFrame(drive_card, fg_color="transparent")
+        drive_content.grid(row=1, column=0, padx=16, pady=(0, 16), sticky="ew")
+        drive_content.grid_columnconfigure(1, weight=1)
+
+        # Row 0: Connection status indicator
+        status_row = ctk.CTkFrame(drive_content, fg_color="transparent")
+        status_row.grid(row=0, column=0, columnspan=2, sticky="w", pady=(0, 4))
+
+        self.drive_status_dot = ctk.CTkLabel(
+            status_row, text="●", font=ctk.CTkFont(size=14),
+            text_color=COLORS["warning"]
+        )
+        self.drive_status_dot.pack(side="left", padx=(0, 8))
+
+        self.drive_status_label = ctk.CTkLabel(
+            status_row, text="Not configured",
+            font=ctk.CTkFont(size=12), text_color=COLORS["text_secondary"]
+        )
+        self.drive_status_label.pack(side="left")
+
+        # Row 1: Sign in / account info row
+        sign_in_row = ctk.CTkFrame(drive_content, fg_color="transparent")
+        sign_in_row.grid(row=1, column=0, columnspan=2, sticky="w", pady=(0, 8))
+
+        self.drive_account_label = ctk.CTkLabel(
+            sign_in_row, text="Not signed in",
+            font=ctk.CTkFont(size=12), text_color=COLORS["text_muted"]
+        )
+        self.drive_account_label.pack(side="left", padx=(0, 12))
+
+        self.btn_drive_sign_in = ctk.CTkButton(
+            sign_in_row, text="Sign in with Google", width=160,
+            fg_color="#4285f4", hover_color="#3367d6",
+            command=self._drive_sign_in
+        )
+        self.btn_drive_sign_in.pack(side="left", padx=(0, 8))
+
+        self.btn_drive_sign_out = ctk.CTkButton(
+            sign_in_row, text="Sign Out", width=80,
+            fg_color="gray", hover_color=COLORS["danger"],
+            command=self._drive_sign_out
+        )
+        self.btn_drive_sign_out.pack(side="left")
+
+        # Show current sign-in state
+        try:
+            from drive_manager import is_signed_in, get_user_email
+            if is_signed_in():
+                email = get_user_email()
+                if email:
+                    self.drive_account_label.configure(
+                        text=f"Signed in as {email}", text_color=COLORS["success"])
+                else:
+                    self.drive_account_label.configure(
+                        text="Signed in", text_color=COLORS["success"])
+                self.btn_drive_sign_in.configure(state="disabled")
+            else:
+                self.btn_drive_sign_out.configure(state="disabled")
+        except Exception:
+            self.btn_drive_sign_out.configure(state="disabled")
+
+        # Row 2: Drive folder URL/ID input
+        ctk.CTkLabel(
+            drive_content, text="Drive Folder URL or ID:",
+            font=ctk.CTkFont(size=12), text_color=COLORS["text_secondary"]
+        ).grid(row=2, column=0, columnspan=2, sticky="w", pady=(4, 2))
+
+        folder_input_row = ctk.CTkFrame(drive_content, fg_color="transparent")
+        folder_input_row.grid(row=3, column=0, columnspan=2, sticky="ew", pady=(0, 4))
+        folder_input_row.grid_columnconfigure(0, weight=1)
+
+        self.drive_folder_entry = ctk.CTkEntry(
+            folder_input_row, placeholder_text="Paste Drive folder URL or ID...",
+            font=ctk.CTkFont(size=12), height=32
+        )
+        self.drive_folder_entry.grid(row=0, column=0, sticky="ew", padx=(0, 8))
+
+        # Pre-fill saved folder ID
+        saved_folder = self.settings.get("drive_folder_id", "")
+        if saved_folder:
+            self.drive_folder_entry.insert(0, saved_folder)
+
+        ctk.CTkButton(
+            folder_input_row, text="Save", width=70,
+            fg_color=COLORS["accent"], hover_color="#2563eb",
+            command=self._save_drive_folder
+        ).grid(row=0, column=1)
+
+        # Folder status label (shows folder name after verification)
+        self.drive_folder_status = ctk.CTkLabel(
+            drive_content, text="",
+            font=ctk.CTkFont(size=11), text_color=COLORS["text_muted"]
+        )
+        self.drive_folder_status.grid(row=4, column=0, columnspan=2, sticky="w", pady=(0, 8))
+
+        # Row 5: Auto-upload toggle
+        self.drive_auto_upload_var = ctk.BooleanVar(
+            value=self.settings.get("drive_auto_upload", False)
+        )
+        self.drive_auto_upload_switch = ctk.CTkSwitch(
+            drive_content, text="Auto-upload after audio generation",
+            variable=self.drive_auto_upload_var,
+            command=self._on_drive_auto_upload_toggle,
+            font=ctk.CTkFont(size=12)
+        )
+        self.drive_auto_upload_switch.grid(row=5, column=0, columnspan=2, sticky="w", pady=(0, 8))
+
+        # Row 6: Action buttons
+        drive_btn_frame = ctk.CTkFrame(drive_content, fg_color="transparent")
+        drive_btn_frame.grid(row=6, column=0, columnspan=2, sticky="w")
+
+        ctk.CTkButton(
+            drive_btn_frame, text="Test Connection", width=130,
+            fg_color=COLORS["accent"], hover_color="#2563eb",
+            command=self._test_drive_connection
+        ).pack(side="left", padx=(0, 8))
+
+        ctk.CTkButton(
+            drive_btn_frame, text="Manage Storage", width=130,
+            fg_color="gray",
+            command=self._show_drive_storage_dialog
+        ).pack(side="left", padx=(0, 8))
+
     def _on_settings_scale_change(self, value):
         """Handle text scale slider change on Settings page."""
         pct = int(value * 100)
@@ -1766,7 +2380,8 @@ class AudioBriefingApp(ctk.CTk):
 
         def _test():
             from cloud_scheduler_client import CloudSchedulerClient
-            client = CloudSchedulerClient(url)
+            api_key = self.settings.get('server_api_key', '')
+            client = CloudSchedulerClient(url, api_key=api_key or None)
             ok, msg = client.test_connection()
             if ok:
                 self._cloud_client = client
@@ -2229,13 +2844,17 @@ class AudioBriefingApp(ctk.CTk):
 
     def _update_status(self, message, color="gray"):
         """Callback for status updates from managers.
-        
+
+        Updates both Summarize page and Audio page status labels.
+
         Args:
             message: Status message to display
             color: Text color for the message
         """
         if self.label_status:
-            self.after(0, lambda: self.label_status.configure(text=message, text_color=color))
+            self.after(0, lambda m=message, c=color: self.label_status.configure(text=m, text_color=c))
+        if self.label_audio_status:
+            self.after(0, lambda m=message, c=color: self.label_audio_status.configure(text=m, text_color=c))
     
     def on_mode_changed(self, *args):
         """Handle mode dropdown changes (Hours/Days/Videos)."""
@@ -2497,7 +3116,11 @@ class AudioBriefingApp(ctk.CTk):
             "auto_fetch_urls": False,  # Auto-fetch URLs in Direct Audio mode
             "text_scale": 100,  # Text scaling percentage (50-150%)
             "server_url": "",  # Cloud scheduler server URL
+            "server_api_key": "",  # API key for cloud scheduler auth
             "first_run_completed": False,  # First-run wizard shown
+            "drive_auto_upload": False,  # Auto-upload audio to Google Drive
+            "drive_root_folder_name": "Daily Audio Briefing",  # Drive root folder name
+            "drive_folder_id": "",  # Shared Google Drive folder ID (from URL)
         }
         # In frozen mode, user settings live in the data directory (Application Support)
         # In dev mode, they live next to the script
@@ -5315,6 +5938,8 @@ Transcript:
         self.btn_edit_sources.configure(state="disabled")
         self.btn_upload_file.configure(state="disabled")
         self.label_status.configure(text=f"Running {script_name}...", text_color="orange")
+        if self.label_audio_status:
+            self.label_audio_status.configure(text=f"Running {script_name}...", text_color="orange")
         
         # Save summary before running (except for get_youtube_news)
         if script_name != "get_youtube_news.py" and not self.save_summary():
@@ -5326,6 +5951,9 @@ Transcript:
             if success and script_name == "get_youtube_news.py":
                 self.load_current_summary()
             self.enable_buttons()
+            # Auto-upload to Drive if enabled and this was audio generation
+            if success and script_name in ("make_audio_fast.py", "make_audio_quality.py"):
+                self._upload_to_drive_after_generation(output_name)
         
         self.audio_generator.run_script(
             script_name, 
@@ -5347,12 +5975,14 @@ Transcript:
         self.btn_edit_sources.configure(state="normal")
         self.btn_upload_file.configure(state="normal")
         self.label_status.configure(text="Ready", text_color="green")
+        if self.label_audio_status:
+            self.label_audio_status.configure(text="Ready", text_color="green")
 
     def start_fast_generation(self):
         """Generate fast audio with inline cleaning."""
         text = self.textbox.get("0.0", "end-1c").strip()
         if not text:
-            self.label_status.configure(text="No text to convert", text_color="red")
+            self._update_status("No text to convert", "red")
             return
 
         api_key = self.gemini_key_entry.get().strip()
@@ -5377,7 +6007,7 @@ Transcript:
         """Generate quality audio with inline cleaning."""
         text = self.textbox.get("0.0", "end-1c").strip()
         if not text:
-            self.label_status.configure(text="No text to convert", text_color="red")
+            self._update_status("No text to convert", "red")
             return
 
         api_key = self.gemini_key_entry.get().strip()
