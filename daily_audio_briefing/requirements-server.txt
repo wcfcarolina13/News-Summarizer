@@ -28,5 +28,8 @@ google-auth
 # Audio — Fast mode (lightweight, works within 512MB)
 gTTS
 
+# Security
+Flask-Limiter          # Rate limiting for API endpoints
+
 # Utilities
 python-dotenv

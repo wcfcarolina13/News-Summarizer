@@ -36,6 +36,14 @@ from flask import (
     send_file, Response, redirect, url_for, session
 )
 
+# Rate limiting (optional — graceful fallback if not installed)
+try:
+    from flask_limiter import Limiter
+    from flask_limiter.util import get_remote_address
+    LIMITER_AVAILABLE = True
+except ImportError:
+    LIMITER_AVAILABLE = False
+
 # Import existing modules
 from file_manager import FileManager
 from voice_manager import VoiceManager
@@ -76,6 +84,32 @@ app.secret_key = _secret_key
 
 # Max request size: 10MB
 app.config['MAX_CONTENT_LENGTH'] = 10 * 1024 * 1024
+
+# Rate limiter (memory-based, lightweight for 512MB Render)
+if LIMITER_AVAILABLE:
+    limiter = Limiter(
+        get_remote_address,
+        app=app,
+        default_limits=["30 per minute"],
+        storage_uri="memory://",
+    )
+else:
+    limiter = None
+
+def _rate_limit(limit_string):
+    """Decorator: apply rate limit if Flask-Limiter is available, else no-op."""
+    if limiter:
+        return limiter.limit(limit_string)
+    return lambda f: f
+
+# Debug mode flag for error sanitization
+_DEBUG_MODE = os.environ.get('DEBUG', 'false').lower() == 'true'
+
+def _safe_error(e: Exception) -> str:
+    """Return error message: full detail in debug, generic in production."""
+    if _DEBUG_MODE:
+        return str(e)
+    return "Internal server error"
 
 # Base directory
 BASE_DIR = Path(__file__).parent
@@ -418,7 +452,7 @@ def run_script_async(script_name, args, env_vars=None, task_id=None):
             tasks[task_id]['error'] = 'Task timed out after 1 hour'
         except Exception as e:
             tasks[task_id]['status'] = 'failed'
-            tasks[task_id]['error'] = str(e)
+            tasks[task_id]['error'] = _safe_error(e)
         finally:
             gc.collect()
 
@@ -463,6 +497,7 @@ def api_sources():
         return jsonify({'sources': sources})
 
 @app.route('/api/summarize', methods=['POST'])
+@_rate_limit("10 per minute")
 def api_summarize():
     """Start YouTube summarization task."""
     data = request.json
@@ -515,6 +550,7 @@ def api_task_status(task_id):
     return jsonify(tasks[task_id])
 
 @app.route('/api/extract', methods=['POST'])
+@_rate_limit("10 per minute")
 def api_extract():
     """Extract links from newsletter."""
     if not CSV_PROCESSOR_AVAILABLE:
@@ -581,7 +617,7 @@ def api_extract():
         return jsonify({'items': result_items})
 
     except Exception as e:
-        return jsonify({'error': str(e)}), 500
+        return jsonify({'error': _safe_error(e)}), 500
 
 @app.route('/api/dependencies')
 def api_dependencies():
@@ -595,6 +631,7 @@ def api_voices():
     return jsonify({'voices': voices})
 
 @app.route('/api/audio/generate', methods=['POST'])
+@_rate_limit("10 per minute")
 def api_audio_generate():
     """Generate audio from summary."""
     data = request.json
@@ -659,6 +696,7 @@ def api_audio_file():
     return jsonify({'error': 'File not found'}), 404
 
 @app.route('/api/settings/apikey', methods=['GET', 'POST'])
+@_rate_limit("5 per minute")
 def api_settings_apikey():
     """Get/save API key."""
     if request.method == 'POST':
@@ -920,7 +958,7 @@ def api_sheets_deduplicate():
         result = deduplicate_sheet(sid, sheet_name, dedup_column)
         return jsonify(result)
     except Exception as e:
-        return jsonify({'error': str(e)}), 500
+        return jsonify({'error': _safe_error(e)}), 500
 
 
 @app.route('/api/sheets/validate-tab', methods=['POST'])
@@ -950,7 +988,7 @@ def api_sheets_validate_tab():
             'available_tabs': tabs
         })
     except Exception as e:
-        return jsonify({'error': str(e)}), 500
+        return jsonify({'error': _safe_error(e)}), 500
 
 
 @app.route('/api/sheets/create-tab', methods=['POST'])
@@ -978,7 +1016,7 @@ def api_sheets_create_tab():
         else:
             return jsonify({'error': f'Failed to create tab: {tab_name}'}), 500
     except Exception as e:
-        return jsonify({'error': str(e)}), 500
+        return jsonify({'error': _safe_error(e)}), 500
 
 
 @app.route('/health')
