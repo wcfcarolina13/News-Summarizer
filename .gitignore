@@ -4,6 +4,9 @@
 .env
 daily_audio_briefing/.env
 daily_audio_briefing/google_credentials.json
+daily_audio_briefing/drive_client_secret.json
+daily_audio_briefing/drive_token.json
+daily_audio_briefing/gemini_api_key.txt
 
 # =============================================================================
 # USER DATA - personal configs with spreadsheet IDs, task history, etc.
