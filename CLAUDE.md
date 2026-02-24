@@ -208,6 +208,15 @@ gunicorn web_app:app --bind 0.0.0.0:$PORT --timeout 120 --workers 1 --preload
 **High Priority — New Features:**
 - Summary quality audit + cross-source deduplication: audit whether custom instructions are followed, add toggle for post-summary processing step to combine/deduplicate similar info across sources
 
+**Pipeline UX Improvements (next session):**
+- Drive folder pre-fill: If a Drive location is already configured in Settings, auto-populate it as a selectable option when building or editing a pipeline task (avoid re-entering the same folder ID)
+- Drive folder quick-link: Pipeline tasks in the scheduler task list should have a button/link that opens the assigned Google Drive folder directly in the browser
+- Kokoro voice samples on Audio page: Currently only 2 voice samples shown — add preview samples for all 12 high-quality Kokoro voices so users can audition before selecting
+- Pipeline backfill dialog: Backfill on pipeline tasks should open a second window to choose how far back to fill (e.g., "Last 7 days", "Last 30 days", "Since beginning", custom date picker). Must be good UX but comprehensive.
+- Backfill safety warnings: Show prominent warnings for potentially long-running backfills — e.g., backfilling since the beginning of time on many YouTube channels could time out or hit API limits. Estimate duration/cost before confirming.
+- Task execution feedback: Desktop notification + in-app status line when a scheduled task starts running ("ExecSum extraction running..."), then updates to completion status ("ExecSum extraction complete — 12 items exported"). Should only appear while actively running, not persist after completion.
+- **BUG — Cryptosum scheduler not running:** Cryptosum newsletter extraction task appears to have not executed for at least a day (no new entries in Sheets). Investigate: check task last_run/next_run timestamps, scheduler logs, whether the newsletter actually published new issues, and whether the task is still active on the server.
+
 **Future — Desktop/Web Sync:**
 - Login/registration system for cloud features
 - API key gating — require auth to use cloud scheduler API
