@@ -58,6 +58,14 @@ class ScheduledTask:
     enrich_with_grid: bool = False  # Run Grid entity matching after extraction
     research_articles: bool = False  # Run article research for ecosystem mentions
 
+    # Pipeline settings (only used when task_type == "briefing_pipeline")
+    task_type: str = "extraction"  # "extraction" or "briefing_pipeline"
+    audio_quality: str = "quality"  # "fast" (gTTS) or "quality" (Kokoro)
+    audio_voice: str = "af_heart"  # Kokoro voice name
+    upload_to_drive: bool = False
+    drive_folder_id: str = ""
+    source_filter: Optional[List[str]] = None  # None = all enabled sources
+
     # Runtime state (not persisted)
     last_run: Optional[str] = None  # ISO format datetime
     next_run: Optional[str] = None  # ISO format datetime
@@ -83,6 +91,12 @@ class ScheduledTask:
             "custom_columns": self.custom_columns,
             "enrich_with_grid": self.enrich_with_grid,
             "research_articles": self.research_articles,
+            "task_type": self.task_type,
+            "audio_quality": self.audio_quality,
+            "audio_voice": self.audio_voice,
+            "upload_to_drive": self.upload_to_drive,
+            "drive_folder_id": self.drive_folder_id,
+            "source_filter": self.source_filter,
             "last_run": self.last_run,
             "next_run": self.next_run,
             "last_result": self.last_result,
@@ -109,6 +123,12 @@ class ScheduledTask:
             custom_columns=data.get("custom_columns"),
             enrich_with_grid=data.get("enrich_with_grid", False),
             research_articles=data.get("research_articles", False),
+            task_type=data.get("task_type", "extraction"),
+            audio_quality=data.get("audio_quality", "quality"),
+            audio_voice=data.get("audio_voice", "af_heart"),
+            upload_to_drive=data.get("upload_to_drive", False),
+            drive_folder_id=data.get("drive_folder_id", ""),
+            source_filter=data.get("source_filter"),
             last_run=data.get("last_run"),
             next_run=data.get("next_run"),
             last_result=data.get("last_result", ""),
@@ -511,6 +531,19 @@ class Scheduler:
         task.last_run = datetime.now().isoformat()
 
         try:
+            # Route to pipeline executor for briefing tasks
+            if task.task_type == "briefing_pipeline":
+                self._execute_pipeline_task(task)
+
+                # Calculate next run and save
+                task.next_run = self._calculate_next_run(task)
+                self.save_tasks()
+
+                if self._on_task_complete:
+                    is_success = not task.last_result.startswith("Error")
+                    self._on_task_complete(task, is_success, task.last_result)
+                return
+
             # Import here to avoid circular imports
             from data_csv_processor import DataCSVProcessor, ExtractionConfig, load_custom_instructions
 
@@ -646,6 +679,165 @@ class Scheduler:
             self._running_tasks.discard(task.id)
             # Force garbage collection after task to reclaim memory (512MB limit)
             gc.collect()
+
+    def _execute_pipeline_task(self, task: ScheduledTask):
+        """Execute a briefing pipeline task: fetch → summarize → audio → Drive.
+
+        Steps:
+            1. Load and filter sources from sources.json
+            2. Fetch + AI-summarize via SourceFetcher
+            3. Format text for audio narration
+            4. Save summary text to Week_N_YYYY folder
+            5. Generate audio via TTS subprocess (skip in server mode)
+            6. Upload audio to Google Drive (if configured)
+        """
+        from source_fetcher import load_sources, SourceFetcher, format_items_for_audio
+        from file_manager import FileManager
+
+        fm = FileManager()
+        api_key = fm.load_api_key() or os.environ.get("GEMINI_API_KEY", "")
+        if not api_key:
+            task.last_result = "Error: No Gemini API key configured"
+            self._log(task.id, f"[Pipeline] {task.last_result}")
+            return
+
+        # --- Step 1: Load and filter sources ---
+        script_dir = os.path.dirname(os.path.abspath(__file__))
+        data_dir = fm.base_dir
+        sources_json = os.path.join(data_dir, "sources.json")
+        channels_txt = os.path.join(data_dir, "channels.txt")
+
+        # Fall back to bundled files if user files don't exist
+        if not os.path.exists(sources_json):
+            sources_json = os.path.join(script_dir, "sources.json")
+            if getattr(sys, "frozen", False):
+                sources_json = os.path.join(sys._MEIPASS, "sources.json")
+        if not os.path.exists(channels_txt):
+            channels_txt = os.path.join(script_dir, "channels.txt")
+            if getattr(sys, "frozen", False):
+                channels_txt = os.path.join(sys._MEIPASS, "channels.txt")
+
+        sources = load_sources(sources_json, channels_txt)
+
+        if task.source_filter:
+            sources = [s for s in sources if s.name in task.source_filter]
+
+        enabled = [s for s in sources if s.enabled]
+        if not enabled:
+            task.last_result = "Error: No enabled sources found"
+            self._log(task.id, f"[Pipeline] {task.last_result}")
+            return
+
+        self._log(task.id, f"[Pipeline] Fetching from {len(enabled)} sources...")
+
+        # --- Step 2: Fetch + summarize ---
+        fetcher = SourceFetcher(api_key=api_key, model_name="gemini-2.5-flash")
+        cutoff_hours = task.custom_hours if task.custom_hours else 24
+        cutoff = datetime.now() - timedelta(hours=cutoff_hours)
+        items = fetcher.fetch_all_sources(enabled, cutoff)
+
+        if not items:
+            task.last_result = "No items found from sources"
+            task.items_extracted = 0
+            self._log(task.id, f"[Pipeline] {task.last_result}")
+            return
+
+        self._log(task.id, f"[Pipeline] Fetched {len(items)} items, formatting for audio...")
+
+        # --- Step 3: Format for audio ---
+        text = format_items_for_audio(items)
+        if not text.strip():
+            task.last_result = f"Fetched {len(items)} items but text was empty"
+            task.items_extracted = len(items)
+            self._log(task.id, f"[Pipeline] {task.last_result}")
+            return
+
+        # --- Step 4: Save summary text ---
+        import datetime as dt_module
+        today = dt_module.date.today()
+        year, week, _ = today.isocalendar()
+        week_folder = os.path.join(data_dir, f"Week_{week}_{year}")
+        os.makedirs(week_folder, exist_ok=True)
+
+        summary_path = os.path.join(week_folder, "summary.txt")
+        with open(summary_path, "w", encoding="utf-8") as f:
+            f.write(text)
+        self._log(task.id, f"[Pipeline] Saved summary ({len(text)} chars) to {week_folder}")
+
+        # --- Step 5: Generate audio (skip in server mode) ---
+        audio_file = None
+        if not self.server_mode:
+            if task.audio_quality == "fast":
+                script_name = "make_audio_fast.py"
+                audio_filename = f"briefing_{today.isoformat()}.mp3"
+            else:
+                script_name = "make_audio_quality.py"
+                audio_filename = f"briefing_{today.isoformat()}.mp3"
+
+            script_path = os.path.join(script_dir, script_name)
+            output_path = os.path.join(week_folder, audio_filename)
+
+            cmd = [sys.executable, script_path, "--input", summary_path, "--output", output_path]
+            if task.audio_quality == "quality":
+                cmd += ["--voice", task.audio_voice, "--format", "mp3"]
+
+            self._log(task.id, f"[Pipeline] Generating audio ({task.audio_quality})...")
+            try:
+                import subprocess
+                result = subprocess.run(
+                    cmd, capture_output=True, text=True,
+                    cwd=script_dir, timeout=600
+                )
+                if result.returncode == 0 and os.path.exists(output_path):
+                    audio_file = output_path
+                    size_mb = os.path.getsize(audio_file) / (1024 * 1024)
+                    self._log(task.id, f"[Pipeline] Audio generated: {audio_filename} ({size_mb:.1f}MB)")
+                else:
+                    error_msg = (result.stderr or result.stdout or "Unknown error")[:200]
+                    self._log(task.id, f"[Pipeline] Audio generation failed: {error_msg}")
+            except subprocess.TimeoutExpired:
+                self._log(task.id, "[Pipeline] Audio generation timed out (600s)")
+            except Exception as audio_err:
+                self._log(task.id, f"[Pipeline] Audio error: {audio_err}")
+        else:
+            self._log(task.id, "[Pipeline] Server mode — skipping audio generation")
+
+        # --- Step 6: Upload to Google Drive ---
+        drive_uploaded = False
+        if task.upload_to_drive and audio_file and task.drive_folder_id:
+            try:
+                from drive_manager import upload_file, is_signed_in, extract_folder_id_from_url
+                if is_signed_in():
+                    folder_id = extract_folder_id_from_url(task.drive_folder_id)
+                    result = upload_file(audio_file, folder_id)
+                    if result.get("status") == "uploaded":
+                        drive_uploaded = True
+                        self._log(task.id, f"[Pipeline] Uploaded to Drive: {result.get('name')}")
+                    elif result.get("status") == "skipped":
+                        drive_uploaded = True
+                        self._log(task.id, f"[Pipeline] Already on Drive (skipped)")
+                    else:
+                        self._log(task.id, f"[Pipeline] Drive upload issue: {result}")
+                else:
+                    self._log(task.id, "[Pipeline] Drive not signed in — skipping upload")
+            except Exception as drive_err:
+                self._log(task.id, f"[Pipeline] Drive upload error: {drive_err}")
+        elif task.upload_to_drive and not audio_file:
+            self._log(task.id, "[Pipeline] No audio file to upload")
+
+        # --- Step 7: Update task result ---
+        task.items_extracted = len(items)
+        parts = [f"{len(items)} items"]
+        if audio_file:
+            parts.append("audio generated")
+        elif self.server_mode:
+            parts.append("audio skipped (server)")
+        else:
+            parts.append("audio failed")
+        if drive_uploaded:
+            parts.append("uploaded to Drive")
+        task.last_result = f"OK: {', '.join(parts)}"
+        self._log(task.id, f"[Pipeline] Complete: {task.last_result}")
 
     def backfill_task(self, task_id: str, stop_flag: Optional[Callable] = None) -> bool:
         """

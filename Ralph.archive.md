@@ -458,6 +458,78 @@ Massive CryptoSum sheet cleanup session + RWA title truncation fix. Added severa
 - **Re-title unstoppable**: Single `process_url()` call paginated internally with no stop checks. Replaced with manual page loop.
 - **Global task mutex**: `_task_running` boolean prevents running re-enrich + re-title simultaneously even on different tasks/sheets. Noted for fix.
 
+---
+
+# Session: Feb 23, 2026 — API Cost Protection + Briefing Pipeline
+
+## API Cost Protection (Critical priority)
+
+### Problem
+Zero API usage tracking or cost protection. Scheduler could make 100+ Gemini API calls/day with no visibility or limits.
+
+### Solution — `api_usage_tracker.py` (new, ~310 lines)
+Thread-safe singleton tracker wrapping every `model.generate_content()` call:
+- `tracked_generate(model, prompt, caller)` — pre-flight limit check → API call → record
+- `APILimitExceeded` exception raised when daily/monthly caps hit
+- Thread-local task context (`set_current_task`/`clear_current_task`) for per-scheduler-task attribution
+- JSON persistence with lazy day/month rollover, atomic `os.replace()` writes
+- Cost estimation: `chars / 4 ≈ tokens` × model pricing table
+
+### Instrumented 7 call sites across 4 files
+- `gui_app.py`: 3 sites (_clean_article_content, _summarize_youtube_transcript, _process_audio_content)
+- `source_fetcher.py`: 2 sites (_summarize_youtube, _summarize_article)
+- `get_youtube_news.py`: 1 site (summarize_text)
+- `grid_api.py`: 1 site (analyze_profile_with_ai)
+
+### Scheduler task context (scheduler.py)
+Added `set_current_task`/`clear_current_task` in 4 methods: `_execute_task`, `_run_backfill`, `_run_reenrich`, `_run_retitle`
+
+### Settings UI (gui_app.py)
+New "API Usage & Limits" card on Settings page with daily/monthly progress bars, cost estimates, enable/disable switch, limit config, per-task breakdown
+
+### Web dashboard (web_app.py + templates/index.html)
+4 new API endpoints: GET /api/usage/stats, GET /api/usage/history, GET /api/usage/tasks, GET/PUT /api/usage/limits. Usage stats panel in web Settings.
+
+---
+
+## Briefing Pipeline (High Priority — New Feature)
+
+### Problem
+App's core value proposition (audio briefing) required manual 3-step workflow: Summarize → Audio → Drive. Could not be automated via scheduler.
+
+### Solution — New `briefing_pipeline` task type
+
+**ScheduledTask dataclass** — 6 new fields: `task_type`, `audio_quality`, `audio_voice`, `upload_to_drive`, `drive_folder_id`, `source_filter`
+
+**`_execute_pipeline_task()` in scheduler.py** (~130 lines) — 6-step chain:
+1. Load + filter sources from `sources.json`
+2. `SourceFetcher.fetch_all_sources()` → AI-summarize
+3. `format_items_for_audio()` → TTS-ready text
+4. Save summary to `Week_N_YYYY` folder
+5. Generate audio via `make_audio_quality.py` / `make_audio_fast.py` subprocess (skipped in server mode)
+6. Upload audio to Google Drive via `drive_manager.upload_file()` (if configured)
+
+**Desktop task editor** — CTkSegmentedButton type selector ("Data Extraction" / "Audio Briefing") with conditional field visibility. Pipeline fields: audio quality radio, Kokoro voice selector, source filter checkboxes, Drive upload + folder ID.
+
+**Web task editor** — Same type toggle, pipeline fields, [Pipeline] badge on task cards.
+
+### Key Design Decisions
+- Source selection: defaults to ALL enabled sources, optional per-task filter
+- Audio: direct subprocess.run() to TTS scripts (no GUI dependency)
+- Server mode: gracefully skips audio + Drive, saves summary text only
+- API key: `FileManager.load_api_key()` from `.env`, fallback to env var
+
+## Key Files Modified
+- `api_usage_tracker.py` — NEW: Thread-safe API usage tracker singleton
+- `scheduler.py` — Extended ScheduledTask (6 fields), `_execute_pipeline_task()`, task type routing, task context
+- `gui_app.py` — 3 API call sites wrapped, Settings UI card, extended task editor with type toggle + pipeline fields
+- `source_fetcher.py` — 2 API call sites wrapped
+- `get_youtube_news.py` — 1 API call site wrapped
+- `grid_api.py` — 1 API call site wrapped
+- `web_app.py` — 4 usage API endpoints, pipeline fields in task create endpoint
+- `templates/index.html` — Usage stats panel, task type toggle, pipeline fields, [Pipeline] badge
+- `CLAUDE.md` — Updated pending work, key files table
+
 ## Do NOT
 - Break the working development mode (Launch Audio Briefing.command)
 - Change the output folder structure (Week_N_YYYY format)

@@ -8887,6 +8887,8 @@ Open Settings and click '? Start Tutorial'!""",
         # Build name with capability badges
         task_display_name = task.name
         badges = []
+        if getattr(task, 'task_type', 'extraction') == 'briefing_pipeline':
+            badges.append("Pipeline")
         if getattr(task, 'enrich_with_grid', False):
             badges.append("Grid")
         if getattr(task, 'research_articles', False):
@@ -9316,24 +9318,163 @@ Open Settings and click '? Start Tutorial'!""",
         name_entry.insert(0, task.name)
         row += 1
 
-        # Source URL
-        ctk.CTkLabel(main_frame, text="Source URL:", font=ctk.CTkFont(weight="bold")).grid(row=row, column=0, sticky="w", pady=(0, 5))
+        # Task Type Selector
+        ctk.CTkLabel(main_frame, text="Task Type:", font=ctk.CTkFont(weight="bold")).grid(row=row, column=0, sticky="w", pady=(0, 5))
         row += 1
-        ctk.CTkLabel(main_frame, text="Telegram channel, newsletter, RSS feed, or article archive URL", font=("Arial", 10), text_color="gray").grid(row=row, column=0, columnspan=2, sticky="w")
-        row += 1
-        source_entry = ctk.CTkEntry(main_frame, width=400, placeholder_text="https://t.me/s/YourChannel or https://newsletter.example.com/archive")
-        source_entry.grid(row=row, column=0, columnspan=2, sticky="ew", pady=(0, 15))
-        source_entry.insert(0, task.source_url)
+        type_var = ctk.StringVar(value="Audio Briefing" if task.task_type == "briefing_pipeline" else "Data Extraction")
+        type_selector = ctk.CTkSegmentedButton(
+            main_frame, values=["Data Extraction", "Audio Briefing"],
+            variable=type_var, width=350
+        )
+        type_selector.grid(row=row, column=0, columnspan=2, sticky="w", pady=(0, 15))
         row += 1
 
-        # Extraction Config
-        ctk.CTkLabel(main_frame, text="Extraction Config:", font=ctk.CTkFont(weight="bold")).grid(row=row, column=0, sticky="w", pady=(0, 5))
+        # --- Extraction-specific fields frame ---
+        extraction_frame = ctk.CTkFrame(main_frame, fg_color="transparent")
+        extraction_frame.grid(row=row, column=0, columnspan=2, sticky="ew")
+        extraction_frame.grid_columnconfigure(1, weight=1)
+        extraction_row_idx = row
         row += 1
+
+        # --- Pipeline-specific fields frame ---
+        pipeline_frame = ctk.CTkFrame(main_frame, fg_color="transparent")
+        pipeline_frame.grid(row=row, column=0, columnspan=2, sticky="ew")
+        pipeline_frame.grid_columnconfigure(1, weight=1)
+        pipeline_row_idx = row
+        row += 1
+
+        # ========== PIPELINE FIELDS ==========
+        p_row = 0
+
+        # Audio Quality
+        ctk.CTkLabel(pipeline_frame, text="Audio Quality:", font=ctk.CTkFont(weight="bold")).grid(row=p_row, column=0, sticky="w", pady=(0, 5))
+        p_row += 1
+
+        audio_quality_var = ctk.StringVar(value=task.audio_quality)
+        quality_frame = ctk.CTkFrame(pipeline_frame, fg_color="transparent")
+        quality_frame.grid(row=p_row, column=0, columnspan=2, sticky="w", pady=(0, 10))
+        ctk.CTkRadioButton(quality_frame, text="Fast (gTTS)", variable=audio_quality_var, value="fast").pack(side="left", padx=(0, 20))
+        ctk.CTkRadioButton(quality_frame, text="Quality (Kokoro)", variable=audio_quality_var, value="quality").pack(side="left")
+        p_row += 1
+
+        # Voice Selector (only for quality)
+        voice_label = ctk.CTkLabel(pipeline_frame, text="Voice:", font=ctk.CTkFont(weight="bold"))
+        voice_label.grid(row=p_row, column=0, sticky="w", pady=(0, 5))
+        p_row += 1
+
+        KOKORO_VOICES = [
+            "af_heart", "af_sarah", "af_nova", "af_sky", "af_bella",
+            "am_adam", "am_michael", "am_echo",
+            "bf_emma", "bf_isabella",
+            "bm_george", "bm_lewis",
+        ]
+        voice_var = ctk.StringVar(value=task.audio_voice if task.audio_voice in KOKORO_VOICES else "af_heart")
+        voice_combo = ctk.CTkComboBox(pipeline_frame, variable=voice_var, values=KOKORO_VOICES, width=180, state="readonly")
+        voice_combo.grid(row=p_row, column=0, columnspan=2, sticky="w", pady=(0, 15))
+        p_row += 1
+
+        def _on_audio_quality_change(*args):
+            if audio_quality_var.get() == "quality":
+                voice_label.grid()
+                voice_combo.grid()
+            else:
+                voice_label.grid_remove()
+                voice_combo.grid_remove()
+        audio_quality_var.trace_add("write", _on_audio_quality_change)
+        _on_audio_quality_change()  # Apply initial state
+
+        # Source Filter
+        ctk.CTkLabel(pipeline_frame, text="Sources:", font=ctk.CTkFont(weight="bold")).grid(row=p_row, column=0, sticky="w", pady=(0, 5))
+        p_row += 1
+
+        use_all_sources_var = ctk.BooleanVar(value=task.source_filter is None)
+        ctk.CTkCheckBox(pipeline_frame, text="Use all enabled sources", variable=use_all_sources_var).grid(row=p_row, column=0, columnspan=2, sticky="w", pady=(0, 5))
+        p_row += 1
+
+        # Source checkboxes (loaded from sources.json)
+        source_filter_frame = ctk.CTkFrame(pipeline_frame, fg_color="transparent")
+        source_filter_frame.grid(row=p_row, column=0, columnspan=2, sticky="ew", pady=(0, 10))
+        p_row += 1
+
+        source_check_vars = {}
+        try:
+            from source_fetcher import load_sources as _load_sources
+            data_dir = os.path.dirname(os.path.abspath(__file__))
+            if getattr(sys, "frozen", False):
+                if sys.platform == "darwin":
+                    data_dir = os.path.expanduser("~/Library/Application Support/Daily Audio Briefing")
+                elif sys.platform == "win32":
+                    data_dir = os.path.join(os.environ.get("APPDATA", ""), "Daily Audio Briefing")
+                else:
+                    data_dir = os.path.expanduser("~/.daily-audio-briefing")
+
+            _sj = os.path.join(data_dir, "sources.json")
+            _ct = os.path.join(data_dir, "channels.txt")
+            if not os.path.exists(_sj):
+                _sj = os.path.join(os.path.dirname(os.path.abspath(__file__)), "sources.json")
+                if getattr(sys, "frozen", False):
+                    _sj = os.path.join(sys._MEIPASS, "sources.json")
+            if not os.path.exists(_ct):
+                _ct = os.path.join(os.path.dirname(os.path.abspath(__file__)), "channels.txt")
+
+            all_sources = _load_sources(_sj, _ct)
+            filter_set = set(task.source_filter) if task.source_filter else set()
+
+            for s_idx, src in enumerate(all_sources):
+                var = ctk.BooleanVar(value=(task.source_filter is None or src.name in filter_set))
+                source_check_vars[src.name] = var
+                ctk.CTkCheckBox(source_filter_frame, text=src.name, variable=var, font=("Arial", 11)).grid(
+                    row=s_idx // 2, column=s_idx % 2, sticky="w", padx=5, pady=2
+                )
+        except Exception:
+            ctk.CTkLabel(source_filter_frame, text="Could not load sources", text_color="gray").grid(row=0, column=0)
+
+        def _on_all_sources_change(*args):
+            if use_all_sources_var.get():
+                source_filter_frame.grid_remove()
+            else:
+                source_filter_frame.grid()
+        use_all_sources_var.trace_add("write", _on_all_sources_change)
+        _on_all_sources_change()  # Apply initial state
+
+        # Drive Upload
+        ctk.CTkLabel(pipeline_frame, text="Google Drive Upload:", font=ctk.CTkFont(weight="bold")).grid(row=p_row, column=0, sticky="w", pady=(5, 5))
+        p_row += 1
+
+        drive_upload_var = ctk.BooleanVar(value=task.upload_to_drive)
+        ctk.CTkCheckBox(pipeline_frame, text="Upload audio to Google Drive", variable=drive_upload_var).grid(row=p_row, column=0, columnspan=2, sticky="w", pady=(0, 5))
+        p_row += 1
+
+        ctk.CTkLabel(pipeline_frame, text="Drive Folder ID or URL:").grid(row=p_row, column=0, sticky="w", pady=(0, 5))
+        p_row += 1
+        drive_folder_entry = ctk.CTkEntry(pipeline_frame, width=400, placeholder_text="https://drive.google.com/drive/folders/... or folder ID")
+        drive_folder_entry.grid(row=p_row, column=0, columnspan=2, sticky="ew", pady=(0, 15))
+        drive_folder_entry.insert(0, task.drive_folder_id)
+        p_row += 1
+
+        # ========== EXTRACTION FIELDS (moved into extraction_frame) ==========
+        e_row = 0
+
+        # Source URL
+        ctk.CTkLabel(extraction_frame, text="Source URL:", font=ctk.CTkFont(weight="bold")).grid(row=e_row, column=0, sticky="w", pady=(0, 5))
+        e_row += 1
+        ctk.CTkLabel(extraction_frame, text="Telegram channel, newsletter, RSS feed, or article archive URL", font=("Arial", 10), text_color="gray").grid(row=e_row, column=0, columnspan=2, sticky="w")
+        e_row += 1
+        source_entry = ctk.CTkEntry(extraction_frame, width=400, placeholder_text="https://t.me/s/YourChannel or https://newsletter.example.com/archive")
+        source_entry.grid(row=e_row, column=0, columnspan=2, sticky="ew", pady=(0, 15))
+        source_entry.insert(0, task.source_url)
+        e_row += 1
+
+        # Extraction Config
+        ctk.CTkLabel(extraction_frame, text="Extraction Config:", font=ctk.CTkFont(weight="bold")).grid(row=e_row, column=0, sticky="w", pady=(0, 5))
+        e_row += 1
         config_var = ctk.StringVar(value=task.config_name)
         config_values = self._get_extraction_configs()
-        config_combo = ctk.CTkComboBox(main_frame, variable=config_var, values=config_values, width=200, state="readonly")
-        config_combo.grid(row=row, column=0, columnspan=2, sticky="w", pady=(0, 15))
-        row += 1
+        config_combo = ctk.CTkComboBox(extraction_frame, variable=config_var, values=config_values, width=200, state="readonly")
+        config_combo.grid(row=e_row, column=0, columnspan=2, sticky="w", pady=(0, 15))
+        e_row += 1
+
+        # ========== SHARED FIELDS (Schedule) — back in main_frame ==========
 
         # Schedule Section
         ctk.CTkLabel(main_frame, text="Schedule:", font=ctk.CTkFont(weight="bold")).grid(row=row, column=0, sticky="w", pady=(0, 5))
@@ -9367,41 +9508,41 @@ Open Settings and click '? Start Tutorial'!""",
 
         ctk.CTkLabel(time_frame, text="(HH:MM, 24-hour format)", font=("Arial", 10), text_color="gray").pack(side="left")
 
-        # Google Sheets Export Section
-        ctk.CTkLabel(main_frame, text="Google Sheets Export:", font=ctk.CTkFont(weight="bold")).grid(row=row, column=0, sticky="w", pady=(10, 5))
-        row += 1
+        # Google Sheets Export Section (extraction only)
+        ctk.CTkLabel(extraction_frame, text="Google Sheets Export:", font=ctk.CTkFont(weight="bold")).grid(row=e_row, column=0, sticky="w", pady=(10, 5))
+        e_row += 1
 
         sheets_var = ctk.BooleanVar(value=task.export_to_sheets)
-        sheets_check = ctk.CTkCheckBox(main_frame, text="Export to Google Sheets", variable=sheets_var)
-        sheets_check.grid(row=row, column=0, columnspan=2, sticky="w", pady=(0, 10))
-        row += 1
+        sheets_check = ctk.CTkCheckBox(extraction_frame, text="Export to Google Sheets", variable=sheets_var)
+        sheets_check.grid(row=e_row, column=0, columnspan=2, sticky="w", pady=(0, 10))
+        e_row += 1
 
-        ctk.CTkLabel(main_frame, text="Spreadsheet ID or URL:").grid(row=row, column=0, sticky="w", pady=(0, 5))
-        row += 1
-        sheet_id_entry = ctk.CTkEntry(main_frame, width=400, placeholder_text="https://docs.google.com/spreadsheets/d/... or just the ID")
-        sheet_id_entry.grid(row=row, column=0, columnspan=2, sticky="ew", pady=(0, 10))
+        ctk.CTkLabel(extraction_frame, text="Spreadsheet ID or URL:").grid(row=e_row, column=0, sticky="w", pady=(0, 5))
+        e_row += 1
+        sheet_id_entry = ctk.CTkEntry(extraction_frame, width=400, placeholder_text="https://docs.google.com/spreadsheets/d/... or just the ID")
+        sheet_id_entry.grid(row=e_row, column=0, columnspan=2, sticky="ew", pady=(0, 10))
         sheet_id_entry.insert(0, task.spreadsheet_id)
-        row += 1
+        e_row += 1
 
-        ctk.CTkLabel(main_frame, text="Sheet Tab Name:").grid(row=row, column=0, sticky="w", pady=(0, 5))
-        row += 1
-        sheet_name_entry = ctk.CTkEntry(main_frame, width=200, placeholder_text="Sheet1")
-        sheet_name_entry.grid(row=row, column=0, sticky="w", pady=(0, 10))
+        ctk.CTkLabel(extraction_frame, text="Sheet Tab Name:").grid(row=e_row, column=0, sticky="w", pady=(0, 5))
+        e_row += 1
+        sheet_name_entry = ctk.CTkEntry(extraction_frame, width=200, placeholder_text="Sheet1")
+        sheet_name_entry.grid(row=e_row, column=0, sticky="w", pady=(0, 10))
         sheet_name_entry.insert(0, task.sheet_name)
-        row += 1
+        e_row += 1
 
         headers_var = ctk.BooleanVar(value=task.include_headers)
-        headers_check = ctk.CTkCheckBox(main_frame, text="Include headers (only needed once for new sheets)", variable=headers_var)
-        headers_check.grid(row=row, column=0, columnspan=2, sticky="w", pady=(0, 10))
-        row += 1
+        headers_check = ctk.CTkCheckBox(extraction_frame, text="Include headers (only needed once for new sheets)", variable=headers_var)
+        headers_check.grid(row=e_row, column=0, columnspan=2, sticky="w", pady=(0, 10))
+        e_row += 1
 
         # Column Headers Editor
-        ctk.CTkLabel(main_frame, text="Column Headers:", font=ctk.CTkFont(weight="bold")).grid(row=row, column=0, sticky="w", pady=(5, 3))
-        row += 1
+        ctk.CTkLabel(extraction_frame, text="Column Headers:", font=ctk.CTkFont(weight="bold")).grid(row=e_row, column=0, sticky="w", pady=(5, 3))
+        e_row += 1
 
-        col_desc = ctk.CTkLabel(main_frame, text="Comma-separated list. Leave blank to use config default.", font=("Arial", 10), text_color="gray")
-        col_desc.grid(row=row, column=0, columnspan=2, sticky="w")
-        row += 1
+        col_desc = ctk.CTkLabel(extraction_frame, text="Comma-separated list. Leave blank to use config default.", font=("Arial", 10), text_color="gray")
+        col_desc.grid(row=e_row, column=0, columnspan=2, sticky="w")
+        e_row += 1
 
         # Populate with: task custom_columns > config csv_columns > empty
         initial_columns = ""
@@ -9423,15 +9564,15 @@ Open Settings and click '? Start Tutorial'!""",
             except Exception:
                 pass
 
-        columns_entry = ctk.CTkEntry(main_frame, width=400, placeholder_text="url, description, source_name, date_published, comments")
-        columns_entry.grid(row=row, column=0, columnspan=2, sticky="ew", pady=(0, 5))
+        columns_entry = ctk.CTkEntry(extraction_frame, width=400, placeholder_text="url, description, source_name, date_published, comments")
+        columns_entry.grid(row=e_row, column=0, columnspan=2, sticky="ew", pady=(0, 5))
         if initial_columns:
             columns_entry.insert(0, initial_columns)
-        row += 1
+        e_row += 1
 
         # Auto-detect + format info row
-        detect_frame = ctk.CTkFrame(main_frame, fg_color="transparent")
-        detect_frame.grid(row=row, column=0, columnspan=2, sticky="ew", pady=(0, 5))
+        detect_frame = ctk.CTkFrame(extraction_frame, fg_color="transparent")
+        detect_frame.grid(row=e_row, column=0, columnspan=2, sticky="ew", pady=(0, 5))
         detect_frame.grid_columnconfigure(1, weight=1)
 
         detect_status = ctk.CTkLabel(detect_frame, text="", font=("Arial", 10), text_color="gray")
@@ -9499,24 +9640,24 @@ Open Settings and click '? Start Tutorial'!""",
                                    command=_auto_detect_columns)
         detect_btn.grid(row=0, column=0, sticky="w")
 
-        row += 1
+        e_row += 1
 
         # Capabilities Section
-        ctk.CTkLabel(main_frame, text="Capabilities:", font=ctk.CTkFont(weight="bold")).grid(row=row, column=0, sticky="w", pady=(10, 5))
-        row += 1
+        ctk.CTkLabel(extraction_frame, text="Capabilities:", font=ctk.CTkFont(weight="bold")).grid(row=e_row, column=0, sticky="w", pady=(10, 5))
+        e_row += 1
 
         grid_enrich_var = ctk.BooleanVar(value=task.enrich_with_grid)
-        grid_enrich_check = ctk.CTkCheckBox(main_frame, text="Enrich with Grid (match entities against The Grid database)", variable=grid_enrich_var)
-        grid_enrich_check.grid(row=row, column=0, columnspan=2, sticky="w", pady=(0, 5))
-        row += 1
+        grid_enrich_check = ctk.CTkCheckBox(extraction_frame, text="Enrich with Grid (match entities against The Grid database)", variable=grid_enrich_var)
+        grid_enrich_check.grid(row=e_row, column=0, columnspan=2, sticky="w", pady=(0, 5))
+        e_row += 1
 
         research_var = ctk.BooleanVar(value=task.research_articles)
-        research_check = ctk.CTkCheckBox(main_frame, text="Research Articles (find ecosystem mentions in articles)", variable=research_var)
-        research_check.grid(row=row, column=0, columnspan=2, sticky="w", pady=(0, 5))
-        row += 1
+        research_check = ctk.CTkCheckBox(extraction_frame, text="Research Articles (find ecosystem mentions in articles)", variable=research_var)
+        research_check.grid(row=e_row, column=0, columnspan=2, sticky="w", pady=(0, 5))
+        e_row += 1
 
-        ctk.CTkLabel(main_frame, text="These use free APIs — no Gemini costs.", font=("Arial", 10), text_color="gray").grid(row=row, column=0, columnspan=2, sticky="w", pady=(0, 15))
-        row += 1
+        ctk.CTkLabel(extraction_frame, text="These use free APIs — no Gemini costs.", font=("Arial", 10), text_color="gray").grid(row=e_row, column=0, columnspan=2, sticky="w", pady=(0, 15))
+        e_row += 1
 
         # Enable/disable capabilities based on config selection
         def on_config_change(choice):
@@ -9534,17 +9675,34 @@ Open Settings and click '? Start Tutorial'!""",
         # Apply initial state
         on_config_change(config_var.get())
 
+        # --- Type toggle: show/hide extraction vs pipeline fields ---
+        def _on_type_change(*args):
+            selected = type_var.get()
+            if selected == "Audio Briefing":
+                extraction_frame.grid_remove()
+                pipeline_frame.grid()
+            else:
+                pipeline_frame.grid_remove()
+                extraction_frame.grid()
+        type_selector.configure(command=lambda val: _on_type_change())
+        _on_type_change()  # Apply initial state
+
         # Buttons
         btn_frame = ctk.CTkFrame(dialog, fg_color="transparent")
         btn_frame.pack(fill="x", padx=15, pady=15)
 
         def save_task():
-            # Gather values
+            # Gather common values
             new_name = name_entry.get().strip() or "Untitled Task"
-            new_source = source_entry.get().strip()
-            new_config = config_var.get()
             new_interval = interval_var.get()
             new_time = time_entry.get().strip() or "09:00"
+
+            # Determine task type
+            new_task_type = "briefing_pipeline" if type_var.get() == "Audio Briefing" else "extraction"
+
+            # Extraction-specific values
+            new_source = source_entry.get().strip()
+            new_config = config_var.get()
             new_sheets = sheets_var.get()
             new_sheet_id = sheet_id_entry.get().strip()
             new_sheet_name = sheet_name_entry.get().strip() or "Sheet1"
@@ -9567,6 +9725,15 @@ Open Settings and click '? Start Tutorial'!""",
             if cols_text:
                 new_custom_columns = [c.strip() for c in cols_text.split(",") if c.strip()]
 
+            # Pipeline-specific values
+            new_audio_quality = audio_quality_var.get()
+            new_audio_voice = voice_var.get()
+            new_upload_to_drive = drive_upload_var.get()
+            new_drive_folder_id = drive_folder_entry.get().strip()
+            new_source_filter = None
+            if not use_all_sources_var.get():
+                new_source_filter = [name for name, var in source_check_vars.items() if var.get()]
+
             if is_new:
                 new_task = ScheduledTask(
                     id="",
@@ -9583,6 +9750,12 @@ Open Settings and click '? Start Tutorial'!""",
                     enrich_with_grid=new_grid_enrich,
                     research_articles=new_research,
                     custom_columns=new_custom_columns,
+                    task_type=new_task_type,
+                    audio_quality=new_audio_quality,
+                    audio_voice=new_audio_voice,
+                    upload_to_drive=new_upload_to_drive,
+                    drive_folder_id=new_drive_folder_id,
+                    source_filter=new_source_filter,
                 )
                 self._get_active_scheduler().add_task(new_task)
                 self.label_status.configure(text=f"Created task: {new_name}", text_color="green")
@@ -9600,6 +9773,12 @@ Open Settings and click '? Start Tutorial'!""",
                     "enrich_with_grid": new_grid_enrich,
                     "research_articles": new_research,
                     "custom_columns": new_custom_columns,
+                    "task_type": new_task_type,
+                    "audio_quality": new_audio_quality,
+                    "audio_voice": new_audio_voice,
+                    "upload_to_drive": new_upload_to_drive,
+                    "drive_folder_id": new_drive_folder_id,
+                    "source_filter": new_source_filter,
                 })
                 self.label_status.configure(text=f"Updated task: {new_name}", text_color="green")
 

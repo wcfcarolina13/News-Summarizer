@@ -16,7 +16,7 @@ All source files are in `daily_audio_briefing/`.
 | `scheduler_daemon.py` | ~610 | Background daemon for scheduled tasks |
 | `get_youtube_news.py` | ~580 | YouTube video fetching and AI summarization |
 | `source_processor.py` | ~440 | Unified source routing |
-| `scheduler.py` | ~570 | Automated extraction task scheduler (Sheets persistence, deferred loading) |
+| `scheduler.py` | ~720 | Automated task scheduler — extraction + briefing pipeline (Sheets persistence, deferred loading) |
 | `audio_generator.py` | ~380 | Audio generation orchestration |
 | `make_audio_quality.py` | ~210 | Kokoro TTS high-quality audio |
 | `sheets_manager.py` | ~350 | Google Sheets export, tab management, deduplication |
@@ -196,6 +196,17 @@ gunicorn web_app:app --bind 0.0.0.0:$PORT --timeout 120 --workers 1 --preload
 - ~~Per-task API call tracking~~ ✅ Thread-local task context in scheduler, per-task totals in `api_usage.json`
 - ~~Dashboard showing API usage~~ ✅ Desktop Settings card + web dashboard panel with progress bars, cost estimates
 - Future: desktop notification + email alerts when approaching limits
+
+**Briefing Pipeline (completed Feb 2026):**
+- ~~Automated fetch → summarize → audio → Drive pipeline~~ ✅ New `briefing_pipeline` task type on ScheduledTask
+- ~~Pipeline executor in scheduler~~ ✅ `_execute_pipeline_task()` — 6-step chain: load sources → SourceFetcher → format_items_for_audio → save text → TTS subprocess → Drive upload
+- ~~Desktop task editor~~ ✅ CTkSegmentedButton type selector, conditional field visibility (extraction vs pipeline), voice selector, source filter, Drive folder config
+- ~~Web task editor~~ ✅ Type toggle buttons, pipeline fields, [Pipeline] badge on task cards
+- ~~Server mode graceful degradation~~ ✅ Skips audio + Drive steps, saves summary text only
+- Future: source filter UI in web app, pipeline progress notifications
+
+**High Priority — New Features:**
+- Summary quality audit + cross-source deduplication: audit whether custom instructions are followed, add toggle for post-summary processing step to combine/deduplicate similar info across sources
 
 **Future — Desktop/Web Sync:**
 - Login/registration system for cloud features

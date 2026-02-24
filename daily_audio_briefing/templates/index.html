@@ -941,6 +941,53 @@
                 <label title="A friendly name to identify this task in the list">Task Name</label>
                 <input type="text" id="taskName" placeholder="e.g. RWA TG Updater" title="Give your task a descriptive name">
 
+                <label title="Choose the type of task to create">Task Type</label>
+                <div style="display:flex;gap:0;margin-bottom:14px;">
+                    <button id="typeBtn_extraction" class="btn" onclick="setTaskType('extraction')" style="flex:1;border-radius:8px 0 0 8px;border:1px solid var(--border);">Data Extraction</button>
+                    <button id="typeBtn_pipeline" class="btn" onclick="setTaskType('briefing_pipeline')" style="flex:1;border-radius:0 8px 8px 0;border:1px solid var(--border);border-left:none;">Audio Briefing</button>
+                </div>
+
+                <!-- Pipeline-specific fields -->
+                <div id="pipelineFields" style="display:none;">
+                    <label title="Audio generation speed and quality tradeoff">Audio Quality</label>
+                    <select id="taskAudioQuality" onchange="toggleVoiceField()" title="Fast uses Google TTS, Quality uses Kokoro neural TTS">
+                        <option value="quality">Quality (Kokoro)</option>
+                        <option value="fast">Fast (gTTS)</option>
+                    </select>
+
+                    <div id="voiceFieldRow">
+                        <label title="Kokoro neural TTS voice">Voice</label>
+                        <select id="taskAudioVoice" title="Select a Kokoro voice for the audio briefing">
+                            <option value="af_heart">af_heart</option>
+                            <option value="af_sarah">af_sarah</option>
+                            <option value="af_nova">af_nova</option>
+                            <option value="af_sky">af_sky</option>
+                            <option value="af_bella">af_bella</option>
+                            <option value="am_adam">am_adam</option>
+                            <option value="am_michael">am_michael</option>
+                            <option value="am_echo">am_echo</option>
+                            <option value="bf_emma">bf_emma</option>
+                            <option value="bf_isabella">bf_isabella</option>
+                            <option value="bm_george">bm_george</option>
+                            <option value="bm_lewis">bm_lewis</option>
+                        </select>
+                    </div>
+
+                    <div style="border:1px solid var(--border);border-radius:8px;padding:12px;margin-bottom:16px;">
+                        <div style="display:flex;align-items:center;gap:8px;margin-bottom:12px;">
+                            <input type="checkbox" id="taskUploadDrive" style="width:18px;height:18px;margin:0;" title="Upload the generated audio file to Google Drive">
+                            <label style="margin:0;font-weight:600;" title="Automatically upload audio to a Drive folder">Upload to Google Drive</label>
+                        </div>
+                        <div id="driveFields" style="display:none;">
+                            <label title="Google Drive folder URL or ID to upload audio files to">Drive Folder ID or URL</label>
+                            <input type="text" id="taskDriveFolderId" placeholder="https://drive.google.com/drive/folders/... or folder ID" title="Paste Drive folder URL or just the folder ID">
+                        </div>
+                    </div>
+                    <p style="font-size:0.75rem;color:var(--text-muted);margin:-8px 0 14px;">Uses all enabled sources from sources.json. Source filtering available in desktop app.</p>
+                </div>
+
+                <!-- Extraction-specific fields -->
+                <div id="extractionFields">
                 <label title="The feed URL to extract data from on each run">Source URL</label>
                 <input type="text" id="taskSourceUrl" placeholder="https://t.me/channel or newsletter URL" title="Telegram channel, newsletter archive page, or RSS feed URL">
                 <p style="font-size:0.7rem;color:var(--text-muted);margin:-8px 0 12px;">Telegram channel, newsletter archive, or RSS feed URL</p>
@@ -1044,6 +1091,7 @@
                         </div>
                     </div>
                 </div>
+                </div><!-- /extractionFields -->
 
                 <div class="btn-row">
                     <button class="btn btn-success" onclick="saveTask()" title="Save this task and add it to the scheduler">Save Task</button>
@@ -1898,13 +1946,16 @@
                 return '<div class="summary-card" style="border-left-color:' + statusColor + ';">' +
                     '<div style="display:flex;align-items:center;gap:8px;margin-bottom:8px;">' +
                         '<span style="font-weight:600;font-size:0.9rem;">' + (t.name || 'Untitled') + '</span>' +
+                        (t.task_type === 'briefing_pipeline' ? '<span style="font-size:0.65rem;padding:2px 6px;border-radius:8px;background:var(--accent);color:white;">Pipeline</span>' : '') +
                         '<span style="font-size:0.7rem;padding:2px 8px;border-radius:8px;background:var(--bg-tertiary);color:var(--text-muted);">' + t.interval + '</span>' +
                         sheetsIcon +
                         sheetsLink +
                         '<span style="margin-left:auto;font-size:0.7rem;color:' + statusColor + ';">' + (t.enabled ? 'Enabled' : 'Disabled') + '</span>' +
                     '</div>' +
-                    '<div style="font-size:0.75rem;color:var(--text-muted);margin-bottom:4px;">Source: ' + (t.source_url || '-') + '</div>' +
-                    '<div style="font-size:0.75rem;color:var(--text-muted);">Config: ' + (t.config_name || 'Default') + '</div>' +
+                    (t.task_type === 'briefing_pipeline'
+                        ? '<div style="font-size:0.75rem;color:var(--text-muted);margin-bottom:4px;">Audio: ' + (t.audio_quality || 'quality') + (t.audio_quality !== 'fast' ? ' (' + (t.audio_voice || 'af_heart') + ')' : '') + (t.upload_to_drive ? ' • Drive upload' : '') + '</div>'
+                        : '<div style="font-size:0.75rem;color:var(--text-muted);margin-bottom:4px;">Source: ' + (t.source_url || '-') + '</div>' +
+                          '<div style="font-size:0.75rem;color:var(--text-muted);">Config: ' + (t.config_name || 'Default') + '</div>') +
                     '<div style="font-size:0.75rem;color:' + resultColor + ';margin-top:4px;">' + (t.last_result || 'Not run yet') + '</div>' +
                     '<div style="font-size:0.7rem;color:var(--text-muted);margin-top:2px;">Last: ' + lastRun + ' | Next: ' + nextRun + '</div>' +
                     '<div style="display:flex;gap:6px;margin-top:8px;">' +
@@ -1939,6 +1990,48 @@
             loadScheduler();
         }
 
+        var currentTaskType = 'extraction';
+
+        function setTaskType(type) {
+            currentTaskType = type;
+            var extBtn = document.getElementById('typeBtn_extraction');
+            var pipBtn = document.getElementById('typeBtn_pipeline');
+            var extFields = document.getElementById('extractionFields');
+            var pipFields = document.getElementById('pipelineFields');
+
+            if (type === 'briefing_pipeline') {
+                pipBtn.style.background = 'var(--accent)';
+                pipBtn.style.color = 'white';
+                extBtn.style.background = 'transparent';
+                extBtn.style.color = 'var(--text-primary)';
+                pipFields.style.display = 'block';
+                extFields.style.display = 'none';
+            } else {
+                extBtn.style.background = 'var(--accent)';
+                extBtn.style.color = 'white';
+                pipBtn.style.background = 'transparent';
+                pipBtn.style.color = 'var(--text-primary)';
+                pipFields.style.display = 'none';
+                extFields.style.display = 'block';
+            }
+        }
+
+        function toggleVoiceField() {
+            var quality = document.getElementById('taskAudioQuality').value;
+            document.getElementById('voiceFieldRow').style.display = quality === 'quality' ? 'block' : 'none';
+        }
+
+        function toggleDriveFields() {
+            var show = document.getElementById('taskUploadDrive').checked;
+            document.getElementById('driveFields').style.display = show ? 'block' : 'none';
+        }
+
+        // Bind drive checkbox
+        document.addEventListener('DOMContentLoaded', function() {
+            var driveCheck = document.getElementById('taskUploadDrive');
+            if (driveCheck) driveCheck.addEventListener('change', toggleDriveFields);
+        });
+
         function openTaskEditor(task) {
             editingTaskId = task ? task.id : null;
             document.getElementById('taskEditorTitle').textContent = task ? 'Edit Task' : 'New Task';
@@ -1967,6 +2060,14 @@
                 var hasCustomCols = task.custom_columns && task.custom_columns.length > 0;
                 document.getElementById('taskUseConfigColumns').checked = !hasCustomCols;
                 document.getElementById('taskCustomColumns').value = hasCustomCols ? task.custom_columns.join('\\n') : '';
+
+                // Pipeline fields
+                document.getElementById('taskAudioQuality').value = task.audio_quality || 'quality';
+                document.getElementById('taskAudioVoice').value = task.audio_voice || 'af_heart';
+                document.getElementById('taskUploadDrive').checked = task.upload_to_drive || false;
+                document.getElementById('taskDriveFolderId').value = task.drive_folder_id || '';
+
+                setTaskType(task.task_type || 'extraction');
             } else {
                 document.getElementById('taskName').value = '';
                 document.getElementById('taskSourceUrl').value = '';
@@ -1979,11 +2080,21 @@
                 document.getElementById('taskIncludeHeaders').checked = false;
                 document.getElementById('taskUseConfigColumns').checked = true;
                 document.getElementById('taskCustomColumns').value = '';
+
+                // Pipeline defaults
+                document.getElementById('taskAudioQuality').value = 'quality';
+                document.getElementById('taskAudioVoice').value = 'af_heart';
+                document.getElementById('taskUploadDrive').checked = false;
+                document.getElementById('taskDriveFolderId').value = '';
+
+                setTaskType('extraction');
             }
 
             updateScheduleFields();
             toggleSheetsFields();
             toggleColumnOverride();
+            toggleVoiceField();
+            toggleDriveFields();
             loadConfigEditor();
             // Reset tab validation and config editor state
             document.getElementById('sheetTabStatus').style.display = 'none';
@@ -2227,6 +2338,7 @@
         async function saveTask() {
             var taskData = {
                 name: document.getElementById('taskName').value || 'Untitled Task',
+                task_type: currentTaskType,
                 source_url: document.getElementById('taskSourceUrl').value,
                 config_name: document.getElementById('taskConfig').value,
                 interval: document.getElementById('taskInterval').value,
@@ -2238,6 +2350,12 @@
                 sheet_name: document.getElementById('taskSheetName').value || 'Sheet1',
                 include_headers: document.getElementById('taskIncludeHeaders').checked,
                 custom_columns: null,
+                // Pipeline fields
+                audio_quality: document.getElementById('taskAudioQuality').value || 'quality',
+                audio_voice: document.getElementById('taskAudioVoice').value || 'af_heart',
+                upload_to_drive: document.getElementById('taskUploadDrive').checked,
+                drive_folder_id: document.getElementById('taskDriveFolderId').value || '',
+                source_filter: null,
             };
 
             // Custom columns

@@ -839,6 +839,12 @@ def api_scheduler_tasks_create():
         sheet_name=data.get('sheet_name', 'Sheet1'),
         include_headers=data.get('include_headers', False),
         custom_columns=data.get('custom_columns'),
+        task_type=data.get('task_type', 'extraction'),
+        audio_quality=data.get('audio_quality', 'quality'),
+        audio_voice=data.get('audio_voice', 'af_heart'),
+        upload_to_drive=data.get('upload_to_drive', False),
+        drive_folder_id=data.get('drive_folder_id', ''),
+        source_filter=data.get('source_filter'),
     )
     server_scheduler.add_task(task)
     return jsonify({'success': True, 'task': task.to_dict()})
