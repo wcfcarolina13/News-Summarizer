@@ -166,6 +166,7 @@ class Scheduler:
 
     def __init__(self, on_task_complete: Optional[Callable] = None,
                  on_progress: Optional[Callable] = None,
+                 on_task_start: Optional[Callable] = None,
                  server_mode: bool = False, data_dir: Optional[str] = None):
         """
         Initialize the scheduler.
@@ -173,6 +174,7 @@ class Scheduler:
         Args:
             on_task_complete: Callback function(task, success, message) called after each task runs
             on_progress: Callback function(task_id, message) called with progress log lines during execution
+            on_task_start: Callback function(task) called when a task begins executing
             server_mode: If True, log to stdout and skip OS-level daemon operations
             data_dir: Override data directory for config/task files (used in server mode)
         """
@@ -183,6 +185,7 @@ class Scheduler:
         self._thread: Optional[threading.Thread] = None
         self._stop_event = threading.Event()
         self._on_task_complete = on_task_complete
+        self._on_task_start = on_task_start
         self._on_progress = on_progress
         self._lock = threading.Lock()
         self._running_tasks: set = set()  # Per-task mutex: track running task IDs
@@ -241,9 +244,39 @@ class Scheduler:
                     self.tasks = []
 
         # Recalculate next run times
+        now = datetime.now()
         for task in self.tasks:
             if task.enabled:
-                task.next_run = self._calculate_next_run(task)
+                # Check if task was never run OR was last run on a previous day
+                # and its scheduled time already passed today — run it soon to catch up
+                task_missed = False
+                if task.interval == "daily" and task.run_at_time:
+                    try:
+                        hour, minute = map(int, task.run_at_time.split(":"))
+                        scheduled_today = now.replace(hour=hour, minute=minute, second=0, microsecond=0)
+                        if scheduled_today <= now:
+                            # Scheduled time already passed today
+                            if not task.last_run:
+                                # Never ran — definitely missed
+                                task_missed = True
+                            else:
+                                try:
+                                    last_run_dt = datetime.fromisoformat(task.last_run)
+                                    if last_run_dt.date() < now.date():
+                                        # Last ran on a previous day — missed today's run
+                                        task_missed = True
+                                except (ValueError, TypeError):
+                                    task_missed = True
+                    except (ValueError, TypeError):
+                        pass
+
+                if task_missed:
+                    # Schedule to run in 1 minute to catch up
+                    catchup_time = now + timedelta(minutes=1)
+                    task.next_run = catchup_time.isoformat()
+                    print(f"[Scheduler] Task '{task.name}' missed today's run — scheduling catch-up in 1 minute")
+                else:
+                    task.next_run = self._calculate_next_run(task)
 
         if loaded_from and self.tasks:
             print(f"[Scheduler] Loaded {len(self.tasks)} task(s) from {loaded_from}")
@@ -523,6 +556,13 @@ class Scheduler:
             return
         self._running_tasks.add(task.id)
 
+        # Notify listeners that task is starting
+        if self._on_task_start:
+            try:
+                self._on_task_start(task)
+            except Exception:
+                pass
+
         # Set task context for API usage attribution
         from api_usage_tracker import set_current_task, clear_current_task
         set_current_task(task.id, task.name)
@@ -754,12 +794,17 @@ class Scheduler:
 
         # --- Step 4: Save summary text ---
         import datetime as dt_module
+        import re as re_module
         today = dt_module.date.today()
         year, week, _ = today.isocalendar()
         week_folder = os.path.join(data_dir, f"Week_{week}_{year}")
         os.makedirs(week_folder, exist_ok=True)
 
-        summary_filename = f"News_Briefing_W{week}_{today.isoformat()}.txt"
+        # Sanitize task name for use in filename (letters, numbers, hyphens, underscores)
+        safe_name = re_module.sub(r'[^a-zA-Z0-9_-]', '_', task.name).strip('_')
+        safe_name = re_module.sub(r'_+', '_', safe_name)  # collapse multiple underscores
+
+        summary_filename = f"{safe_name}_W{week}_{today.isoformat()}.txt"
         summary_path = os.path.join(week_folder, summary_filename)
         with open(summary_path, "w", encoding="utf-8") as f:
             f.write(text)
@@ -768,7 +813,7 @@ class Scheduler:
         # --- Step 5: Generate audio (skip in server mode) ---
         audio_file = None
         if not self.server_mode:
-            audio_filename = f"News_Briefing_W{week}_{today.isoformat()}.mp3"
+            audio_filename = f"{safe_name}_W{week}_{today.isoformat()}.mp3"
             output_path = os.path.join(week_folder, audio_filename)
 
             self._log(task.id, f"[Pipeline] Generating audio ({task.audio_quality})...")
@@ -915,7 +960,8 @@ class Scheduler:
         task.last_result = f"OK: {', '.join(parts)}"
         self._log(task.id, f"[Pipeline] Complete: {task.last_result}")
 
-    def backfill_task(self, task_id: str, stop_flag: Optional[Callable] = None) -> bool:
+    def backfill_task(self, task_id: str, stop_flag: Optional[Callable] = None,
+                      since_date: Optional[str] = None) -> bool:
         """
         Backfill historical data for a task by crawling the archive.
 
@@ -925,6 +971,9 @@ class Scheduler:
         Args:
             task_id: ID of the task to backfill
             stop_flag: Optional callable that returns True to abort mid-backfill
+            since_date: Optional date string (YYYY-MM-DD) to start backfill from.
+                       If provided, overrides the auto-detected since_date.
+                       Use None for auto-detect (from sheet), or "" for full archive.
 
         Returns:
             True if started successfully
@@ -1000,20 +1049,31 @@ class Scheduler:
 
                 # Get dates already covered in the sheet
                 covered_dates = get_covered_dates_in_sheet(task.spreadsheet_id, task.sheet_name)
-                if covered_dates:
+
+                # Determine the since_date for archive fetching
+                if since_date is not None:
+                    # Caller explicitly provided a since_date override
+                    if since_date == "":
+                        # Empty string = full archive
+                        bf_since = None
+                        self._log(task.id, "[Backfill] Fetching entire archive (user requested)")
+                    else:
+                        bf_since = since_date
+                        self._log(task.id, f"[Backfill] Fetching from {since_date} (user requested)")
+                elif covered_dates:
                     earliest = min(covered_dates)
                     latest = max(covered_dates)
                     self._log(task.id, f"[Backfill] Sheet has {len(covered_dates)} dates covered ({earliest} to {latest})")
                     # Fetch archive from the earliest date — to find gaps
-                    since_date = earliest
+                    bf_since = earliest
                 else:
                     self._log(task.id, "[Backfill] Sheet is empty — fetching entire archive")
-                    since_date = None
+                    bf_since = None
 
                 # Get all archive posts
                 posts = extractor.get_archive_posts(
                     source_url,
-                    since_date=since_date,
+                    since_date=bf_since,
                     on_progress=lambda msg: self._log(task.id, msg)
                 )
 
@@ -1629,15 +1689,19 @@ _scheduler: Optional[Scheduler] = None
 
 def get_scheduler(on_task_complete: Optional[Callable] = None,
                   on_progress: Optional[Callable] = None,
+                  on_task_start: Optional[Callable] = None,
                   server_mode: bool = False, data_dir: Optional[str] = None) -> Scheduler:
     """Get the global scheduler instance."""
     global _scheduler
     if _scheduler is None:
         _scheduler = Scheduler(on_task_complete, on_progress=on_progress,
+                               on_task_start=on_task_start,
                                server_mode=server_mode, data_dir=data_dir)
     else:
         if on_task_complete:
             _scheduler._on_task_complete = on_task_complete
         if on_progress:
             _scheduler._on_progress = on_progress
+        if on_task_start:
+            _scheduler._on_task_start = on_task_start
     return _scheduler

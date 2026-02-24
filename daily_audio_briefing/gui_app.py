@@ -833,30 +833,77 @@ class AudioBriefingApp(ctk.CTk):
         self.btn_fast_sample = ctk.CTkButton(self.frame_audio_controls, text="▶ Sample", width=90, fg_color="gray", command=self.play_gtts_sample)
         self.btn_fast_sample.grid(row=0, column=1, padx=(5, 10), pady=10, sticky="e")
 
-        # Row 1: Quality Generation Options
-        self.label_voice = ctk.CTkLabel(self.frame_audio_controls, text="Quality Voice:")
-        self.label_voice.grid(row=1, column=0, padx=10, pady=(10, 0), sticky="w")
-        # Ensure distinct rows to avoid overlap
-        self.frame_audio_controls.grid_rowconfigure(2, weight=0)
-        self.frame_audio_controls.grid_rowconfigure(3, weight=0)
-        # Reserve dedicated rows to prevent covering other controls
-        for r in (2,3,4,5):
-            self.frame_audio_controls.grid_rowconfigure(r, weight=0)
+        # Row 1: Quality Voice Selection Header
+        ctk.CTkLabel(
+            self.frame_audio_controls, text="Quality Voice (Kokoro):",
+            font=ctk.CTkFont(size=13, weight="bold")
+        ).grid(row=1, column=0, columnspan=2, padx=10, pady=(10, 2), sticky="w")
 
+        # Voice descriptions for display
+        VOICE_INFO = {
+            "af_heart": ("Heart", "Female", "American", "Warm, natural"),
+            "af_sarah": ("Sarah", "Female", "American", "Clear, professional"),
+            "af_nova": ("Nova", "Female", "American", "Bright, energetic"),
+            "af_sky": ("Sky", "Female", "American", "Soft, calm"),
+            "af_bella": ("Bella", "Female", "American", "Smooth, articulate"),
+            "am_adam": ("Adam", "Male", "American", "Deep, authoritative"),
+            "am_michael": ("Michael", "Male", "American", "Warm, conversational"),
+            "am_echo": ("Echo", "Male", "American", "Crisp, modern"),
+            "bf_emma": ("Emma", "Female", "British", "Elegant, refined"),
+            "bf_isabella": ("Isabella", "Female", "British", "Poised, expressive"),
+            "bm_george": ("George", "Male", "British", "Commanding, rich"),
+            "bm_lewis": ("Lewis", "Male", "British", "Friendly, measured"),
+        }
 
+        # Voice selector grid — 3 columns of voice cards with play buttons
+        voice_grid_frame = ctk.CTkFrame(self.frame_audio_controls, fg_color="transparent")
+        voice_grid_frame.grid(row=2, column=0, columnspan=2, padx=10, pady=(0, 8), sticky="ew")
+        for c in range(3):
+            voice_grid_frame.grid_columnconfigure(c, weight=1)
 
         self.voice_var = ctk.StringVar(value="af_sarah")
-        self.combo_voices = ctk.CTkComboBox(self.frame_audio_controls, variable=self.voice_var, values=self.voice_manager.get_available_voices())
-        self.combo_voices.grid(row=2, column=0, padx=10, pady=(0, 5), sticky="ew")
-        self.btn_sample = ctk.CTkButton(self.frame_audio_controls, text="Play Sample", width=120, fg_color="gray", command=self.play_sample)
-        self.btn_sample.grid(row=2, column=1, padx=10, pady=(0, 5), sticky="e")
+        voice_keys = list(VOICE_INFO.keys())
+
+        for idx, voice_id in enumerate(voice_keys):
+            name, gender, accent, desc = VOICE_INFO[voice_id]
+            row_i = idx // 3
+            col_i = idx % 3
+
+            card = ctk.CTkFrame(voice_grid_frame, fg_color=COLORS["bg_primary"],
+                                corner_radius=8, border_width=1, border_color=COLORS["border"])
+            card.grid(row=row_i, column=col_i, padx=3, pady=3, sticky="ew")
+            card.grid_columnconfigure(0, weight=1)
+
+            # Radio-style selection via the card
+            top_row = ctk.CTkFrame(card, fg_color="transparent")
+            top_row.pack(fill="x", padx=6, pady=(4, 0))
+            top_row.grid_columnconfigure(0, weight=1)
+
+            rb = ctk.CTkRadioButton(
+                top_row, text=f"{name}", variable=self.voice_var, value=voice_id,
+                font=ctk.CTkFont(size=12, weight="bold"),
+                radiobutton_width=16, radiobutton_height=16
+            )
+            rb.pack(side="left")
+
+            btn_play = ctk.CTkButton(
+                top_row, text="▶", width=28, height=24, fg_color="gray",
+                hover_color=COLORS["accent"], font=ctk.CTkFont(size=11),
+                command=lambda v=voice_id: self._play_voice_sample(v)
+            )
+            btn_play.pack(side="right")
+
+            ctk.CTkLabel(
+                card, text=f"{accent} {gender} · {desc}",
+                font=ctk.CTkFont(size=10), text_color=COLORS["text_muted"]
+            ).pack(anchor="w", padx=8, pady=(0, 4))
+
+        # Keep combo_voices for backward compat with play_sample() etc.
+        self.combo_voices = None  # Voice is now selected via radio buttons
 
         # Convert summaries by date
         self.btn_convert_dates = ctk.CTkButton(self.frame_audio_controls, text="Convert Selected Dates to Audio", command=self.select_dates_to_audio)
         self.btn_convert_dates.grid(row=3, column=0, columnspan=2, padx=10, pady=(5, 10), sticky="ew")
-
-        # Note: Direct Audio checkbox removed - auto-clean is now always inline
-        # Text is automatically cleaned for audio when Generate is clicked
 
         self.btn_quality = ctk.CTkButton(self.frame_audio_controls, text="Generate Quality (Kokoro)", command=self.start_quality_generation)
         self.btn_quality.grid(row=4, column=0, columnspan=2, padx=10, pady=(5, 10), sticky="ew")
@@ -6101,6 +6148,11 @@ Transcript:
         voice = self.voice_var.get()
         self.audio_generator.play_sample(voice)
 
+    def _play_voice_sample(self, voice_id: str):
+        """Play a sample for a specific voice and select it."""
+        self.voice_var.set(voice_id)
+        self.audio_generator.play_sample(voice_id)
+
     def play_gtts_sample(self):
         """Play a gTTS sample to demonstrate the fast voice quality."""
         self.audio_generator.play_gtts_sample()
@@ -8678,7 +8730,8 @@ Open Settings and click '? Start Tutorial'!""",
             from scheduler import get_scheduler
             self._scheduler = get_scheduler(
                 on_task_complete=self._on_scheduler_task_complete,
-                on_progress=self._on_scheduler_progress
+                on_progress=self._on_scheduler_progress,
+                on_task_start=self._on_scheduler_task_start
             )
             self._refresh_scheduler_tasks()
 
@@ -8716,6 +8769,33 @@ Open Settings and click '? Start Tutorial'!""",
         self.settings["scheduler_active"] = self.scheduler_enabled_var.get()
         self._save_settings()
 
+    def _on_scheduler_task_start(self, task):
+        """Callback when a scheduled task begins executing."""
+        task_type = getattr(task, 'task_type', 'extraction')
+        type_label = "pipeline" if task_type == "briefing_pipeline" else "extraction"
+
+        # Show animated status on Scheduler page
+        self._task_running_id = task.id
+        self.after(0, lambda: self._show_scheduler_status(
+            f"⏳ Running: {task.name}...", "orange"))
+        self.after(0, lambda: self._animate_task_status(task.name, 0))
+
+        # Update Summarize page status bar (visible from any page)
+        if self.label_status:
+            self.after(0, lambda: self.label_status.configure(
+                text=f"⏳ {task.name} {type_label} running...", text_color="orange"))
+
+        # macOS desktop notification
+        try:
+            import subprocess as sp
+            sp.Popen([
+                "osascript", "-e",
+                f'display notification "{task.name} {type_label} started" '
+                f'with title "Daily Audio Briefing"'
+            ], stdout=sp.DEVNULL, stderr=sp.DEVNULL)
+        except Exception:
+            pass
+
     def _on_scheduler_task_complete(self, task, success, message):
         """Callback when a scheduled task completes."""
         color = "green" if success else "red"
@@ -8740,6 +8820,25 @@ Open Settings and click '? Start Tutorial'!""",
         if not self._long_operation_in_progress and self.label_status:
             self.after(0, lambda: self.label_status.configure(
                 text=f"Task '{task.name}': {message}", text_color=color))
+            # Clear the status bar after 15 seconds so it doesn't persist
+            if success:
+                self.after(15000, lambda: self.label_status.configure(
+                    text="Ready", text_color="gray") if not self._long_operation_in_progress else None)
+
+        # macOS desktop notification
+        try:
+            import subprocess as sp
+            status = "complete" if success else "failed"
+            # Truncate message for notification
+            short_msg = message[:80] if len(message) > 80 else message
+            sp.Popen([
+                "osascript", "-e",
+                f'display notification "{short_msg}" '
+                f'with title "Daily Audio Briefing" '
+                f'subtitle "{task.name} {status}"'
+            ], stdout=sp.DEVNULL, stderr=sp.DEVNULL)
+        except Exception:
+            pass
 
         self.after(0, self._refresh_scheduler_tasks)
 
@@ -8950,6 +9049,16 @@ Open Settings and click '? Start Tutorial'!""",
                 sheet_tip += f" ({sheet_name})"
             add_tooltip(btn_sheet, sheet_tip)
 
+        # Drive folder link button (only for pipeline tasks with Drive upload configured)
+        if getattr(task, 'task_type', 'extraction') == 'briefing_pipeline' and getattr(task, 'drive_folder_id', ''):
+            drive_fid = task.drive_folder_id
+            btn_drive = ctk.CTkButton(
+                btn_frame, text="📁", width=30, fg_color="#4285f4",
+                command=lambda fid=drive_fid: self._open_drive_folder(fid)
+            )
+            btn_drive.pack(side="left", padx=2)
+            add_tooltip(btn_drive, "Open Google Drive folder")
+
         # Re-title button (for Telegram tasks — re-fetches full titles)
         source_url = getattr(task, 'source_url', '')
         if 't.me' in source_url and getattr(task, 'export_to_sheets', False):
@@ -8994,6 +9103,16 @@ Open Settings and click '? Start Tutorial'!""",
             url += "/edit"
         webbrowser.open(url)
 
+    def _open_drive_folder(self, folder_id: str):
+        """Open a Google Drive folder in the default browser."""
+        import webbrowser
+        try:
+            from drive_manager import extract_folder_id_from_url
+            clean_id = extract_folder_id_from_url(folder_id)
+        except Exception:
+            clean_id = folder_id
+        webbrowser.open(f"https://drive.google.com/drive/folders/{clean_id}")
+
     def _toggle_task_enabled(self, task_id: str, enabled: bool):
         """Toggle a task's enabled state."""
         scheduler = self._get_active_scheduler()
@@ -9019,7 +9138,157 @@ Open Settings and click '? Start Tutorial'!""",
                 scheduler.run_task_now(task_id)
 
     def _backfill_task(self, task_id: str):
-        """Backfill historical data for a task from the newsletter archive."""
+        """Open the backfill dialog for a task, then run backfill with selected options."""
+        scheduler = self._get_active_scheduler()
+        if not scheduler:
+            return
+
+        task = scheduler.get_task(task_id)
+        if not task:
+            return
+
+        # Build backfill options dialog
+        dialog = ctk.CTkToplevel(self)
+        dialog.title(f"Backfill: {task.name}")
+        dialog.geometry("480x420")
+        dialog.transient(self)
+        dialog.grab_set()
+        dialog.lift()
+        dialog.attributes("-topmost", True)
+        dialog.after(100, lambda: dialog.attributes("-topmost", False))
+
+        # Header
+        ctk.CTkLabel(
+            dialog, text=f"Backfill: {task.name}",
+            font=ctk.CTkFont(size=16, weight="bold")
+        ).pack(padx=20, pady=(16, 4))
+
+        ctk.CTkLabel(
+            dialog, text="Choose how far back to fetch historical data.",
+            font=ctk.CTkFont(size=12), text_color=COLORS["text_secondary"]
+        ).pack(padx=20, pady=(0, 12))
+
+        # Date range options
+        range_var = ctk.StringVar(value="auto")
+
+        options_frame = ctk.CTkFrame(dialog, fg_color="transparent")
+        options_frame.pack(fill="x", padx=20, pady=(0, 8))
+
+        range_options = [
+            ("auto", "Auto-detect", "Finds gaps since earliest entry in sheet"),
+            ("7d", "Last 7 days", "Quick fill of the past week"),
+            ("30d", "Last 30 days", "Fill the past month"),
+            ("90d", "Last 90 days", "Fill the past 3 months"),
+            ("all", "Since beginning", "Fetch the entire archive — may be slow"),
+            ("custom", "Custom date", "Pick a specific start date"),
+        ]
+
+        for value, label, desc in range_options:
+            row = ctk.CTkFrame(options_frame, fg_color="transparent")
+            row.pack(fill="x", pady=2)
+            rb = ctk.CTkRadioButton(
+                row, text=label, variable=range_var, value=value,
+                font=ctk.CTkFont(size=13)
+            )
+            rb.pack(side="left")
+            ctk.CTkLabel(
+                row, text=f"  — {desc}",
+                font=ctk.CTkFont(size=11), text_color=COLORS["text_muted"]
+            ).pack(side="left")
+
+        # Custom date entry (shown only when "custom" is selected)
+        custom_frame = ctk.CTkFrame(dialog, fg_color="transparent")
+        custom_frame.pack(fill="x", padx=40, pady=(0, 8))
+
+        ctk.CTkLabel(custom_frame, text="Start date (YYYY-MM-DD):",
+                     font=ctk.CTkFont(size=12)).pack(side="left", padx=(0, 8))
+        custom_date_entry = ctk.CTkEntry(custom_frame, width=140,
+                                          placeholder_text="2025-01-01")
+        custom_date_entry.pack(side="left")
+
+        def _on_range_change(*args):
+            if range_var.get() == "custom":
+                custom_frame.pack(fill="x", padx=40, pady=(0, 8))
+            else:
+                custom_frame.pack_forget()
+        range_var.trace_add("write", _on_range_change)
+        custom_frame.pack_forget()  # Hidden initially
+
+        # Warning banner for potentially long operations
+        warning_frame = ctk.CTkFrame(dialog, fg_color="#fff3cd", corner_radius=8)
+        warning_label = ctk.CTkLabel(
+            warning_frame, text="",
+            font=ctk.CTkFont(size=11), text_color="#856404",
+            wraplength=400, justify="left"
+        )
+        warning_label.pack(padx=12, pady=8)
+
+        def _update_warning(*args):
+            val = range_var.get()
+            if val == "all":
+                warning_frame.pack(fill="x", padx=20, pady=(0, 8))
+                warning_label.configure(
+                    text="⚠️ Fetching the entire archive can take a long time and "
+                         "use significant API credits. Large YouTube channel archives "
+                         "may time out or hit rate limits. Consider using a shorter "
+                         "range if possible."
+                )
+            elif val in ("90d", "custom"):
+                warning_frame.pack(fill="x", padx=20, pady=(0, 8))
+                warning_label.configure(
+                    text="⚠️ Larger date ranges may take several minutes and use "
+                         "more API credits. You can stop the backfill at any time."
+                )
+            else:
+                warning_frame.pack_forget()
+        range_var.trace_add("write", _update_warning)
+        warning_frame.pack_forget()  # Hidden initially
+
+        # Action buttons
+        btn_frame = ctk.CTkFrame(dialog, fg_color="transparent")
+        btn_frame.pack(fill="x", padx=20, pady=(8, 16))
+
+        def _start_backfill():
+            import datetime as dt_mod
+            val = range_var.get()
+            since = None  # None = auto-detect from sheet
+
+            if val == "7d":
+                since = (dt_mod.date.today() - dt_mod.timedelta(days=7)).isoformat()
+            elif val == "30d":
+                since = (dt_mod.date.today() - dt_mod.timedelta(days=30)).isoformat()
+            elif val == "90d":
+                since = (dt_mod.date.today() - dt_mod.timedelta(days=90)).isoformat()
+            elif val == "all":
+                since = ""  # Empty string = full archive
+            elif val == "custom":
+                since = custom_date_entry.get().strip()
+                if not since:
+                    custom_date_entry.configure(border_color="red")
+                    return
+                # Validate date format
+                try:
+                    dt_mod.date.fromisoformat(since)
+                except ValueError:
+                    custom_date_entry.configure(border_color="red")
+                    return
+
+            dialog.destroy()
+            self._execute_backfill(task_id, since_date=since)
+
+        ctk.CTkButton(
+            btn_frame, text="Start Backfill", fg_color=COLORS["accent"],
+            hover_color="#2563eb", width=140,
+            command=_start_backfill
+        ).pack(side="right", padx=(8, 0))
+
+        ctk.CTkButton(
+            btn_frame, text="Cancel", fg_color="gray", width=100,
+            command=dialog.destroy
+        ).pack(side="right")
+
+    def _execute_backfill(self, task_id: str, since_date=None):
+        """Run the backfill with the selected date range."""
         scheduler = self._get_active_scheduler()
         if not scheduler:
             return
@@ -9046,7 +9315,8 @@ Open Settings and click '? Start Tutorial'!""",
         self._task_running_id = task_id
         self._animate_task_status(task.name, 0, prefix="⏪ Backfilling")
 
-        scheduler.backfill_task(task_id, stop_flag=lambda: self._backfill_stop)
+        scheduler.backfill_task(task_id, stop_flag=lambda: self._backfill_stop,
+                                since_date=since_date)
 
     def _stop_backfill(self):
         """Signal the running backfill to stop."""
@@ -9447,9 +9717,38 @@ Open Settings and click '? Start Tutorial'!""",
 
         ctk.CTkLabel(pipeline_frame, text="Drive Folder ID or URL:").grid(row=p_row, column=0, sticky="w", pady=(0, 5))
         p_row += 1
-        drive_folder_entry = ctk.CTkEntry(pipeline_frame, width=400, placeholder_text="https://drive.google.com/drive/folders/... or folder ID")
-        drive_folder_entry.grid(row=p_row, column=0, columnspan=2, sticky="ew", pady=(0, 15))
+
+        # Drive folder entry with pre-fill from Settings
+        drive_folder_row = ctk.CTkFrame(pipeline_frame, fg_color="transparent")
+        drive_folder_row.grid(row=p_row, column=0, columnspan=2, sticky="ew", pady=(0, 5))
+        drive_folder_row.grid_columnconfigure(0, weight=1)
+
+        drive_folder_entry = ctk.CTkEntry(drive_folder_row, placeholder_text="https://drive.google.com/drive/folders/... or folder ID")
+        drive_folder_entry.grid(row=0, column=0, sticky="ew", padx=(0, 8))
         drive_folder_entry.insert(0, task.drive_folder_id)
+
+        # Show "Use from Settings" button if Settings has a folder configured and task field is empty
+        settings_folder = self.settings.get("drive_folder_id", "")
+        if settings_folder and not task.drive_folder_id:
+            def _use_settings_folder(entry=drive_folder_entry, fid=settings_folder, btn_ref=[None]):
+                entry.delete(0, "end")
+                entry.insert(0, fid)
+                if btn_ref[0]:
+                    btn_ref[0].grid_remove()
+            use_btn = ctk.CTkButton(
+                drive_folder_row, text="Use from Settings", width=130,
+                fg_color=COLORS["accent"], hover_color="#2563eb",
+                font=ctk.CTkFont(size=11),
+                command=_use_settings_folder
+            )
+            use_btn.grid(row=0, column=1)
+            _use_settings_folder.__defaults__ = (drive_folder_entry, settings_folder, [use_btn])
+        elif settings_folder and task.drive_folder_id == settings_folder:
+            # Already using Settings folder — show subtle indicator
+            ctk.CTkLabel(
+                drive_folder_row, text="(from Settings)",
+                font=ctk.CTkFont(size=11), text_color=COLORS["text_muted"]
+            ).grid(row=0, column=1, padx=(0, 4))
         p_row += 1
 
         # ========== EXTRACTION FIELDS (moved into extraction_frame) ==========
