@@ -759,7 +759,7 @@ class Scheduler:
         week_folder = os.path.join(data_dir, f"Week_{week}_{year}")
         os.makedirs(week_folder, exist_ok=True)
 
-        summary_filename = f"summary_{today.isoformat()}.txt"
+        summary_filename = f"News_Briefing_W{week}_{today.isoformat()}.txt"
         summary_path = os.path.join(week_folder, summary_filename)
         with open(summary_path, "w", encoding="utf-8") as f:
             f.write(text)
@@ -768,7 +768,7 @@ class Scheduler:
         # --- Step 5: Generate audio (skip in server mode) ---
         audio_file = None
         if not self.server_mode:
-            audio_filename = f"briefing_{today.isoformat()}.mp3"
+            audio_filename = f"News_Briefing_W{week}_{today.isoformat()}.mp3"
             output_path = os.path.join(week_folder, audio_filename)
 
             self._log(task.id, f"[Pipeline] Generating audio ({task.audio_quality})...")
