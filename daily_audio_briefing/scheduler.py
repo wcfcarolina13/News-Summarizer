@@ -759,7 +759,8 @@ class Scheduler:
         week_folder = os.path.join(data_dir, f"Week_{week}_{year}")
         os.makedirs(week_folder, exist_ok=True)
 
-        summary_path = os.path.join(week_folder, "summary.txt")
+        summary_filename = f"summary_{today.isoformat()}.txt"
+        summary_path = os.path.join(week_folder, summary_filename)
         with open(summary_path, "w", encoding="utf-8") as f:
             f.write(text)
         self._log(task.id, f"[Pipeline] Saved summary ({len(text)} chars) to {week_folder}")
@@ -866,28 +867,39 @@ class Scheduler:
         else:
             self._log(task.id, "[Pipeline] Server mode — skipping audio generation")
 
-        # --- Step 6: Upload to Google Drive ---
+        # --- Step 6: Upload to Google Drive (summary text + audio) ---
         drive_uploaded = False
-        if task.upload_to_drive and audio_file and task.drive_folder_id:
+        if task.upload_to_drive and task.drive_folder_id:
             try:
                 from drive_manager import upload_file, is_signed_in, extract_folder_id_from_url
                 if is_signed_in():
                     folder_id = extract_folder_id_from_url(task.drive_folder_id)
-                    result = upload_file(audio_file, folder_id)
-                    if result.get("status") == "uploaded":
-                        drive_uploaded = True
-                        self._log(task.id, f"[Pipeline] Uploaded to Drive: {result.get('name')}")
-                    elif result.get("status") == "skipped":
-                        drive_uploaded = True
-                        self._log(task.id, f"[Pipeline] Already on Drive (skipped)")
+                    uploaded_files = []
+
+                    # Upload summary text
+                    txt_result = upload_file(summary_path, folder_id)
+                    if txt_result.get("status") in ("uploaded", "skipped"):
+                        uploaded_files.append(f"summary ({txt_result['status']})")
                     else:
-                        self._log(task.id, f"[Pipeline] Drive upload issue: {result}")
+                        self._log(task.id, f"[Pipeline] Summary upload issue: {txt_result}")
+
+                    # Upload audio file
+                    if audio_file:
+                        audio_result = upload_file(audio_file, folder_id)
+                        if audio_result.get("status") in ("uploaded", "skipped"):
+                            uploaded_files.append(f"audio ({audio_result['status']})")
+                        else:
+                            self._log(task.id, f"[Pipeline] Audio upload issue: {audio_result}")
+                    elif not self.server_mode:
+                        self._log(task.id, "[Pipeline] No audio file to upload")
+
+                    if uploaded_files:
+                        drive_uploaded = True
+                        self._log(task.id, f"[Pipeline] Uploaded to Drive: {', '.join(uploaded_files)}")
                 else:
                     self._log(task.id, "[Pipeline] Drive not signed in — skipping upload")
             except Exception as drive_err:
                 self._log(task.id, f"[Pipeline] Drive upload error: {drive_err}")
-        elif task.upload_to_drive and not audio_file:
-            self._log(task.id, "[Pipeline] No audio file to upload")
 
         # --- Step 7: Update task result ---
         task.items_extracted = len(items)
