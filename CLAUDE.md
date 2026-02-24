@@ -208,14 +208,15 @@ gunicorn web_app:app --bind 0.0.0.0:$PORT --timeout 120 --workers 1 --preload
 **High Priority — New Features:**
 - Summary quality audit + cross-source deduplication: audit whether custom instructions are followed, add toggle for post-summary processing step to combine/deduplicate similar info across sources
 
-**Pipeline UX Improvements (next session):**
-- Drive folder pre-fill: If a Drive location is already configured in Settings, auto-populate it as a selectable option when building or editing a pipeline task (avoid re-entering the same folder ID)
-- Drive folder quick-link: Pipeline tasks in the scheduler task list should have a button/link that opens the assigned Google Drive folder directly in the browser
-- Kokoro voice samples on Audio page: Currently only 2 voice samples shown — add preview samples for all 12 high-quality Kokoro voices so users can audition before selecting
-- Pipeline backfill dialog: Backfill on pipeline tasks should open a second window to choose how far back to fill (e.g., "Last 7 days", "Last 30 days", "Since beginning", custom date picker). Must be good UX but comprehensive.
-- Backfill safety warnings: Show prominent warnings for potentially long-running backfills — e.g., backfilling since the beginning of time on many YouTube channels could time out or hit API limits. Estimate duration/cost before confirming.
-- Task execution feedback: Desktop notification + in-app status line when a scheduled task starts running ("ExecSum extraction running..."), then updates to completion status ("ExecSum extraction complete — 12 items exported"). Should only appear while actively running, not persist after completion.
-- **BUG — Cryptosum scheduler not running:** Cryptosum newsletter extraction task appears to have not executed for at least a day (no new entries in Sheets). Investigate: check task last_run/next_run timestamps, scheduler logs, whether the newsletter actually published new issues, and whether the task is still active on the server.
+**Pipeline UX Improvements (completed Feb 2026):**
+- ~~Drive folder pre-fill~~ ✅ "Use from Settings" button in pipeline task editor when Settings has a folder configured
+- ~~Drive folder quick-link~~ ✅ 📁 button on pipeline tasks opens Google Drive folder in browser
+- ~~Kokoro voice samples~~ ✅ All 12 voices shown in 3-column grid with radio buttons, descriptions, and individual play buttons
+- ~~Pipeline backfill dialog~~ ✅ Date range picker: auto-detect, 7/30/90 days, full archive, or custom date
+- ~~Backfill safety warnings~~ ✅ Dynamic warning banner for long-running backfills (90d, full archive)
+- ~~Task execution feedback~~ ✅ macOS desktop notifications on task start/complete + status bar updates from any page
+- ~~Cryptosum scheduler bug~~ ✅ Root cause: daily tasks with missed run times were pushed to tomorrow. Fixed: catch-up detection runs missed tasks within 1 minute of daemon start
+- ~~Task-name filenames~~ ✅ Pipeline outputs include sanitized task name + week number (e.g., News_Summarizer_Pipeline_W9_2026-02-24.txt)
 
 **Future — Desktop/Web Sync:**
 - Login/registration system for cloud features
