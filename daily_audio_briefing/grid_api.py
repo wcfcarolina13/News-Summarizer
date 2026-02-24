@@ -871,7 +871,8 @@ Examples:
 - CHAIN_SUPPORT: Added Starknet deployment
 - No updates needed"""
 
-        response = model.generate_content(prompt)
+        from api_usage_tracker import get_tracker
+        response = get_tracker().tracked_generate(model, prompt, "grid.analyze_profile")
         suggestion = response.text.strip()
 
         # Only return meaningful suggestions

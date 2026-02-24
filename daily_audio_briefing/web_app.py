@@ -719,6 +719,61 @@ def api_settings_instructions():
         return jsonify({'instructions': instructions})
 
 # =============================================================================
+# API USAGE ROUTES
+# =============================================================================
+
+@app.route('/api/usage/stats')
+def api_usage_stats():
+    """Get current API usage statistics."""
+    try:
+        from api_usage_tracker import get_tracker
+        return jsonify(get_tracker().get_stats())
+    except Exception as e:
+        return jsonify({'error': _safe_error(e)}), 500
+
+@app.route('/api/usage/history')
+def api_usage_history():
+    """Get daily usage history."""
+    try:
+        from api_usage_tracker import get_tracker
+        days = request.args.get('days', 30, type=int)
+        return jsonify({'history': get_tracker().get_history(days)})
+    except Exception as e:
+        return jsonify({'error': _safe_error(e)}), 500
+
+@app.route('/api/usage/tasks')
+def api_usage_tasks():
+    """Get per-task API usage breakdown."""
+    try:
+        from api_usage_tracker import get_tracker
+        return jsonify({'task_totals': get_tracker().get_task_stats()})
+    except Exception as e:
+        return jsonify({'error': _safe_error(e)}), 500
+
+@app.route('/api/usage/limits', methods=['GET', 'PUT'])
+@_rate_limit("5 per minute")
+def api_usage_limits():
+    """Get or update usage limits."""
+    try:
+        from api_usage_tracker import get_tracker
+        tracker = get_tracker()
+        if request.method == 'PUT':
+            data = request.json or {}
+            tracker.update_limits(
+                daily_max=data.get('daily_max'),
+                monthly_max=data.get('monthly_max'),
+                enabled=data.get('enabled'),
+            )
+            return jsonify({'success': True})
+        return jsonify({
+            'daily_limit': tracker.get_stats()['daily_limit'],
+            'monthly_limit': tracker.get_stats()['monthly_limit'],
+            'limits_enabled': tracker.get_stats()['limits_enabled'],
+        })
+    except Exception as e:
+        return jsonify({'error': _safe_error(e)}), 500
+
+# =============================================================================
 # SCHEDULER API ROUTES
 # =============================================================================
 

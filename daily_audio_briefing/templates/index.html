@@ -1173,6 +1173,29 @@
             </div>
 
             <div class="card">
+                <div class="card-title">API Usage & Limits</div>
+                <div id="usageStats" style="font-size:0.85rem;color:var(--text-secondary);">Loading...</div>
+                <div style="margin-top:12px;">
+                    <div style="display:flex;align-items:center;gap:8px;margin-bottom:6px;">
+                        <span style="width:50px;font-size:0.8rem;">Today:</span>
+                        <div style="flex:1;background:var(--bg-tertiary);border-radius:6px;height:14px;overflow:hidden;">
+                            <div id="usageDailyBar" style="height:100%;background:var(--accent);border-radius:6px;width:0%;transition:width 0.3s;"></div>
+                        </div>
+                        <span id="usageDailyText" style="font-size:0.8rem;min-width:80px;text-align:right;">0 / 500</span>
+                    </div>
+                    <div style="display:flex;align-items:center;gap:8px;margin-bottom:8px;">
+                        <span style="width:50px;font-size:0.8rem;">Month:</span>
+                        <div style="flex:1;background:var(--bg-tertiary);border-radius:6px;height:14px;overflow:hidden;">
+                            <div id="usageMonthlyBar" style="height:100%;background:var(--accent);border-radius:6px;width:0%;transition:width 0.3s;"></div>
+                        </div>
+                        <span id="usageMonthlyText" style="font-size:0.8rem;min-width:80px;text-align:right;">0 / 10,000</span>
+                    </div>
+                    <div id="usageCost" style="font-size:0.78rem;color:var(--text-muted);margin-bottom:10px;"></div>
+                    <div id="usageTaskBreakdown" style="font-size:0.78rem;color:var(--text-muted);"></div>
+                </div>
+            </div>
+
+            <div class="card">
                 <div class="card-title">System Status</div>
                 <div class="dep-status" id="systemStatus"></div>
             </div>
@@ -1659,6 +1682,34 @@
                 const sourcesData = await api('/api/sources');
                 sources = sourcesData.sources || [];
                 renderSources();
+
+                // Load API usage stats
+                try {
+                    const usage = await api('/api/usage/stats');
+                    const daily = usage.daily_calls || 0;
+                    const dailyMax = usage.daily_limit || 500;
+                    const monthly = usage.monthly_calls || 0;
+                    const monthlyMax = usage.monthly_limit || 10000;
+                    document.getElementById('usageDailyText').textContent = `${daily.toLocaleString()} / ${dailyMax.toLocaleString()}`;
+                    document.getElementById('usageMonthlyText').textContent = `${monthly.toLocaleString()} / ${monthlyMax.toLocaleString()}`;
+                    document.getElementById('usageDailyBar').style.width = Math.min(daily / Math.max(dailyMax, 1) * 100, 100) + '%';
+                    document.getElementById('usageMonthlyBar').style.width = Math.min(monthly / Math.max(monthlyMax, 1) * 100, 100) + '%';
+                    const dailyCost = (usage.daily_cost_estimate || 0).toFixed(4);
+                    const monthlyCost = (usage.monthly_cost_estimate || 0).toFixed(4);
+                    document.getElementById('usageCost').textContent = `Est. cost today: $${dailyCost}  |  Month: $${monthlyCost}`;
+                    document.getElementById('usageStats').textContent = usage.limits_enabled ? 'Limits enabled' : 'Limits disabled';
+
+                    // Per-task breakdown
+                    const taskData = await api('/api/usage/tasks');
+                    const totals = taskData.task_totals || {};
+                    const taskEntries = Object.values(totals).filter(t => (t.calls_this_month || 0) > 0)
+                        .sort((a, b) => (b.calls_this_month || 0) - (a.calls_this_month || 0));
+                    if (taskEntries.length > 0) {
+                        document.getElementById('usageTaskBreakdown').innerHTML =
+                            '<strong>Scheduler tasks this month:</strong><br>' +
+                            taskEntries.map(t => `${t.name}: ${(t.calls_this_month || 0).toLocaleString()} calls`).join('<br>');
+                    }
+                } catch(e) { console.warn('Usage stats unavailable:', e); }
 
                 // Load dependencies (detected on the server this app is running on)
                 const depData = await api('/api/dependencies');

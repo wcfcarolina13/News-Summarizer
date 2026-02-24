@@ -21,6 +21,7 @@ All source files are in `daily_audio_briefing/`.
 | `make_audio_quality.py` | ~210 | Kokoro TTS high-quality audio |
 | `sheets_manager.py` | ~350 | Google Sheets export, tab management, deduplication |
 | `file_manager.py` | ~155 | File I/O with frozen app support |
+| `api_usage_tracker.py` | ~310 | Gemini API call tracking, daily/monthly limits, cost estimation |
 | `web_app.py` | ~2850 | Flask web dashboard (scheduler, extraction, audio) — **NEVER read in full.** Use grep. |
 | `server_scheduler.py` | ~80 | Flask-integrated scheduler for cloud deployment |
 
@@ -189,11 +190,12 @@ gunicorn web_app:app --bind 0.0.0.0:$PORT --timeout 120 --workers 1 --preload
 - Unified local+cloud task management in web UI
 - Re-enable Render deployment when budget allows
 
-**Critical — API Cost Protection:**
-12. API usage rate limiter — hard cap to prevent unexpected bills from scheduler bursts
-13. User-configurable spending limit with warnings (desktop notification + email)
-14. Per-task API call tracking and cost estimation
-15. Dashboard showing cumulative API usage and remaining budget
+**API Cost Protection (completed Feb 2026):**
+- ~~API usage rate limiter~~ ✅ `api_usage_tracker.py` with daily/monthly hard caps, `APILimitExceeded` exception
+- ~~User-configurable spending limit~~ ✅ Settings page UI with limit entries, enable/disable switch
+- ~~Per-task API call tracking~~ ✅ Thread-local task context in scheduler, per-task totals in `api_usage.json`
+- ~~Dashboard showing API usage~~ ✅ Desktop Settings card + web dashboard panel with progress bars, cost estimates
+- Future: desktop notification + email alerts when approaching limits
 
 **Future — Desktop/Web Sync:**
 - Login/registration system for cloud features

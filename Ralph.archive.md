@@ -2,9 +2,63 @@
 # Purpose: Keep the News Summarizer project focused and trim during development
 
 ## Current Focus
-- Desktop app UX polish and rebuild cycle
-- Server memory management on Render free tier (512MB)
-- Custom app icons and branding
+- API cost protection and usage tracking
+- Security hardening (remaining low-priority items)
+- Feature pipeline: Summarize → Audio → Drive
+
+## Recently Completed (Session Feb 23, 2026 — API Cost Protection)
+
+### Summary
+Added centralized Gemini API usage tracking, daily/monthly hard caps, per-task attribution, cost estimation, and Settings UI for both desktop and web dashboard. Addresses the "Critical — API Cost Protection" items from CLAUDE.md.
+
+### New File: `api_usage_tracker.py` (~310 lines)
+- Thread-safe singleton `APIUsageTracker` with `threading.Lock`
+- `tracked_generate(model, prompt, caller)` — wraps `model.generate_content()` with pre-flight limit check + post-call tracking
+- `APILimitExceeded` exception raised when daily/monthly cap hit
+- Thread-local `set_current_task(id, name)` for scheduler attribution without threading task_id through 4 layers
+- Lazy day/month rollover — no background timers, resets on first call of new day
+- Cost estimation: `chars / 4 ≈ tokens × model pricing table`
+- JSON persistence (`api_usage.json`) with atomic writes via `os.replace()`
+- Rolling call log (500 entries), daily history (90 days), per-task totals
+
+### Instrumented 7 Call Sites
+All `model.generate_content(prompt)` → `tracker.tracked_generate(model, prompt, caller)`:
+- `gui_app.py`: `_clean_article_content()`, `_summarize_youtube_transcript()`, `_process_audio_content_for_summary()`
+- `source_fetcher.py`: `_summarize_youtube()`, `_summarize_article()`
+- `get_youtube_news.py`: `summarize_text()`
+- `grid_api.py`: `analyze_profile_with_ai()`
+
+### Scheduler Integration
+Added `set_current_task`/`clear_current_task` in 4 scheduler methods:
+- `_execute_task()`, `_run_backfill()`, `_run_reenrich()`, `_run_retitle()`
+- All in try/finally blocks ensuring cleanup
+
+### Desktop Settings UI
+New "API Usage & Limits" card (row 5) on Settings page:
+- Daily/monthly progress bars with call counts
+- Cost estimate labels
+- Enable/disable limits switch
+- Configurable daily + monthly limit entries
+- Save Limits + Reset Today buttons
+- Per-task breakdown showing scheduler task call counts
+- Refreshes on every Settings page visit via `_refresh_settings_page()`
+
+### Web Dashboard
+- 4 new API endpoints: `/api/usage/stats`, `/api/usage/history`, `/api/usage/tasks`, `/api/usage/limits`
+- Usage stats panel in Settings section with progress bars and per-task breakdown
+
+### Key Files Modified
+- `api_usage_tracker.py` — NEW: core tracker module
+- `gui_app.py` — 3 call sites + Settings card + refresh/save methods + startup init
+- `source_fetcher.py` — 2 call sites wrapped
+- `get_youtube_news.py` — 1 call site wrapped
+- `grid_api.py` — 1 call site wrapped
+- `scheduler.py` — task context in 4 methods (8 insertion points)
+- `web_app.py` — 4 new endpoints
+- `templates/index.html` — usage stats panel
+- `CLAUDE.md` — updated pending work section
+
+---
 
 ## Recently Completed (Session Feb 13-17, 2026 — Desktop Rebuild & UX Polish)
 

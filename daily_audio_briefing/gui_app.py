@@ -274,6 +274,17 @@ class AudioBriefingApp(ctk.CTk):
         self.settings = self._load_settings()
         self._current_text_scale = 1.0  # Initialize scale tracking
 
+        # Push API usage limits from settings into tracker
+        try:
+            from api_usage_tracker import get_tracker
+            get_tracker().update_limits(
+                daily_max=self.settings.get("api_daily_limit", 500),
+                monthly_max=self.settings.get("api_monthly_limit", 10000),
+                enabled=self.settings.get("api_limits_enabled", True),
+            )
+        except Exception:
+            pass  # Tracker init failure shouldn't block app launch
+
         # Long-running operation flag - prevents scheduler from overwriting status
         self._long_operation_in_progress = False
 
@@ -1496,6 +1507,79 @@ class AudioBriefingApp(ctk.CTk):
             self.label_compression.configure(text=compression_text, text_color=compression_color)
         # Refresh Drive status (quick, no API call)
         self._refresh_drive_status()
+        # Refresh API usage stats
+        self._refresh_usage_stats()
+
+    def _refresh_usage_stats(self):
+        """Refresh the API usage display on the Settings page."""
+        if not hasattr(self, 'usage_daily_label'):
+            return
+        try:
+            from api_usage_tracker import get_tracker
+            stats = get_tracker().get_stats()
+
+            daily = stats["daily_calls"]
+            daily_max = stats["daily_limit"]
+            monthly = stats["monthly_calls"]
+            monthly_max = stats["monthly_limit"]
+
+            self.usage_daily_label.configure(
+                text=f"Today: {daily:,} / {daily_max:,} calls"
+            )
+            self.usage_daily_bar.set(min(daily / max(daily_max, 1), 1.0))
+
+            self.usage_monthly_label.configure(
+                text=f"Month: {monthly:,} / {monthly_max:,} calls"
+            )
+            self.usage_monthly_bar.set(min(monthly / max(monthly_max, 1), 1.0))
+
+            daily_cost = stats.get("daily_cost_estimate", 0)
+            monthly_cost = stats.get("monthly_cost_estimate", 0)
+            self.usage_cost_label.configure(
+                text=f"Est. cost today: ${daily_cost:.4f}  |  Month: ${monthly_cost:.4f}"
+            )
+
+            # Per-task breakdown
+            task_stats = get_tracker().get_task_stats()
+            if task_stats:
+                lines = ["Scheduler tasks this month:"]
+                for tid, info in sorted(task_stats.items(), key=lambda x: x[1].get("calls_this_month", 0), reverse=True):
+                    name = info.get("name", "Unknown")
+                    calls = info.get("calls_this_month", 0)
+                    if calls > 0:
+                        lines.append(f"  {name}: {calls:,} calls")
+                self.usage_tasks_label.configure(text="\n".join(lines) if len(lines) > 1 else "")
+            else:
+                self.usage_tasks_label.configure(text="")
+        except Exception as e:
+            print(f"[Settings] Error refreshing usage stats: {e}")
+
+    def _save_usage_limits(self):
+        """Save API usage limit settings."""
+        try:
+            from api_usage_tracker import get_tracker
+            daily = int(self.usage_daily_limit_entry.get() or 500)
+            monthly = int(self.usage_monthly_limit_entry.get() or 10000)
+            enabled = self.usage_limits_var.get()
+
+            get_tracker().update_limits(daily_max=daily, monthly_max=monthly, enabled=enabled)
+
+            self.settings["api_limits_enabled"] = enabled
+            self.settings["api_daily_limit"] = daily
+            self.settings["api_monthly_limit"] = monthly
+            self._save_settings()
+            self._refresh_usage_stats()
+        except ValueError:
+            pass  # Invalid input, ignore
+
+    def _reset_usage_today(self):
+        """Reset today's API usage counter."""
+        try:
+            from api_usage_tracker import get_tracker
+            get_tracker().reset_today()
+            self._refresh_usage_stats()
+        except Exception as e:
+            print(f"[Settings] Error resetting usage: {e}")
 
     # ========== Google Drive Integration Methods ==========
 
@@ -2270,6 +2354,96 @@ class AudioBriefingApp(ctk.CTk):
             fg_color="gray",
             command=self._show_drive_storage_dialog
         ).pack(side="left", padx=(0, 8))
+
+        # ── API Usage & Limits card ──
+        usage_card = self._create_card(page, title="API Usage & Limits")
+        usage_card.grid(row=5, column=0, padx=20, pady=(0, 12), sticky="ew")
+
+        usage_content = ctk.CTkFrame(usage_card, fg_color="transparent")
+        usage_content.grid(row=1, column=0, padx=16, pady=(0, 16), sticky="ew")
+        usage_content.grid_columnconfigure(1, weight=1)
+
+        # Daily usage
+        self.usage_daily_label = ctk.CTkLabel(
+            usage_content, text="Today: 0 / 500 calls",
+            font=ctk.CTkFont(size=12), text_color=COLORS["text_secondary"]
+        )
+        self.usage_daily_label.grid(row=0, column=0, columnspan=2, sticky="w", pady=(0, 2))
+
+        self.usage_daily_bar = ctk.CTkProgressBar(usage_content, height=12)
+        self.usage_daily_bar.grid(row=1, column=0, columnspan=2, sticky="ew", pady=(0, 8))
+        self.usage_daily_bar.set(0)
+
+        # Monthly usage
+        self.usage_monthly_label = ctk.CTkLabel(
+            usage_content, text="Month: 0 / 10,000 calls",
+            font=ctk.CTkFont(size=12), text_color=COLORS["text_secondary"]
+        )
+        self.usage_monthly_label.grid(row=2, column=0, columnspan=2, sticky="w", pady=(0, 2))
+
+        self.usage_monthly_bar = ctk.CTkProgressBar(usage_content, height=12)
+        self.usage_monthly_bar.grid(row=3, column=0, columnspan=2, sticky="ew", pady=(0, 8))
+        self.usage_monthly_bar.set(0)
+
+        # Cost estimate
+        self.usage_cost_label = ctk.CTkLabel(
+            usage_content, text="Est. cost today: $0.00  |  Month: $0.00",
+            font=ctk.CTkFont(size=11), text_color=COLORS["text_muted"]
+        )
+        self.usage_cost_label.grid(row=4, column=0, columnspan=2, sticky="w", pady=(0, 10))
+
+        # Limits controls
+        limits_sep = ctk.CTkLabel(
+            usage_content, text="Limits",
+            font=ctk.CTkFont(size=11, weight="bold"), text_color=COLORS["text_muted"]
+        )
+        limits_sep.grid(row=5, column=0, columnspan=2, sticky="w", pady=(0, 4))
+
+        self.usage_limits_var = ctk.BooleanVar(
+            value=self.settings.get("api_limits_enabled", True)
+        )
+        ctk.CTkSwitch(
+            usage_content, text="Enable usage limits",
+            variable=self.usage_limits_var,
+            font=ctk.CTkFont(size=12)
+        ).grid(row=6, column=0, columnspan=2, sticky="w", pady=(0, 8))
+
+        limits_row = ctk.CTkFrame(usage_content, fg_color="transparent")
+        limits_row.grid(row=7, column=0, columnspan=2, sticky="w", pady=(0, 8))
+
+        ctk.CTkLabel(limits_row, text="Daily:", font=ctk.CTkFont(size=12)).pack(side="left", padx=(0, 4))
+        self.usage_daily_limit_entry = ctk.CTkEntry(limits_row, width=70, height=28, font=ctk.CTkFont(size=12))
+        self.usage_daily_limit_entry.pack(side="left", padx=(0, 16))
+        self.usage_daily_limit_entry.insert(0, str(self.settings.get("api_daily_limit", 500)))
+
+        ctk.CTkLabel(limits_row, text="Monthly:", font=ctk.CTkFont(size=12)).pack(side="left", padx=(0, 4))
+        self.usage_monthly_limit_entry = ctk.CTkEntry(limits_row, width=80, height=28, font=ctk.CTkFont(size=12))
+        self.usage_monthly_limit_entry.pack(side="left")
+        self.usage_monthly_limit_entry.insert(0, str(self.settings.get("api_monthly_limit", 10000)))
+
+        # Buttons row
+        usage_btn_frame = ctk.CTkFrame(usage_content, fg_color="transparent")
+        usage_btn_frame.grid(row=8, column=0, columnspan=2, sticky="w", pady=(0, 8))
+
+        ctk.CTkButton(
+            usage_btn_frame, text="Save Limits", width=100,
+            fg_color=COLORS["accent"], hover_color="#2563eb",
+            command=self._save_usage_limits
+        ).pack(side="left", padx=(0, 8))
+
+        ctk.CTkButton(
+            usage_btn_frame, text="Reset Today", width=100,
+            fg_color="gray", hover_color=COLORS["warning"],
+            command=self._reset_usage_today
+        ).pack(side="left")
+
+        # Per-task breakdown label
+        self.usage_tasks_label = ctk.CTkLabel(
+            usage_content, text="",
+            font=ctk.CTkFont(size=11), text_color=COLORS["text_muted"],
+            justify="left", anchor="w"
+        )
+        self.usage_tasks_label.grid(row=9, column=0, columnspan=2, sticky="w")
 
     def _on_settings_scale_change(self, value):
         """Handle text scale slider change on Settings page."""
@@ -3121,6 +3295,9 @@ class AudioBriefingApp(ctk.CTk):
             "drive_auto_upload": False,  # Auto-upload audio to Google Drive
             "drive_root_folder_name": "Daily Audio Briefing",  # Drive root folder name
             "drive_folder_id": "",  # Shared Google Drive folder ID (from URL)
+            "api_limits_enabled": True,  # Enable API usage limits
+            "api_daily_limit": 500,  # Max Gemini API calls per day
+            "api_monthly_limit": 10000,  # Max Gemini API calls per month
         }
         # In frozen mode, user settings live in the data directory (Application Support)
         # In dev mode, they live next to the script
@@ -3873,7 +4050,8 @@ ARTICLE URL: {url}
 RAW CONTENT:
 {raw_content[:20000]}"""  # Limit content length
 
-            response = model.generate_content(prompt)
+            from api_usage_tracker import get_tracker, APILimitExceeded
+            response = get_tracker().tracked_generate(model, prompt, "gui._clean_article")
             cleaned = response.text.strip()
 
             # Ensure we got meaningful content back
@@ -3883,6 +4061,9 @@ RAW CONTENT:
                 print(f"[Clean Article] AI returned too short response, using original")
                 return raw_content[:5000]
 
+        except APILimitExceeded as e:
+            print(f"[Clean Article] {e}")
+            return raw_content[:5000]
         except Exception as e:
             print(f"[Clean Article] Error: {e}")
             return raw_content[:5000]  # Return truncated raw content as fallback
@@ -3921,8 +4102,12 @@ Transcript:
 Transcript:
 {video_result['transcript'][:15000]}"""  # Limit transcript length
 
-            response = model.generate_content(prompt)
+            from api_usage_tracker import get_tracker, APILimitExceeded
+            response = get_tracker().tracked_generate(model, prompt, "gui._summarize_yt")
             return response.text.strip()
+        except APILimitExceeded as e:
+            print(f"[Summarize] {e}")
+            return f"API limit reached: {e.limit_type} ({e.current}/{e.maximum}). Try again tomorrow or increase limits in Settings."
         except Exception as e:
             print(f"[Summarize] Error: {e}")
             return video_result['transcript'][:2000]  # Return truncated transcript as fallback
@@ -6694,8 +6879,12 @@ TEXT TO CLEAN:
 """
 
         try:
-            response = model.generate_content(prompt)
+            from api_usage_tracker import get_tracker, APILimitExceeded
+            response = get_tracker().tracked_generate(model, prompt, "gui._process_audio")
             return response.text.strip()
+        except APILimitExceeded as e:
+            print(f"[Clean] {e}")
+            return text  # Return original when limit hit
         except Exception as e:
             print(f"[Clean] Error cleaning article: {e}")
             return text  # Return original on error

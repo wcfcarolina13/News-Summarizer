@@ -503,6 +503,10 @@ class Scheduler:
             return
         self._running_tasks.add(task.id)
 
+        # Set task context for API usage attribution
+        from api_usage_tracker import set_current_task, clear_current_task
+        set_current_task(task.id, task.name)
+
         self._log(task.id, f"[Scheduler] Running task: {task.name}")
         task.last_run = datetime.now().isoformat()
 
@@ -638,6 +642,7 @@ class Scheduler:
             self._log(task.id, f"[Scheduler] Task failed: {e}")
 
         finally:
+            clear_current_task()
             self._running_tasks.discard(task.id)
             # Force garbage collection after task to reclaim memory (512MB limit)
             gc.collect()
@@ -665,6 +670,9 @@ class Scheduler:
                 self._log(task.id, "[Backfill] Skipping — this task is already running")
                 return
             self._running_tasks.add(task.id)
+
+            from api_usage_tracker import set_current_task, clear_current_task
+            set_current_task(task.id, task.name)
 
             try:
                 from data_csv_processor import DataCSVProcessor, ExtractionConfig, load_custom_instructions
@@ -869,6 +877,7 @@ class Scheduler:
                 if self._on_task_complete:
                     self._on_task_complete(task, False, task.last_result)
             finally:
+                clear_current_task()
                 self._running_tasks.discard(task.id)
                 gc.collect()
 
@@ -903,6 +912,9 @@ class Scheduler:
         self._running_tasks.add(task.id)
 
         def _run_reenrich():
+            from api_usage_tracker import set_current_task, clear_current_task
+            set_current_task(task.id, task.name)
+
             try:
                 from sheets_manager import (
                     get_sheets_service, get_sheet_headers,
@@ -1086,6 +1098,7 @@ class Scheduler:
                 if self._on_task_complete:
                     self._on_task_complete(task, False, task.last_result)
             finally:
+                clear_current_task()
                 self._running_tasks.discard(task.id)
                 gc.collect()
 
@@ -1120,6 +1133,9 @@ class Scheduler:
         self._running_tasks.add(task.id)
 
         def _run_retitle():
+            from api_usage_tracker import set_current_task, clear_current_task
+            set_current_task(task.id, task.name)
+
             try:
                 from data_csv_processor import DataCSVProcessor, ExtractionConfig
                 from sheets_manager import get_sheets_service, get_sheet_headers
@@ -1322,6 +1338,7 @@ class Scheduler:
                 if self._on_task_complete:
                     self._on_task_complete(task, False, task.last_result)
             finally:
+                clear_current_task()
                 self._running_tasks.discard(task.id)
                 gc.collect()
 

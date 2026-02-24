@@ -675,7 +675,8 @@ Your output goes directly to TTS. Any markdown or preambles will sound wrong whe
             else:
                 prompt = f"{base_prompt}\n\nTranscript:\n{transcript[:15000]}"
 
-            response = model.generate_content(prompt)
+            from api_usage_tracker import get_tracker
+            response = get_tracker().tracked_generate(model, prompt, "fetcher._summarize_yt")
             return response.text
 
         except Exception as e:
@@ -735,7 +736,8 @@ Your output goes directly to TTS. Any markdown or preambles will sound wrong whe
             else:
                 prompt = f"{base_prompt}\n\nArticle Content:\n{content[:15000]}"
 
-            response = model.generate_content(prompt)
+            from api_usage_tracker import get_tracker
+            response = get_tracker().tracked_generate(model, prompt, "fetcher._summarize_article")
             summary = response.text
             _debug_log(f"[Article] Summarized {len(content)} chars to {len(summary)} chars")
             return summary
