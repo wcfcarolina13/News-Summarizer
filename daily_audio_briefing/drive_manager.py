@@ -91,7 +91,7 @@ def is_signed_in() -> bool:
     if not os.path.exists(token_path):
         return False
     try:
-        creds = OAuthCredentials.from_authorized_user_file(token_path, SCOPES)
+        creds = OAuthCredentials.from_authorized_user_file(token_path)
         # Has a refresh token = can get new access tokens
         return creds.refresh_token is not None
     except Exception:
@@ -200,7 +200,7 @@ def get_drive_service():
     if not os.path.exists(token_path):
         raise RuntimeError("Not signed in. Click 'Sign in with Google' in Settings.")
 
-    creds = OAuthCredentials.from_authorized_user_file(token_path, SCOPES)
+    creds = OAuthCredentials.from_authorized_user_file(token_path)
 
     # Refresh if expired
     if creds.expired and creds.refresh_token:
