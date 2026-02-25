@@ -271,10 +271,12 @@ class Scheduler:
                         pass
 
                 if task_missed:
-                    # Schedule to run in 1 minute to catch up
-                    catchup_time = now + timedelta(minutes=1)
+                    # Schedule to run in 10 seconds to catch up
+                    # (must be shorter than _run_loop's 30s check interval
+                    #  to avoid race with periodic load_tasks() resetting next_run)
+                    catchup_time = now + timedelta(seconds=10)
                     task.next_run = catchup_time.isoformat()
-                    print(f"[Scheduler] Task '{task.name}' missed today's run — scheduling catch-up in 1 minute")
+                    print(f"[Scheduler] Task '{task.name}' missed today's run — scheduling catch-up in 10s")
                 else:
                     task.next_run = self._calculate_next_run(task)
 
