@@ -185,7 +185,8 @@ def main():
         sample_rate = 24000 
         
         for i, sentence in enumerate(sentences):
-            # print(f"Generating chunk {i+1}/{len(sentences)}...")
+            if (i + 1) % 50 == 0 or i == 0:
+                print(f"[TTS] {i+1}/{len(sentences)} sentences...")
             samples, sr = kokoro.create(sentence, voice=args.voice, speed=1.0, lang="en-us")
             audio_chunks.append(samples)
             sample_rate = sr

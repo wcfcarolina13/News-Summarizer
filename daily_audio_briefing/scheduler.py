@@ -840,7 +840,14 @@ class Scheduler:
             audio_filename = f"{safe_name}_W{week}_{today.isoformat()}.mp3"
             output_path = os.path.join(week_folder, audio_filename)
 
+            # Estimate duration from sentence count
+            import re as _re
+            sentences = [s for s in _re.split(r"(?<=[.!?])\s+", text) if s.strip()]
+            est_seconds = len(sentences) + 30  # ~1s/sentence + init
+            self._log(task.id, f"[Pipeline] Audio: ~{len(sentences)} sentences, est. ~{est_seconds}s")
             self._log(task.id, f"[Pipeline] Generating audio ({task.audio_quality})...")
+
+            AUDIO_TIMEOUT = 1800  # 30 min — Kokoro ~1s/sentence + init + ffmpeg
 
             if getattr(sys, "frozen", False):
                 # FROZEN MODE: Run audio generation in-process via module import
@@ -848,12 +855,14 @@ class Scheduler:
                 try:
                     import importlib
                     import io
+                    import threading
                     from contextlib import redirect_stdout, redirect_stderr
 
                     old_argv = sys.argv
                     old_cwd = os.getcwd()
                     stdout_capture = io.StringIO()
                     stderr_capture = io.StringIO()
+                    audio_error = [None]  # mutable container for thread result
 
                     if task.audio_quality == "fast":
                         sys.argv = ["make_audio_fast.py",
@@ -869,29 +878,42 @@ class Scheduler:
                         module_name = "make_audio_quality"
 
                     os.chdir(fm.base_dir)
-                    try:
-                        mod = importlib.import_module(module_name)
-                        importlib.reload(mod)
-                        with redirect_stdout(stdout_capture), redirect_stderr(stderr_capture):
-                            mod.main()
-                    except SystemExit:
-                        pass  # argparse or script called sys.exit(0)
-                    finally:
-                        sys.argv = old_argv
-                        os.chdir(old_cwd)
 
-                    # Check if file was created (may be .wav if MP3 conversion failed)
-                    if os.path.exists(output_path):
-                        audio_file = output_path
-                    elif os.path.exists(output_path.replace(".mp3", ".wav")):
-                        audio_file = output_path.replace(".mp3", ".wav")
+                    def _run_audio():
+                        try:
+                            mod = importlib.import_module(module_name)
+                            importlib.reload(mod)
+                            with redirect_stdout(stdout_capture), redirect_stderr(stderr_capture):
+                                mod.main()
+                        except SystemExit:
+                            pass  # argparse or script called sys.exit(0)
+                        except Exception as e:
+                            audio_error[0] = e
 
-                    if audio_file:
-                        size_mb = os.path.getsize(audio_file) / (1024 * 1024)
-                        self._log(task.id, f"[Pipeline] Audio generated: {os.path.basename(audio_file)} ({size_mb:.1f}MB)")
+                    audio_thread = threading.Thread(target=_run_audio, daemon=True)
+                    audio_thread.start()
+                    audio_thread.join(timeout=AUDIO_TIMEOUT)
+
+                    sys.argv = old_argv
+                    os.chdir(old_cwd)
+
+                    if audio_thread.is_alive():
+                        self._log(task.id, f"[Pipeline] Audio generation timed out ({AUDIO_TIMEOUT}s, frozen)")
+                    elif audio_error[0]:
+                        self._log(task.id, f"[Pipeline] Audio error (frozen): {audio_error[0]}")
                     else:
-                        out = stdout_capture.getvalue() + stderr_capture.getvalue()
-                        self._log(task.id, f"[Pipeline] Audio generation failed (frozen): {out[:200]}")
+                        # Check if file was created (may be .wav if MP3 conversion failed)
+                        if os.path.exists(output_path):
+                            audio_file = output_path
+                        elif os.path.exists(output_path.replace(".mp3", ".wav")):
+                            audio_file = output_path.replace(".mp3", ".wav")
+
+                        if audio_file:
+                            size_mb = os.path.getsize(audio_file) / (1024 * 1024)
+                            self._log(task.id, f"[Pipeline] Audio generated: {os.path.basename(audio_file)} ({size_mb:.1f}MB)")
+                        else:
+                            out = stdout_capture.getvalue() + stderr_capture.getvalue()
+                            self._log(task.id, f"[Pipeline] Audio generation failed (frozen): {out[:200]}")
 
                 except Exception as audio_err:
                     self._log(task.id, f"[Pipeline] Audio error (frozen): {audio_err}")
@@ -899,6 +921,7 @@ class Scheduler:
                 # DEVELOPMENT MODE: Run audio script via subprocess
                 try:
                     import subprocess as sp
+                    import signal
 
                     if task.audio_quality == "fast":
                         script_name = "make_audio_fast.py"
@@ -911,26 +934,37 @@ class Scheduler:
                     if task.audio_quality == "quality":
                         cmd += ["--voice", task.audio_voice, "--format", "mp3"]
 
-                    result = sp.run(
-                        cmd, capture_output=True, text=True,
-                        cwd=script_dir, timeout=600
+                    proc = sp.Popen(
+                        cmd, stdout=sp.PIPE, stderr=sp.PIPE,
+                        text=True, cwd=script_dir,
+                        start_new_session=True,  # own process group for clean kill
                     )
+                    try:
+                        stdout, stderr = proc.communicate(timeout=AUDIO_TIMEOUT)
+                    except sp.TimeoutExpired:
+                        # Kill entire process group (Kokoro + ffmpeg children)
+                        try:
+                            os.killpg(os.getpgid(proc.pid), signal.SIGTERM)
+                            proc.wait(timeout=10)
+                        except Exception:
+                            proc.kill()
+                        self._log(task.id, f"[Pipeline] Audio generation timed out ({AUDIO_TIMEOUT}s)")
+                        stdout, stderr = None, None
 
-                    # Check if file was created (may be .wav if MP3 conversion failed)
-                    if os.path.exists(output_path):
-                        audio_file = output_path
-                    elif os.path.exists(output_path.replace(".mp3", ".wav")):
-                        audio_file = output_path.replace(".mp3", ".wav")
+                    if stdout is not None:
+                        # Check if file was created (may be .wav if MP3 conversion failed)
+                        if os.path.exists(output_path):
+                            audio_file = output_path
+                        elif os.path.exists(output_path.replace(".mp3", ".wav")):
+                            audio_file = output_path.replace(".mp3", ".wav")
 
-                    if audio_file:
-                        size_mb = os.path.getsize(audio_file) / (1024 * 1024)
-                        self._log(task.id, f"[Pipeline] Audio generated: {os.path.basename(audio_file)} ({size_mb:.1f}MB)")
-                    else:
-                        error_msg = (result.stderr or result.stdout or "Unknown error")[:200]
-                        self._log(task.id, f"[Pipeline] Audio generation failed: {error_msg}")
+                        if audio_file:
+                            size_mb = os.path.getsize(audio_file) / (1024 * 1024)
+                            self._log(task.id, f"[Pipeline] Audio generated: {os.path.basename(audio_file)} ({size_mb:.1f}MB)")
+                        else:
+                            error_msg = (stderr or stdout or "Unknown error")[:200]
+                            self._log(task.id, f"[Pipeline] Audio generation failed: {error_msg}")
 
-                except sp.TimeoutExpired:
-                    self._log(task.id, "[Pipeline] Audio generation timed out (600s)")
                 except Exception as audio_err:
                     self._log(task.id, f"[Pipeline] Audio error: {audio_err}")
         else:
