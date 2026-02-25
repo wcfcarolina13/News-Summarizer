@@ -145,7 +145,7 @@ gunicorn web_app:app --bind 0.0.0.0:$PORT --timeout 120 --workers 1 --preload
 **High Priority:**
 1. ~~Rebuild macOS app~~ ✅ Rebuilt with all UX fixes + custom icons (Feb 2026)
 2. Test multi-URL feature in GUI
-3. ~~Commit outstanding changes~~ ✅ Pushed to `server-deploy` branch
+3. ~~Commit outstanding changes~~ ✅ Merged `server-deploy` → `main`, pruned stale branches
 4. ~~Deploy to Render.com~~ ✅ Live at https://news-summarizer-zgny.onrender.com
 5. ~~Add Guide page, tooltips, alpha banner~~ ✅ Done
 6. ~~Update README with web dashboard and server docs~~ ✅ Done
@@ -178,7 +178,8 @@ gunicorn web_app:app --bind 0.0.0.0:$PORT --timeout 120 --workers 1 --preload
 - ~~Inline config editor in scheduler~~ ✅ Edit columns, patterns, blocked domains
 - ~~Auto-dismiss notifications~~ ✅ 5s timeout for success/info
 - ~~Favicon serving on Render~~ ✅ Dedicated Flask routes
-- Slow memory leak on free tier — ~2.4MB/hour, OOM every ~12-24h. Service auto-recovers. Consider proactive watchdog restart or plan upgrade.
+- ~~Memory leak mitigations~~ ✅ Task TTL eviction (1hr/100 cap), Sheets service caching, GC in self-ping + after subprocess, memory watchdog (450MB warn, 480MB restart), template extraction to Jinja2
+- Slow memory leak on free tier — ~2.4MB/hour, OOM every ~12-24h. Service auto-recovers via watchdog. Consider plan upgrade.
 
 **Scheduler Capabilities (completed Feb 2026):**
 - ~~Cryptosum scheduled task~~ ✅ Daily extraction from cryptosum.beehiiv.com → Google Sheets
@@ -220,7 +221,9 @@ gunicorn web_app:app --bind 0.0.0.0:$PORT --timeout 120 --workers 1 --preload
 - ~~Pipeline backfill dialog~~ ✅ Date range picker: auto-detect, 7/30/90 days, full archive, or custom date
 - ~~Backfill safety warnings~~ ✅ Dynamic warning banner for long-running backfills (90d, full archive)
 - ~~Task execution feedback~~ ✅ macOS desktop notifications on task start/complete + status bar updates from any page
-- ~~Cryptosum scheduler bug~~ ✅ Root cause: daily tasks with missed run times were pushed to tomorrow. Fixed: catch-up detection runs missed tasks within 1 minute of daemon start
+- ~~Cryptosum scheduler bug~~ ✅ Root cause: daily tasks with missed run times were pushed to tomorrow. Fixed: catch-up detection runs missed tasks within 10s of daemon start
+- ~~Pipeline audio timeout~~ ✅ Root cause: 600s timeout too short for Kokoro TTS (~1s/sentence × 636+ sentences). Fixed: 1800s timeout, Popen with process group kill, sentence count estimate logging, TTS progress prints
+- ~~Catch-up race condition~~ ✅ Root cause: load_tasks() every 60s replaced task objects, resetting catch-up next_run before _run_loop could fire. Fixed: reduced catch-up delay from 60s to 10s
 - ~~Task-name filenames~~ ✅ Pipeline outputs include sanitized task name + week number (e.g., News_Summarizer_Pipeline_W9_2026-02-24.txt)
 
 **Future — Desktop/Web Sync:**
