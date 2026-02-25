@@ -68,6 +68,12 @@ A desktop + web application that creates personalized audio news briefings from 
 - **In-App Guide**: Built-in user guide accessible from the header
 - **Tooltips**: Hover over any field for helpful guidance
 
+### Cost Controls
+- **Monthly Budget Cap**: Set a dollar limit for Gemini API spending — never exceed what you set
+- **Cooldown Mode**: When budget is exceeded, pipelines still collect raw data but skip AI summarization
+- **Usage Dashboard**: Real-time progress bars showing daily/monthly call counts and cost estimates
+- **Per-Task Tracking**: See which scheduled tasks are consuming the most API calls
+
 ### Additional Features
 - **API Key Management**: Save, view, copy, and manage your API key securely
 - **Transcription Support**: Transcribe audio files using faster-whisper (if installed on your system)
@@ -97,7 +103,17 @@ For developers who want to build the app themselves:
 git clone https://github.com/wcfcarolina13/News-Summarizer.git
 cd News-Summarizer/daily_audio_briefing
 pip install -r requirements-desktop.txt
+
+# Set up your environment
+cp .env.example .env          # Then edit .env with your Gemini API key
+cp sources.example.json sources.json  # Then edit with your own sources
 ```
+
+**You must use your own API keys.** No admin keys are included in the repo.
+
+- **Gemini API key** (required): Get one free at [aistudio.google.com/apikey](https://aistudio.google.com/apikey)
+- **Google Sheets** (optional): Create a [GCP service account](https://console.cloud.google.com/iam-admin/serviceaccounts), download the JSON key, and save it as `google_credentials.json` in this directory
+- **Google Drive** (optional): Set up OAuth credentials and save as `drive_client_secret.json`
 
 ### Run from Source
 ```bash
@@ -157,7 +173,7 @@ python web_app.py
 
 Render's free tier sleeps after 15 minutes of inactivity. The app includes a built-in self-ping that uses the `RENDER_EXTERNAL_URL` env var (auto-set by Render). For additional reliability, set up [UptimeRobot](https://uptimerobot.com) (free) to ping your `/health` endpoint every 5 minutes.
 
-> **Note**: The web dashboard is currently in alpha testing. API keys and Google credentials are managed by the admin. There is no authentication on the web interface.
+> **Note**: The web dashboard is currently in alpha testing. You must provide your own API keys and Google credentials (see Setup above). No admin keys are included. There is no authentication on the web interface.
 
 ---
 
@@ -280,6 +296,7 @@ python gui_app.py
 | `audio_generator.py` | Audio generation orchestration |
 | `make_audio_quality.py` | High-quality Kokoro TTS |
 | `voice_manager.py` | Voice preset management |
+| `api_usage_tracker.py` | API call tracking, cost estimation, budget caps |
 | `file_manager.py` | File I/O with frozen app support |
 | `transcription_service.py` | Audio transcription with system Python detection |
 
@@ -290,7 +307,7 @@ python gui_app.py
 
 ## Roadmap
 
-1. **Alpha (Current)** — Admin-hosted. API keys and credentials managed centrally. macOS desktop app only.
+1. **Alpha (Current)** — Self-hosted. Bring your own API keys and credentials. macOS desktop app with budget controls.
 2. **User Accounts** — Login system. Per-user API keys and Google credentials. Windows desktop build.
 3. **Full Cloud** — Server-side audio generation. All features available via web browser.
 4. **SaaS** — Multi-tenant platform. Per-user billing, subscription tiers, mobile apps.

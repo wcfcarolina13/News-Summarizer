@@ -7,12 +7,15 @@ daily_audio_briefing/google_credentials.json
 daily_audio_briefing/drive_client_secret.json
 daily_audio_briefing/drive_token.json
 daily_audio_briefing/gemini_api_key.txt
+HANDOFF.md
 
 # =============================================================================
 # USER DATA - personal configs with spreadsheet IDs, task history, etc.
 # =============================================================================
 daily_audio_briefing/scheduled_tasks.json
 daily_audio_briefing/settings.json
+daily_audio_briefing/api_usage.json
+daily_audio_briefing/sources.json
 
 # =============================================================================
 # GENERATED OUTPUT - summaries, audio, archives

@@ -534,3 +534,59 @@ App's core value proposition (audio briefing) required manual 3-step workflow: S
 - Break the working development mode (Launch Audio Briefing.command)
 - Change the output folder structure (Week_N_YYYY format)
 - Remove any existing functionality
+
+---
+
+## Session Feb 25, 2026 — Budget Cap + Cooldown Mode + Distribution Safety
+
+### Summary
+Added dollar-based monthly budget cap with cooldown mode for graceful degradation, and tightened the repo for safe public distribution (no admin keys, gitignored personal data, example files for new users).
+
+### Problem
+- Gemini API key was on a billing-enabled GCP project, causing real charges (~$0.50–2.30/month)
+- Existing API tracking only had call-count limits, no dollar-based caps
+- `sources.json` (admin's personal channel list) and `api_usage.json` were tracked/unprotected in git
+- No setup docs for new users bringing their own API keys
+
+### Solution: Budget Cap + Cooldown Mode
+**New `BudgetExceeded` exception** in `api_usage_tracker.py` — raised in `tracked_generate()` when `monthly_cost_estimate >= monthly_budget_usd`. Separate from `APILimitExceeded` (call-count limits) for clear handling.
+
+**Cooldown mode (graceful degradation):**
+- When budget exceeded + cooldown ON: pipeline tasks still run, collect raw content, but `BudgetExceeded` is caught in `_summarize_youtube()` and `_summarize_article()` → returns raw/truncated text instead of AI summary
+- When budget exceeded + cooldown OFF: pipeline tasks skipped entirely with clear message
+- Default `monthly_budget_usd: 0.0` = no cap (backward compatible)
+
+**Pre-flight check in scheduler:** `_execute_pipeline_task()` checks `is_over_budget()` before starting. Logs cooldown mode state. Appends `[cooldown]` to task result when active.
+
+### UI Changes
+**Desktop (gui_app.py) Settings → API Usage card:**
+- "Monthly Budget Cap" section with $ entry, cooldown switch
+- Budget progress bar (green/amber/red based on %)
+- Budget status label ("$X.XX / $Y.00 (Z% used)")
+- Amber cooldown indicator when active
+- Save/startup push budget settings to tracker
+
+**Web (web_app.py + index.html) Settings page:**
+- Budget input, cooldown checkbox, progress bar, status text
+- "Save Budget" button → `PUT /api/usage/limits` (extended with `monthly_budget_usd`, `cooldown_enabled`)
+
+### Distribution Safety
+- `.gitignore`: added `api_usage.json`, `sources.json`, `HANDOFF.md`
+- `sources.json` untracked from git (`git rm --cached`), local file preserved
+- Created `sources.example.json` template for new users
+- `.env.example` updated with Google Sheets setup comment
+- README updated: users must bring their own API keys, setup instructions for `.env` and `sources.json`
+- Stale `__pycache__` pyc file untracked
+
+### Files Modified
+- `api_usage_tracker.py` — `BudgetExceeded` exception, budget cap in `tracked_generate()`, `is_over_budget()`, `is_cooldown_active()`, extended `update_limits()` + `get_stats()`
+- `source_fetcher.py` — Catch `BudgetExceeded` before generic `Exception` in both summarize methods
+- `scheduler.py` — Pre-flight budget check in `_execute_pipeline_task()`, sources.example.json fallback
+- `gui_app.py` — Budget UI widgets, extended `_save_usage_limits()` + `_refresh_usage_stats()`, startup push, catch `BudgetExceeded` in 3 GUI call sites
+- `web_app.py` — Extended `PUT /api/usage/limits` with budget params
+- `templates/index.html` — Budget controls HTML + `saveBudgetLimits()` JS
+- `.gitignore` — Added `api_usage.json`, `sources.json`, `HANDOFF.md`
+- `sources.example.json` — NEW: template for new users
+- `.env.example` — Added Sheets setup comment
+- `README.md` — Setup instructions, cost controls section, architecture table, roadmap update
+- `CLAUDE.md` — Updated tracker description, status, completed items, Render note

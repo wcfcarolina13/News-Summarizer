@@ -67,6 +67,17 @@ class APILimitExceeded(Exception):
         super().__init__(f"API {limit_type} limit reached: {current}/{maximum}")
 
 
+class BudgetExceeded(Exception):
+    """Raised when an API call would exceed the configured dollar budget."""
+
+    def __init__(self, current_cost: float, budget_cap: float):
+        self.current_cost = current_cost
+        self.budget_cap = budget_cap
+        super().__init__(
+            f"Monthly budget exceeded: ${current_cost:.4f} / ${budget_cap:.2f}"
+        )
+
+
 # ---------------------------------------------------------------------------
 # Path helper (mirrors get_data_directory() used across the project)
 # ---------------------------------------------------------------------------
@@ -123,6 +134,8 @@ class APIUsageTracker:
                 "daily_max_calls": 500,
                 "monthly_max_calls": 10000,
                 "enabled": True,
+                "monthly_budget_usd": 0.0,
+                "cooldown_enabled": True,
             },
             "current_period": {
                 "date": date.today().isoformat(),
@@ -222,6 +235,34 @@ class APIUsageTracker:
             monthly_max = limits.get("monthly_max_calls", 10000)
             return daily < daily_max and monthly < monthly_max
 
+    def is_over_budget(self) -> bool:
+        """Return True if monthly cost exceeds budget cap. Thread-safe."""
+        with self._lock:
+            self._maybe_rollover()
+            limits = self._data.get("limits", {})
+            budget = limits.get("monthly_budget_usd", 0)
+            if budget <= 0:
+                return False
+            cost = self._data.get("current_period", {}).get(
+                "monthly_cost_estimate", 0
+            )
+            return cost >= budget
+
+    def is_cooldown_active(self) -> bool:
+        """Return True if over budget AND cooldown mode is enabled. Thread-safe."""
+        with self._lock:
+            self._maybe_rollover()
+            limits = self._data.get("limits", {})
+            if not limits.get("cooldown_enabled", True):
+                return False
+            budget = limits.get("monthly_budget_usd", 0)
+            if budget <= 0:
+                return False
+            cost = self._data.get("current_period", {}).get(
+                "monthly_cost_estimate", 0
+            )
+            return cost >= budget
+
     def track_call(
         self,
         model_name: str,
@@ -309,6 +350,13 @@ class APIUsageTracker:
                 if monthly >= monthly_max:
                     raise APILimitExceeded("monthly", monthly, monthly_max)
 
+                # Dollar-based budget cap
+                budget_cap = limits.get("monthly_budget_usd", 0)
+                if budget_cap > 0 and limits.get("cooldown_enabled", True):
+                    monthly_cost = period.get("monthly_cost_estimate", 0)
+                    if monthly_cost >= budget_cap:
+                        raise BudgetExceeded(monthly_cost, budget_cap)
+
         # Make the actual API call (outside lock)
         response = model.generate_content(prompt)
 
@@ -344,6 +392,8 @@ class APIUsageTracker:
                 "daily_limit": limits.get("daily_max_calls", 500),
                 "monthly_limit": limits.get("monthly_max_calls", 10000),
                 "limits_enabled": limits.get("enabled", True),
+                "monthly_budget_usd": limits.get("monthly_budget_usd", 0),
+                "cooldown_enabled": limits.get("cooldown_enabled", True),
                 "date": period.get("date", ""),
                 "month": period.get("month", ""),
             }
@@ -367,6 +417,8 @@ class APIUsageTracker:
         daily_max: Optional[int] = None,
         monthly_max: Optional[int] = None,
         enabled: Optional[bool] = None,
+        monthly_budget_usd: Optional[float] = None,
+        cooldown_enabled: Optional[bool] = None,
     ):
         """Update usage limits. Thread-safe."""
         with self._lock:
@@ -377,6 +429,10 @@ class APIUsageTracker:
                 limits["monthly_max_calls"] = max(1, int(monthly_max))
             if enabled is not None:
                 limits["enabled"] = bool(enabled)
+            if monthly_budget_usd is not None:
+                limits["monthly_budget_usd"] = max(0.0, float(monthly_budget_usd))
+            if cooldown_enabled is not None:
+                limits["cooldown_enabled"] = bool(cooldown_enabled)
             self._save()
 
     def reset_today(self):

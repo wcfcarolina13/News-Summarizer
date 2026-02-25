@@ -741,6 +741,25 @@ class Scheduler:
             self._log(task.id, f"[Pipeline] {task.last_result}")
             return
 
+        # --- Pre-flight budget check ---
+        from api_usage_tracker import get_tracker
+        tracker = get_tracker()
+        _cooldown_active = False
+        if tracker.is_over_budget():
+            limits = tracker._data.get("limits", {})
+            if not limits.get("cooldown_enabled", True):
+                # Cooldown disabled + over budget = skip entirely
+                task.last_result = "Skipped: monthly budget exceeded (cooldown disabled)"
+                self._log(task.id, f"[Pipeline] {task.last_result}")
+                return
+            else:
+                # Cooldown enabled = run but Gemini calls will gracefully degrade
+                _cooldown_active = True
+                self._log(
+                    task.id,
+                    "[Pipeline] Budget exceeded — running in cooldown mode (raw content only)",
+                )
+
         # --- Step 1: Load and filter sources ---
         script_dir = os.path.dirname(os.path.abspath(__file__))
         data_dir = fm.base_dir
@@ -752,6 +771,11 @@ class Scheduler:
             sources_json = os.path.join(script_dir, "sources.json")
             if getattr(sys, "frozen", False):
                 sources_json = os.path.join(sys._MEIPASS, "sources.json")
+        # Fall back to example file for fresh installs
+        if not os.path.exists(sources_json):
+            example_json = os.path.join(script_dir, "sources.example.json")
+            if os.path.exists(example_json):
+                sources_json = example_json
         if not os.path.exists(channels_txt):
             channels_txt = os.path.join(script_dir, "channels.txt")
             if getattr(sys, "frozen", False):
@@ -958,6 +982,8 @@ class Scheduler:
         if drive_uploaded:
             parts.append("uploaded to Drive")
         task.last_result = f"OK: {', '.join(parts)}"
+        if _cooldown_active:
+            task.last_result += " [cooldown]"
         self._log(task.id, f"[Pipeline] Complete: {task.last_result}")
 
     def backfill_task(self, task_id: str, stop_flag: Optional[Callable] = None,

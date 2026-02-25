@@ -281,6 +281,8 @@ class AudioBriefingApp(ctk.CTk):
                 daily_max=self.settings.get("api_daily_limit", 500),
                 monthly_max=self.settings.get("api_monthly_limit", 10000),
                 enabled=self.settings.get("api_limits_enabled", True),
+                monthly_budget_usd=self.settings.get("api_budget_usd", 0.0),
+                cooldown_enabled=self.settings.get("api_cooldown_enabled", True),
             )
         except Exception:
             pass  # Tracker init failure shouldn't block app launch
@@ -1598,6 +1600,43 @@ class AudioBriefingApp(ctk.CTk):
                 self.usage_tasks_label.configure(text="\n".join(lines) if len(lines) > 1 else "")
             else:
                 self.usage_tasks_label.configure(text="")
+
+            # Budget cap display
+            if hasattr(self, 'budget_bar'):
+                budget_cap = stats.get("monthly_budget_usd", 0)
+                if budget_cap > 0:
+                    pct = min(monthly_cost / budget_cap, 1.0)
+                    self.budget_bar.set(pct)
+                    pct_display = pct * 100
+                    self.budget_status_label.configure(
+                        text=f"${monthly_cost:.4f} / ${budget_cap:.2f} ({pct_display:.0f}% used)"
+                    )
+                    # Color coding
+                    if pct >= 1.0:
+                        self.budget_status_label.configure(
+                            text_color=COLORS.get("error", "#ef4444")
+                        )
+                    elif pct >= 0.8:
+                        self.budget_status_label.configure(
+                            text_color=COLORS.get("warning", "#f59e0b")
+                        )
+                    else:
+                        self.budget_status_label.configure(
+                            text_color=COLORS["text_muted"]
+                        )
+                else:
+                    self.budget_bar.set(0)
+                    self.budget_status_label.configure(
+                        text="No budget cap set (0 = unlimited)",
+                        text_color=COLORS["text_muted"]
+                    )
+
+                # Cooldown indicator
+                if hasattr(self, 'cooldown_indicator'):
+                    if budget_cap > 0 and monthly_cost >= budget_cap and stats.get("cooldown_enabled", True):
+                        self.cooldown_indicator.grid()
+                    else:
+                        self.cooldown_indicator.grid_remove()
         except Exception as e:
             print(f"[Settings] Error refreshing usage stats: {e}")
 
@@ -1609,11 +1648,21 @@ class AudioBriefingApp(ctk.CTk):
             monthly = int(self.usage_monthly_limit_entry.get() or 10000)
             enabled = self.usage_limits_var.get()
 
-            get_tracker().update_limits(daily_max=daily, monthly_max=monthly, enabled=enabled)
+            # Budget cap and cooldown
+            budget_str = self.budget_cap_entry.get().strip() if hasattr(self, 'budget_cap_entry') else "0"
+            budget_usd = float(budget_str) if budget_str else 0.0
+            cooldown = self.cooldown_var.get() if hasattr(self, 'cooldown_var') else True
+
+            get_tracker().update_limits(
+                daily_max=daily, monthly_max=monthly, enabled=enabled,
+                monthly_budget_usd=budget_usd, cooldown_enabled=cooldown,
+            )
 
             self.settings["api_limits_enabled"] = enabled
             self.settings["api_daily_limit"] = daily
             self.settings["api_monthly_limit"] = monthly
+            self.settings["api_budget_usd"] = budget_usd
+            self.settings["api_cooldown_enabled"] = cooldown
             self._save_settings()
             self._refresh_usage_stats()
         except ValueError:
@@ -2491,6 +2540,54 @@ class AudioBriefingApp(ctk.CTk):
             justify="left", anchor="w"
         )
         self.usage_tasks_label.grid(row=9, column=0, columnspan=2, sticky="w")
+
+        # ── Budget Cap section ──
+        budget_sep = ctk.CTkLabel(
+            usage_content, text="Monthly Budget Cap",
+            font=ctk.CTkFont(size=11, weight="bold"), text_color=COLORS["text_muted"]
+        )
+        budget_sep.grid(row=10, column=0, columnspan=2, sticky="w", pady=(12, 4))
+
+        budget_row = ctk.CTkFrame(usage_content, fg_color="transparent")
+        budget_row.grid(row=11, column=0, columnspan=2, sticky="w", pady=(0, 4))
+
+        ctk.CTkLabel(budget_row, text="$", font=ctk.CTkFont(size=12)).pack(side="left", padx=(0, 2))
+        self.budget_cap_entry = ctk.CTkEntry(budget_row, width=80, height=28, font=ctk.CTkFont(size=12))
+        self.budget_cap_entry.pack(side="left", padx=(0, 4))
+        self.budget_cap_entry.insert(0, str(self.settings.get("api_budget_usd", "0.00")))
+        ctk.CTkLabel(budget_row, text="USD/month", font=ctk.CTkFont(size=11),
+                     text_color=COLORS["text_muted"]).pack(side="left", padx=(0, 16))
+
+        self.cooldown_var = ctk.BooleanVar(
+            value=self.settings.get("api_cooldown_enabled", True)
+        )
+        ctk.CTkSwitch(
+            budget_row, text="Cooldown mode",
+            variable=self.cooldown_var,
+            font=ctk.CTkFont(size=12)
+        ).pack(side="left")
+
+        # Budget progress bar
+        self.budget_bar = ctk.CTkProgressBar(usage_content, height=12)
+        self.budget_bar.grid(row=12, column=0, columnspan=2, sticky="ew", pady=(0, 4))
+        self.budget_bar.set(0)
+
+        # Budget status label
+        self.budget_status_label = ctk.CTkLabel(
+            usage_content, text="No budget cap set (0 = unlimited)",
+            font=ctk.CTkFont(size=11), text_color=COLORS["text_muted"]
+        )
+        self.budget_status_label.grid(row=13, column=0, columnspan=2, sticky="w", pady=(0, 4))
+
+        # Cooldown active indicator (hidden by default)
+        self.cooldown_indicator = ctk.CTkLabel(
+            usage_content,
+            text="⚠ Cooldown active — AI summarization paused",
+            font=ctk.CTkFont(size=11, weight="bold"),
+            text_color=COLORS.get("warning", "#f59e0b")
+        )
+        self.cooldown_indicator.grid(row=14, column=0, columnspan=2, sticky="w", pady=(0, 4))
+        self.cooldown_indicator.grid_remove()  # Hidden until needed
 
     def _on_settings_scale_change(self, value):
         """Handle text scale slider change on Settings page."""
@@ -4097,7 +4194,7 @@ ARTICLE URL: {url}
 RAW CONTENT:
 {raw_content[:20000]}"""  # Limit content length
 
-            from api_usage_tracker import get_tracker, APILimitExceeded
+            from api_usage_tracker import get_tracker, APILimitExceeded, BudgetExceeded
             response = get_tracker().tracked_generate(model, prompt, "gui._clean_article")
             cleaned = response.text.strip()
 
@@ -4108,7 +4205,7 @@ RAW CONTENT:
                 print(f"[Clean Article] AI returned too short response, using original")
                 return raw_content[:5000]
 
-        except APILimitExceeded as e:
+        except (APILimitExceeded, BudgetExceeded) as e:
             print(f"[Clean Article] {e}")
             return raw_content[:5000]
         except Exception as e:
@@ -4149,10 +4246,10 @@ Transcript:
 Transcript:
 {video_result['transcript'][:15000]}"""  # Limit transcript length
 
-            from api_usage_tracker import get_tracker, APILimitExceeded
+            from api_usage_tracker import get_tracker, APILimitExceeded, BudgetExceeded
             response = get_tracker().tracked_generate(model, prompt, "gui._summarize_yt")
             return response.text.strip()
-        except APILimitExceeded as e:
+        except (APILimitExceeded, BudgetExceeded) as e:
             print(f"[Summarize] {e}")
             return f"API limit reached: {e.limit_type} ({e.current}/{e.maximum}). Try again tomorrow or increase limits in Settings."
         except Exception as e:
@@ -6931,10 +7028,10 @@ TEXT TO CLEAN:
 """
 
         try:
-            from api_usage_tracker import get_tracker, APILimitExceeded
+            from api_usage_tracker import get_tracker, APILimitExceeded, BudgetExceeded
             response = get_tracker().tracked_generate(model, prompt, "gui._process_audio")
             return response.text.strip()
-        except APILimitExceeded as e:
+        except (APILimitExceeded, BudgetExceeded) as e:
             print(f"[Clean] {e}")
             return text  # Return original when limit hit
         except Exception as e:

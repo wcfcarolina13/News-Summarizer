@@ -1,0 +1,23 @@
+{
+  "_comment": "Copy this file to sources.json and customize with your own sources. Each source needs a URL, enabled flag, and type (youtube, rss, or newsletter).",
+  "sources": [
+    {
+      "url": "https://www.youtube.com/@YourFavoriteChannel/videos",
+      "enabled": true,
+      "type": "youtube"
+    },
+    {
+      "url": "https://example.com/feed.xml",
+      "enabled": false,
+      "type": "rss"
+    },
+    {
+      "url": "https://newsletter.example.com/archive",
+      "enabled": false,
+      "type": "newsletter",
+      "config": {
+        "author_id": "your-author-id"
+      }
+    }
+  ]
+}

@@ -675,9 +675,13 @@ Your output goes directly to TTS. Any markdown or preambles will sound wrong whe
             else:
                 prompt = f"{base_prompt}\n\nTranscript:\n{transcript[:15000]}"
 
-            from api_usage_tracker import get_tracker
+            from api_usage_tracker import get_tracker, BudgetExceeded
             response = get_tracker().tracked_generate(model, prompt, "fetcher._summarize_yt")
             return response.text
+
+        except BudgetExceeded:
+            _debug_log("[YouTube] Budget exceeded — returning raw transcript")
+            return transcript[:2000]
 
         except Exception as e:
             _debug_log(f"[YouTube] Summarization error: {e}")
@@ -736,11 +740,15 @@ Your output goes directly to TTS. Any markdown or preambles will sound wrong whe
             else:
                 prompt = f"{base_prompt}\n\nArticle Content:\n{content[:15000]}"
 
-            from api_usage_tracker import get_tracker
+            from api_usage_tracker import get_tracker, BudgetExceeded
             response = get_tracker().tracked_generate(model, prompt, "fetcher._summarize_article")
             summary = response.text
             _debug_log(f"[Article] Summarized {len(content)} chars to {len(summary)} chars")
             return summary
+
+        except BudgetExceeded:
+            _debug_log("[Article] Budget exceeded — returning raw content")
+            return content[:2000] + "..." if len(content) > 2000 else content
 
         except Exception as e:
             _debug_log(f"[Article] Summarization error: {e}")

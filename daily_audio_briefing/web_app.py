@@ -763,12 +763,17 @@ def api_usage_limits():
                 daily_max=data.get('daily_max'),
                 monthly_max=data.get('monthly_max'),
                 enabled=data.get('enabled'),
+                monthly_budget_usd=data.get('monthly_budget_usd'),
+                cooldown_enabled=data.get('cooldown_enabled'),
             )
             return jsonify({'success': True})
+        stats = tracker.get_stats()
         return jsonify({
-            'daily_limit': tracker.get_stats()['daily_limit'],
-            'monthly_limit': tracker.get_stats()['monthly_limit'],
-            'limits_enabled': tracker.get_stats()['limits_enabled'],
+            'daily_limit': stats['daily_limit'],
+            'monthly_limit': stats['monthly_limit'],
+            'limits_enabled': stats['limits_enabled'],
+            'monthly_budget_usd': stats['monthly_budget_usd'],
+            'cooldown_enabled': stats['cooldown_enabled'],
         })
     except Exception as e:
         return jsonify({'error': _safe_error(e)}), 500

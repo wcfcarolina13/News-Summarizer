@@ -21,11 +21,11 @@ All source files are in `daily_audio_briefing/`.
 | `make_audio_quality.py` | ~210 | Kokoro TTS high-quality audio |
 | `sheets_manager.py` | ~350 | Google Sheets export, tab management, deduplication |
 | `file_manager.py` | ~155 | File I/O with frozen app support |
-| `api_usage_tracker.py` | ~310 | Gemini API call tracking, daily/monthly limits, cost estimation |
+| `api_usage_tracker.py` | ~420 | Gemini API call tracking, daily/monthly limits, dollar budget cap, cooldown mode, cost estimation |
 | `web_app.py` | ~2850 | Flask web dashboard (scheduler, extraction, audio) — **NEVER read in full.** Use grep. |
 | `server_scheduler.py` | ~80 | Flask-integrated scheduler for cloud deployment |
 
-Config files: `sources.json`, `instruction_profiles.json`, `scheduled_tasks.json`, `settings.json`
+Config files: `sources.json` (gitignored, copy from `sources.example.json`), `instruction_profiles.json`, `scheduled_tasks.json`, `settings.json`
 Extraction configs: `extraction_instructions/*.json` (execsum, rwa, cryptosum, _template)
 
 ## Dual-Mode Architecture
@@ -104,6 +104,8 @@ The desktop app uses a **sidebar + page container** layout matching the web app:
 
 ## Server Deployment (Render.com)
 
+> **Note:** Render server is currently suspended due to budget constraints. Desktop app is the primary interface.
+
 The web dashboard (`web_app.py`) includes a Scheduler page for managing automated feed→Sheets tasks.
 Deploy to Render.com free tier with keep-alive ping to prevent sleep.
 
@@ -134,9 +136,9 @@ gunicorn web_app:app --bind 0.0.0.0:$PORT --timeout 120 --workers 1 --preload
 
 ## Current Status
 
-**Alpha testing.** API keys and Google credentials are hardcoded to the admin's accounts. The web dashboard is open (no auth). All costs (Gemini API, Sheets API) are on the admin's billing.
+**Alpha testing.** Users must provide their own API keys and Google credentials (no admin keys in repo). The web dashboard is open (no auth). Render server is suspended; desktop app is the primary interface.
 
-**Live deployment:** https://news-summarizer-zgny.onrender.com (Render.com free tier, `server-deploy` branch)
+**Distribution:** Users clone from GitHub, copy `.env.example` → `.env`, add their own Gemini API key.
 
 ## Pending Work
 
@@ -195,6 +197,9 @@ gunicorn web_app:app --bind 0.0.0.0:$PORT --timeout 120 --workers 1 --preload
 - ~~User-configurable spending limit~~ ✅ Settings page UI with limit entries, enable/disable switch
 - ~~Per-task API call tracking~~ ✅ Thread-local task context in scheduler, per-task totals in `api_usage.json`
 - ~~Dashboard showing API usage~~ ✅ Desktop Settings card + web dashboard panel with progress bars, cost estimates
+- ~~Dollar-based budget cap~~ ✅ `monthly_budget_usd` in tracker, `BudgetExceeded` exception, budget progress bar + status in both desktop and web UI
+- ~~Cooldown mode~~ ✅ When over budget: pipelines still collect raw data but skip AI summarization (graceful degradation). Configurable via cooldown toggle in Settings.
+- ~~Distribution safety~~ ✅ No admin keys in repo, `sources.json` gitignored, `sources.example.json` template, `.env.example` with setup instructions
 - Future: desktop notification + email alerts when approaching limits
 
 **Briefing Pipeline (completed Feb 2026):**
