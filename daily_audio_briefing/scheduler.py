@@ -768,21 +768,39 @@ class Scheduler:
         sources_json = os.path.join(data_dir, "sources.json")
         channels_txt = os.path.join(data_dir, "channels.txt")
 
-        # Fall back to bundled files if user files don't exist
+        # Platform-specific Application Support path (user data from frozen app)
+        if sys.platform == "darwin":
+            _app_support = os.path.expanduser("~/Library/Application Support/Daily Audio Briefing")
+        elif sys.platform == "win32":
+            _app_support = os.path.join(os.environ.get("APPDATA", ""), "Daily Audio Briefing")
+        else:
+            _app_support = os.path.expanduser("~/.daily-audio-briefing")
+
+        # Fallback chain: data_dir -> App Support -> bundled -> example
+        if not os.path.exists(sources_json):
+            _app_sources = os.path.join(_app_support, "sources.json")
+            if os.path.exists(_app_sources):
+                sources_json = _app_sources
         if not os.path.exists(sources_json):
             sources_json = os.path.join(script_dir, "sources.json")
             if getattr(sys, "frozen", False):
                 sources_json = os.path.join(sys._MEIPASS, "sources.json")
-        # Fall back to example file for fresh installs
         if not os.path.exists(sources_json):
             example_json = os.path.join(script_dir, "sources.example.json")
             if os.path.exists(example_json):
                 sources_json = example_json
+
+        # Same fallback for channels.txt
+        if not os.path.exists(channels_txt):
+            _app_channels = os.path.join(_app_support, "channels.txt")
+            if os.path.exists(_app_channels):
+                channels_txt = _app_channels
         if not os.path.exists(channels_txt):
             channels_txt = os.path.join(script_dir, "channels.txt")
             if getattr(sys, "frozen", False):
                 channels_txt = os.path.join(sys._MEIPASS, "channels.txt")
 
+        self._log(task.id, f"[Pipeline] Loading sources from: {sources_json}")
         sources = load_sources(sources_json, channels_txt)
 
         if task.source_filter:
