@@ -867,7 +867,7 @@ class Scheduler:
             self._log(task.id, f"[Pipeline] Audio: ~{len(sentences)} sentences, est. ~{est_seconds}s")
             self._log(task.id, f"[Pipeline] Generating audio ({task.audio_quality})...")
 
-            AUDIO_TIMEOUT = 1800  # 30 min — Kokoro ~1s/sentence + init + ffmpeg
+            AUDIO_TIMEOUT = 3600  # 60 min — Kokoro ~1s/sentence + init + ffmpeg; large catch-ups need more
 
             if getattr(sys, "frozen", False):
                 # FROZEN MODE: Run audio generation in-process via module import
