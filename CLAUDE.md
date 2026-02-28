@@ -225,6 +225,7 @@ gunicorn web_app:app --bind 0.0.0.0:$PORT --timeout 120 --workers 1 --preload
 - ~~Pipeline audio timeout~~ ✅ Root cause: 600s timeout too short for Kokoro TTS (~1s/sentence × 636+ sentences). Fixed: 1800s timeout, Popen with process group kill, sentence count estimate logging, TTS progress prints
 - ~~Catch-up race condition~~ ✅ Root cause: load_tasks() every 60s replaced task objects, resetting catch-up next_run before _run_loop could fire. Fixed: reduced catch-up delay from 60s to 10s
 - ~~Task-name filenames~~ ✅ Pipeline outputs include sanitized task name + week number (e.g., News_Summarizer_Pipeline_W9_2026-02-24.txt)
+- ~~Pipeline sources not found~~ ✅ Root cause: dev mode `FileManager.base_dir` = script dir (no sources.json, gitignored), fell back to `sources.example.json` with placeholder URL. Fixed: added Application Support as fallback in source-loading chain
 
 **Future — Desktop/Web Sync:**
 - Login/registration system for cloud features
