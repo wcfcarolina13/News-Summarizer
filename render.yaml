@@ -23,3 +23,12 @@ services:
         sync: false  # Paste full JSON of service account credentials
       - key: SCHEDULER_SHEET_ID
         sync: false  # Spreadsheet ID for task persistence across redeploys
+      # API cost controls — survive redeploys (api_usage.json is ephemeral)
+      - key: API_DAILY_MAX_CALLS
+        value: "100"  # Conservative: 100 Gemini calls/day (default 500)
+      - key: API_MONTHLY_MAX_CALLS
+        value: "2000"  # Conservative: 2000/month (default 10000)
+      - key: API_MONTHLY_BUDGET
+        value: "0.50"  # Hard dollar cap: $0.50/month on Gemini API
+      - key: API_COOLDOWN_ENABLED
+        value: "true"  # Stop all API calls when budget is hit

@@ -511,6 +511,28 @@ class Scheduler:
             except Exception as e:
                 print(f"[Scheduler] Error loading tasks in background: {e}")
 
+        # Log API budget status on startup so Render logs show protection state
+        try:
+            from api_usage_tracker import get_tracker
+            tracker = get_tracker()
+            stats = tracker.get_stats()
+            budget = stats.get('monthly_budget_usd', 0)
+            cost = stats.get('monthly_cost_estimate', 0)
+            daily = stats.get('daily_calls', 0)
+            daily_limit = stats.get('daily_limit', 500)
+            enabled = stats.get('limits_enabled', True)
+            cooldown = stats.get('cooldown_enabled', True)
+            print(f"[Scheduler] API budget status: "
+                  f"daily={daily}/{daily_limit}, "
+                  f"monthly_cost=${cost:.4f}/{f'${budget:.2f}' if budget > 0 else 'unlimited'}, "
+                  f"limits={'ON' if enabled else 'OFF'}, "
+                  f"cooldown={'ON' if cooldown else 'OFF'}")
+            if budget <= 0:
+                print(f"[Scheduler] WARNING: No monthly budget cap set! "
+                      f"Set API_MONTHLY_BUDGET env var to prevent runaway costs.")
+        except Exception:
+            pass
+
         while not self._stop_event.is_set():
             try:
                 now = datetime.now()
@@ -565,8 +587,37 @@ class Scheduler:
             except Exception:
                 pass
 
+        # Pre-flight budget check: skip task if API budget is exhausted
+        from api_usage_tracker import set_current_task, clear_current_task, get_tracker
+        tracker = get_tracker()
+        if tracker.is_cooldown_active():
+            stats = tracker.get_stats()
+            cost = stats.get('monthly_cost_estimate', 0)
+            budget = stats.get('monthly_budget_usd', 0)
+            msg = f"Skipped — API budget exhausted (${cost:.4f} / ${budget:.2f})"
+            self._log(task.id, f"[Scheduler] Task '{task.name}': {msg}")
+            task.last_result = msg
+            task.next_run = self._calculate_next_run(task)
+            self.save_tasks()
+            self._running_tasks.discard(task.id)
+            if self._on_task_complete:
+                self._on_task_complete(task, False, msg)
+            return
+        if not tracker.check_limit():
+            stats = tracker.get_stats()
+            daily = stats.get('daily_calls', 0)
+            monthly = stats.get('monthly_calls', 0)
+            msg = f"Skipped — API call limit reached (daily={daily}, monthly={monthly})"
+            self._log(task.id, f"[Scheduler] Task '{task.name}': {msg}")
+            task.last_result = msg
+            task.next_run = self._calculate_next_run(task)
+            self.save_tasks()
+            self._running_tasks.discard(task.id)
+            if self._on_task_complete:
+                self._on_task_complete(task, False, msg)
+            return
+
         # Set task context for API usage attribution
-        from api_usage_tracker import set_current_task, clear_current_task
         set_current_task(task.id, task.name)
 
         self._log(task.id, f"[Scheduler] Running task: {task.name}")
@@ -863,11 +914,11 @@ class Scheduler:
             # Estimate duration from sentence count
             import re as _re
             sentences = [s for s in _re.split(r"(?<=[.!?])\s+", text) if s.strip()]
-            est_seconds = len(sentences) + 30  # ~1s/sentence + init
-            self._log(task.id, f"[Pipeline] Audio: ~{len(sentences)} sentences, est. ~{est_seconds}s")
+            est_seconds = len(sentences) * 3 + 60  # ~2-3s/sentence (Kokoro quality) + init/ffmpeg
+            self._log(task.id, f"[Pipeline] Audio: ~{len(sentences)} sentences, est. ~{est_seconds}s ({est_seconds / 60:.0f}min)")
             self._log(task.id, f"[Pipeline] Generating audio ({task.audio_quality})...")
 
-            AUDIO_TIMEOUT = 3600  # 60 min — Kokoro ~1s/sentence + init + ffmpeg; large catch-ups need more
+            AUDIO_TIMEOUT = max(3600, est_seconds + 300)  # dynamic: estimated time + 5min buffer, min 60min
 
             if getattr(sys, "frozen", False):
                 # FROZEN MODE: Run audio generation in-process via module import

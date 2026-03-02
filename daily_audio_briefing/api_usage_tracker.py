@@ -111,6 +111,7 @@ class APIUsageTracker:
         self._lock = threading.Lock()
         self._path = _get_usage_path()
         self._data = self._load()
+        self._apply_env_overrides()
 
     # --- Persistence ---
 
@@ -149,6 +150,53 @@ class APIUsageTracker:
             "task_totals": {},
             "history": [],
         }
+
+    def _apply_env_overrides(self):
+        """Apply environment variable overrides for API limits.
+
+        On Render (ephemeral filesystem), api_usage.json resets on every deploy,
+        losing any budget caps or limit changes made via the UI. These env vars
+        ensure limits survive redeploys:
+
+          API_DAILY_MAX_CALLS   — Max Gemini calls per day (default 500)
+          API_MONTHLY_MAX_CALLS — Max Gemini calls per month (default 10000)
+          API_MONTHLY_BUDGET    — Dollar cap per month (e.g. "0.50")
+          API_LIMITS_ENABLED    — "true"/"false" (default true)
+          API_COOLDOWN_ENABLED  — "true"/"false" (default true)
+
+        Env vars always win over the JSON file, so server admins can't
+        accidentally remove protections via the UI on a fresh deploy.
+        """
+        limits = self._data.setdefault("limits", {})
+
+        val = os.environ.get("API_DAILY_MAX_CALLS")
+        if val:
+            try:
+                limits["daily_max_calls"] = max(1, int(val))
+            except ValueError:
+                pass
+
+        val = os.environ.get("API_MONTHLY_MAX_CALLS")
+        if val:
+            try:
+                limits["monthly_max_calls"] = max(1, int(val))
+            except ValueError:
+                pass
+
+        val = os.environ.get("API_MONTHLY_BUDGET")
+        if val:
+            try:
+                limits["monthly_budget_usd"] = max(0.0, float(val))
+            except ValueError:
+                pass
+
+        val = os.environ.get("API_LIMITS_ENABLED")
+        if val is not None:
+            limits["enabled"] = val.lower() in ("true", "1", "yes")
+
+        val = os.environ.get("API_COOLDOWN_ENABLED")
+        if val is not None:
+            limits["cooldown_enabled"] = val.lower() in ("true", "1", "yes")
 
     def _save(self):
         """Atomic write to disk. Called under lock."""
@@ -420,7 +468,11 @@ class APIUsageTracker:
         monthly_budget_usd: Optional[float] = None,
         cooldown_enabled: Optional[bool] = None,
     ):
-        """Update usage limits. Thread-safe."""
+        """Update usage limits. Thread-safe.
+
+        Note: env var overrides are re-applied after saving, so server-side
+        limits set via API_DAILY_MAX_CALLS etc. cannot be relaxed via the UI.
+        """
         with self._lock:
             limits = self._data.setdefault("limits", {})
             if daily_max is not None:
@@ -434,6 +486,8 @@ class APIUsageTracker:
             if cooldown_enabled is not None:
                 limits["cooldown_enabled"] = bool(cooldown_enabled)
             self._save()
+            # Re-apply env overrides so server-side protections can't be relaxed via UI
+            self._apply_env_overrides()
 
     def reset_today(self):
         """Manual reset of daily counter. Thread-safe."""
