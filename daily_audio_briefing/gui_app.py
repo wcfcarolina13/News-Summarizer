@@ -3356,7 +3356,10 @@ class AudioBriefingApp(ctk.CTk):
         def _safe_tooltip(attr_name, text):
             widget = getattr(self, attr_name, None)
             if widget is not None:
-                add_tooltip(widget, text)
+                try:
+                    add_tooltip(widget, text)
+                except NotImplementedError:
+                    pass  # CTkSegmentedButton doesn't support .bind()
 
         # News Summary section
         _safe_tooltip("btn_fetch_article",
