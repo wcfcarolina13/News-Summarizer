@@ -865,22 +865,8 @@ class Scheduler:
 
         self._log(task.id, f"[Pipeline] Fetching from {len(enabled)} sources...")
 
-        # --- Checkpoint: skip fetch/summarize/TTS if output already exists ---
-        import datetime as dt_module
-        today = dt_module.date.today()
-        year, week, _ = today.isocalendar()
-        week_folder = os.path.join(data_dir, f"Week_{week}_{year}")
-        summary_path = os.path.join(week_folder, f"{today.isoformat()}_News.txt")
-        audio_path = os.path.join(week_folder, f"{today.isoformat()}_News.mp3")
-
-        if os.path.exists(summary_path):
-            self._log(task.id, f"[Pipeline] Checkpoint: {summary_path} already exists, skipping to Drive upload")
-            audio_file = audio_path if os.path.exists(audio_path) else None
-            self._pipeline_drive_upload(task, summary_path, audio_file, data_dir, 0)
-            return
-
         # --- Step 2: Fetch + summarize ---
-        fetcher = SourceFetcher(api_key=api_key, model_name="gemini-2.5-flash", data_dir=data_dir)
+        fetcher = SourceFetcher(api_key=api_key, model_name="gemini-2.5-flash")
         cutoff_hours = task.custom_hours if task.custom_hours else 24
         cutoff = datetime.now() - timedelta(hours=cutoff_hours)
         items = fetcher.fetch_all_sources(enabled, cutoff)
@@ -902,7 +888,19 @@ class Scheduler:
             return
 
         # --- Step 4: Save summary text ---
+        import datetime as dt_module
+        import re as re_module
+        today = dt_module.date.today()
+        year, week, _ = today.isocalendar()
+        week_folder = os.path.join(data_dir, f"Week_{week}_{year}")
         os.makedirs(week_folder, exist_ok=True)
+
+        # Sanitize task name for use in filename (letters, numbers, hyphens, underscores)
+        safe_name = re_module.sub(r'[^a-zA-Z0-9_-]', '_', task.name).strip('_')
+        safe_name = re_module.sub(r'_+', '_', safe_name)  # collapse multiple underscores
+
+        summary_filename = f"{safe_name}_W{week}_{today.isoformat()}.txt"
+        summary_path = os.path.join(week_folder, summary_filename)
         with open(summary_path, "w", encoding="utf-8") as f:
             f.write(text)
         self._log(task.id, f"[Pipeline] Saved summary ({len(text)} chars) to {week_folder}")
@@ -910,7 +908,7 @@ class Scheduler:
         # --- Step 5: Generate audio (skip in server mode) ---
         audio_file = None
         if not self.server_mode:
-            audio_filename = f"{today.isoformat()}_News.mp3"
+            audio_filename = f"{safe_name}_W{week}_{today.isoformat()}.mp3"
             output_path = os.path.join(week_folder, audio_filename)
 
             # Estimate duration from sentence count
@@ -1043,73 +1041,55 @@ class Scheduler:
         else:
             self._log(task.id, "[Pipeline] Server mode — skipping audio generation")
 
-        # --- Step 6: Upload to Drive + update task result ---
-        task.items_extracted = len(items)
-        self._pipeline_drive_upload(task, summary_path, audio_file, data_dir, len(items), cooldown=(0, _cooldown_active))
-
-    def _pipeline_drive_upload(self, task, summary_path, audio_file, data_dir, item_count, cooldown=(0, False)):
-        """Upload pipeline output to Google Drive and update task result.
-
-        Shared by both the normal pipeline flow and the checkpoint-resume path.
-        """
+        # --- Step 6: Upload to Google Drive (summary text + audio) ---
         drive_uploaded = False
-        drive_error_msg = ''
         if task.upload_to_drive and task.drive_folder_id:
             try:
-                from drive_manager import upload_file, is_signed_in, extract_folder_id_from_url, is_reauth_needed, flag_reauth_needed
-                if is_reauth_needed():
-                    drive_error_msg = 'Drive token expired — re-authenticate in Settings'
-                    self._log(task.id, f'[Pipeline] {drive_error_msg}')
-                elif is_signed_in():
+                from drive_manager import upload_file, is_signed_in, extract_folder_id_from_url
+                if is_signed_in():
                     folder_id = extract_folder_id_from_url(task.drive_folder_id)
                     uploaded_files = []
 
                     # Upload summary text
                     txt_result = upload_file(summary_path, folder_id)
-                    if txt_result.get('status') in ('uploaded', 'skipped'):
+                    if txt_result.get("status") in ("uploaded", "skipped"):
                         uploaded_files.append(f"summary ({txt_result['status']})")
                     else:
-                        drive_error_msg = f"txt: {txt_result.get('reason', 'unknown')}"
-                        self._log(task.id, f'[Pipeline] Summary upload failed: {drive_error_msg}')
+                        self._log(task.id, f"[Pipeline] Summary upload issue: {txt_result}")
 
                     # Upload audio file
                     if audio_file:
                         audio_result = upload_file(audio_file, folder_id)
-                        if audio_result.get('status') in ('uploaded', 'skipped'):
+                        if audio_result.get("status") in ("uploaded", "skipped"):
                             uploaded_files.append(f"audio ({audio_result['status']})")
                         else:
-                            drive_error_msg = f"audio: {audio_result.get('reason', 'unknown')}"
-                            self._log(task.id, f'[Pipeline] Audio upload failed: {drive_error_msg}')
+                            self._log(task.id, f"[Pipeline] Audio upload issue: {audio_result}")
                     elif not self.server_mode:
-                        self._log(task.id, '[Pipeline] No audio file to upload')
+                        self._log(task.id, "[Pipeline] No audio file to upload")
 
                     if uploaded_files:
                         drive_uploaded = True
                         self._log(task.id, f"[Pipeline] Uploaded to Drive: {', '.join(uploaded_files)}")
                 else:
-                    drive_error_msg = 'Drive not signed in'
-                    self._log(task.id, f'[Pipeline] {drive_error_msg} — skipping upload')
+                    self._log(task.id, "[Pipeline] Drive not signed in — skipping upload")
             except Exception as drive_err:
-                self._log(task.id, f'[Pipeline] Drive upload error: {drive_err}')
+                self._log(task.id, f"[Pipeline] Drive upload error: {drive_err}")
 
-        # Update task result
-        parts = []
-        if item_count:
-            parts.append(f'{item_count} items')
+        # --- Step 7: Update task result ---
+        task.items_extracted = len(items)
+        parts = [f"{len(items)} items"]
         if audio_file:
-            parts.append('audio generated')
+            parts.append("audio generated")
         elif self.server_mode:
-            parts.append('audio skipped (server)')
+            parts.append("audio skipped (server)")
         else:
-            parts.append('audio failed')
+            parts.append("audio failed")
         if drive_uploaded:
-            parts.append('uploaded to Drive')
-        elif task.upload_to_drive and task.drive_folder_id:
-            parts.append('Drive upload failed')
+            parts.append("uploaded to Drive")
         task.last_result = f"OK: {', '.join(parts)}"
-        if cooldown and cooldown[1]:
-            task.last_result += ' [cooldown]'
-        self._log(task.id, f'[Pipeline] Complete: {task.last_result}')
+        if _cooldown_active:
+            task.last_result += " [cooldown]"
+        self._log(task.id, f"[Pipeline] Complete: {task.last_result}")
 
     def backfill_task(self, task_id: str, stop_flag: Optional[Callable] = None,
                       since_date: Optional[str] = None) -> bool:

@@ -20,7 +20,6 @@ from dataclasses import dataclass, field
 from enum import Enum
 from typing import List, Dict, Optional, Callable, Tuple
 from urllib.parse import urlparse
-from video_cache import load_cache, save_cache
 
 # Debug logging to file
 _DEBUG_LOG_FILE = None
@@ -296,17 +295,15 @@ def save_sources(sources: List[SourceConfig], sources_json_path: str):
 class SourceFetcher:
     """Unified source fetcher for multiple content types."""
 
-    def __init__(self, api_key: str, model_name: str = "gemini-2.0-flash", data_dir: str = ""):
+    def __init__(self, api_key: str, model_name: str = "gemini-2.0-flash"):
         """Initialize the fetcher with API credentials.
 
         Args:
             api_key: Gemini API key for summarization
             model_name: Gemini model to use
-            data_dir: Directory for persistent data (video cache, etc.)
         """
         self.api_key = api_key
         self.model_name = model_name
-        self.data_dir = data_dir
         self._model = None
 
     def _get_model(self):
@@ -428,10 +425,8 @@ class SourceFetcher:
         import traceback
 
         items = []
-        newly_processed = []
         _debug_log(f"[YouTube] Fetching channel: {source.url}")
         _debug_log(f"[YouTube] Cutoff date: {cutoff_date.date()}")
-        video_cache = load_cache(self.data_dir)
 
         try:
             # Get recent videos from channel
@@ -460,7 +455,6 @@ class SourceFetcher:
 
         videos_checked = 0
         videos_filtered_by_date = 0
-        videos_skipped_by_cache = 0
         videos_no_transcript = 0
 
         for video in videos[:max_items * 2]:  # Fetch extra in case some are filtered
@@ -489,12 +483,6 @@ class SourceFetcher:
                     videos_filtered_by_date += 1
                     continue
 
-                # Check video cache — skip if already processed
-                if video_id in video_cache.get('videos', {}):
-                    _debug_log(f"[YouTube] Skipping (already in cache): {title[:40]}...")
-                    videos_skipped_by_cache += 1
-                    continue
-
                 # Get transcript
                 _debug_log(f"[YouTube] Fetching transcript for: {video_id}")
                 transcript = self._get_youtube_transcript(video_id)
@@ -520,7 +508,6 @@ class SourceFetcher:
                     metadata={"video_id": video_id}
                 ))
 
-                newly_processed.append(video_id)
                 _debug_log(f"[YouTube] Successfully added: {title[:40]}...")
 
             except Exception as e:
@@ -528,20 +515,9 @@ class SourceFetcher:
                 traceback.print_exc()
                 continue
 
-        # Batch write-back: add newly processed videos to cache
-        if newly_processed and self.data_dir:
-            today_str = datetime.now().strftime('%Y-%m-%d')
-            for vid_id in newly_processed:
-                video_cache.setdefault('videos', {})[vid_id] = {
-                    'processed_date': today_str
-                }
-            save_cache(self.data_dir, video_cache)
-            _debug_log(f"[YouTube] Saved {len(newly_processed)} new entries to video cache")
-
         _debug_log(f"[YouTube] Summary for {source.url}:")
         _debug_log(f"[YouTube]   Videos checked: {videos_checked}")
         _debug_log(f"[YouTube]   Filtered by date: {videos_filtered_by_date}")
-        _debug_log(f"[YouTube]   Skipped by cache: {videos_skipped_by_cache}")
         _debug_log(f"[YouTube]   No transcript: {videos_no_transcript}")
         _debug_log(f"[YouTube]   Successfully processed: {len(items)}")
 

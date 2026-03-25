@@ -1,4 +1,7 @@
-"""
+# Source Generated with Decompyle++
+# File: video_cache.pyc (Python 3.12)
+
+'''
 Video Cache — Persistent tracking of processed YouTube video IDs.
 
 Prevents cross-day duplication by recording which videos have already been
@@ -6,27 +9,24 @@ summarized. Used by source_fetcher.py to skip known videos before transcript
 fetch (saving API calls and tokens).
 
 Cache file: processed_videos.json (in data_dir, resolved by FileManager)
-"""
+'''
 import json
 import logging
 import os
 from datetime import datetime, timedelta
-
 logger = logging.getLogger(__name__)
 CACHE_FILENAME = 'processed_videos.json'
 TTL_DAYS = 30
 
-
 def _empty_cache():
-    """Return an empty cache structure."""
+    '''Return an empty cache structure.'''
     return {
         'version': 1,
-        'videos': {}
-    }
+        'videos': { } }
 
 
-def load_cache(cache_dir=None):
-    """Load the processed videos cache from disk.
+def load_cache(cache_dir = None):
+    '''Load the processed videos cache from disk.
 
     Args:
         cache_dir: Directory containing processed_videos.json
@@ -34,25 +34,14 @@ def load_cache(cache_dir=None):
     Returns:
         Cache dict with structure {"version": 1, "videos": {video_id: {...}}}
         Returns empty structure if file is missing, empty, or corrupt.
-    """
-    if not cache_dir:
-        return _empty_cache()
+    '''
     cache_path = os.path.join(cache_dir, CACHE_FILENAME)
     if not os.path.exists(cache_path):
         return _empty_cache()
-    try:
-        with open(cache_path, 'r', encoding='utf-8') as f:
-            data = json.load(f)
-        if not isinstance(data, dict) or 'videos' not in data:
-            logger.warning("Cache file has invalid structure, returning empty cache")
-            return _empty_cache()
-        return data
-    except (json.JSONDecodeError, IOError, OSError) as e:
-        logger.warning(f"Failed to load cache: {e}")
-        return _empty_cache()
+# WARNING: Decompyle incomplete
 
 
-def save_cache(cache_dir=None, cache_data=None):
+def save_cache(cache_dir = None, cache_data = None):
     """Save the processed videos cache to disk with TTL cleanup.
 
     Drops entries where processed_date is more than TTL_DAYS ago.
@@ -62,24 +51,18 @@ def save_cache(cache_dir=None, cache_data=None):
         cache_dir: Directory to write processed_videos.json into
         cache_data: Cache dict to save
     """
-    if not cache_dir or not cache_data:
-        return
-    os.makedirs(cache_dir, exist_ok=True)
+    os.makedirs(cache_dir, exist_ok = True)
     cache_path = os.path.join(cache_dir, CACHE_FILENAME)
-    cutoff = datetime.now() - timedelta(days=TTL_DAYS)
+    cutoff = datetime.now() - timedelta(days = TTL_DAYS)
     cutoff_str = cutoff.strftime('%Y-%m-%d')
-    cleaned_videos = {}
-    for video_id, entry in cache_data.get('videos', {}).items():
+    cleaned_videos = { }
+    for video_id, entry in cache_data.get('videos', { }).items():
         processed_date = entry.get('processed_date', '')
-        if processed_date >= cutoff_str:
-            cleaned_videos[video_id] = entry
+        if not processed_date >= cutoff_str:
+            continue
+        cleaned_videos[video_id] = entry
     cleaned_data = {
         'version': cache_data.get('version', 1),
-        'videos': cleaned_videos
-    }
-    try:
-        with open(cache_path, 'w', encoding='utf-8') as f:
-            json.dump(cleaned_data, f, indent=2)
-        logger.debug(f"Saved cache with {len(cleaned_videos)} entries to {cache_path}")
-    except (IOError, OSError) as e:
-        logger.error(f"Failed to save cache: {e}")
+        'videos': cleaned_videos }
+# WARNING: Decompyle incomplete
+
