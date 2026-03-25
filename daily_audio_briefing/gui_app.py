@@ -910,6 +910,15 @@ class AudioBriefingApp(ctk.CTk):
         self.btn_quality = ctk.CTkButton(self.frame_audio_controls, text="Generate Quality (Kokoro)", command=self.start_quality_generation)
         self.btn_quality.grid(row=4, column=0, columnspan=2, padx=10, pady=(5, 10), sticky="ew")
 
+        # Row 5: Reading List to Audio
+        self.btn_reading_list = ctk.CTkButton(
+            self.frame_audio_controls,
+            text="Reading List to Audio",
+            fg_color="#7c3aed", hover_color="#6d28d9",
+            command=self._open_reading_list_dialog
+        )
+        self.btn_reading_list.grid(row=5, column=0, columnspan=2, padx=10, pady=(5, 10), sticky="ew")
+
         # Audio page status bar (mirrors label_status on Summarize page)
         audio_status_frame = ctk.CTkFrame(self.pages["audio"], fg_color="transparent")
         audio_status_frame.grid(row=2, column=0, padx=20, pady=(5, 10), sticky="ew")
@@ -2141,6 +2150,309 @@ class AudioBriefingApp(ctk.CTk):
 
         threading.Thread(target=load_data, daemon=True).start()
 
+    def _show_local_storage_dialog(self):
+        """Show local audio file management dialog for cleanup."""
+        import glob
+
+        dialog = ctk.CTkToplevel(self)
+        dialog.title("Local Audio Storage")
+        dialog.geometry("650x560")
+        dialog.minsize(550, 420)
+        dialog.transient(self)
+        dialog.lift()
+        dialog.grab_set()
+        dialog.grid_columnconfigure(0, weight=1)
+
+        # ── Header ──
+        ctk.CTkLabel(
+            dialog, text="Local Audio Storage",
+            font=ctk.CTkFont(size=18, weight="bold"),
+            text_color=COLORS["text_primary"]
+        ).grid(row=0, column=0, padx=20, pady=(20, 5), sticky="w")
+
+        summary_label = ctk.CTkLabel(
+            dialog, text="Scanning...",
+            font=ctk.CTkFont(size=12), text_color=COLORS["text_secondary"]
+        )
+        summary_label.grid(row=1, column=0, padx=20, pady=(0, 3), sticky="w")
+
+        ctk.CTkLabel(
+            dialog, text="Only audio files are shown — text summaries are never touched.",
+            font=ctk.CTkFont(size=11), text_color=COLORS["text_muted"]
+        ).grid(row=2, column=0, padx=20, pady=(0, 10), sticky="w")
+
+        # ── Scrollable file list ──
+        files_frame = ctk.CTkScrollableFrame(
+            dialog, height=300,
+            fg_color=COLORS["bg_secondary"], corner_radius=8
+        )
+        files_frame.grid(row=3, column=0, padx=20, pady=(0, 10), sticky="nsew")
+        files_frame.grid_columnconfigure(0, weight=1)
+        dialog.grid_rowconfigure(3, weight=1)
+
+        # ── Action buttons ──
+        btn_frame = ctk.CTkFrame(dialog, fg_color="transparent")
+        btn_frame.grid(row=4, column=0, padx=20, pady=(0, 20), sticky="ew")
+
+        btn_select_all = ctk.CTkButton(
+            btn_frame, text="Select All", width=100, fg_color="gray"
+        )
+        btn_select_all.pack(side="left", padx=(0, 8))
+
+        btn_deselect = ctk.CTkButton(
+            btn_frame, text="Deselect All", width=100, fg_color="gray"
+        )
+        btn_deselect.pack(side="left", padx=(0, 8))
+
+        btn_trash = ctk.CTkButton(
+            btn_frame, text="Move to Trash (0)", width=160,
+            fg_color=COLORS["danger"], state="disabled"
+        )
+        btn_trash.pack(side="right")
+
+        ctk.CTkButton(
+            btn_frame, text="Close", width=80, fg_color="gray",
+            command=dialog.destroy
+        ).pack(side="right", padx=(0, 8))
+
+        # ── Data structures ──
+        file_checkboxes = {}   # abs_path -> BooleanVar
+        all_files_info = []    # [{path, folder_name, display, size_bytes}, ...]
+
+        def update_trash_button(*_args):
+            selected = [(p, info) for p, var in file_checkboxes.items()
+                        if var.get()
+                        for info in all_files_info if info["path"] == p]
+            count = len(selected)
+            total_mb = sum(info["size_bytes"] for _, info in selected) / (1024 * 1024)
+            if count > 0:
+                btn_trash.configure(
+                    text=f"Move to Trash ({count} — {total_mb:.1f} MB)",
+                    state="normal")
+            else:
+                btn_trash.configure(text="Move to Trash (0)", state="disabled")
+
+        def select_all():
+            for var in file_checkboxes.values():
+                var.set(True)
+            update_trash_button()
+
+        def deselect_all():
+            for var in file_checkboxes.values():
+                var.set(False)
+            update_trash_button()
+
+        btn_select_all.configure(command=select_all)
+        btn_deselect.configure(command=deselect_all)
+
+        # ── Scan files ──
+        # Scan Application Support, the script directory, AND the scheduler
+        # daemon's working directory (which is where audio actually accumulates).
+        data_dir = get_data_directory()
+        script_dir = os.path.dirname(os.path.abspath(__file__))
+        scan_dirs = [data_dir]
+        if script_dir != data_dir and os.path.isdir(script_dir):
+            scan_dirs.append(script_dir)
+        # Find the scheduler daemon's directory from running process
+        try:
+            ps_out = subprocess.check_output(
+                ["pgrep", "-lf", "scheduler_daemon"], text=True, timeout=5
+            ).strip()
+            for line in ps_out.splitlines():
+                # Extract path to scheduler_daemon.py
+                parts = line.split()
+                for part in parts:
+                    if "scheduler_daemon" in part and os.path.isfile(part):
+                        daemon_dir = os.path.dirname(os.path.abspath(part))
+                        if daemon_dir not in scan_dirs:
+                            scan_dirs.append(daemon_dir)
+                        break
+        except Exception:
+            pass
+        # Deduplicate by resolving real paths
+        seen_real = set()
+        scan_dirs_deduped = []
+        for d in scan_dirs:
+            real = os.path.realpath(d)
+            if real not in seen_real:
+                seen_real.add(real)
+                scan_dirs_deduped.append(d)
+
+        grouped = {}  # folder_display_name -> [file_info, ...]
+        total_size = 0
+        total_count = 0
+        seen_files = set()  # avoid counting symlinked files twice
+
+        for scan_dir in scan_dirs_deduped:
+            # Week_* folders (newest first)
+            for week_dir in sorted(glob.glob(os.path.join(scan_dir, "Week_*")),
+                                   reverse=True):
+                folder_name = os.path.basename(week_dir)
+                # Make display name friendlier: "Week_13_2026" -> "Week 13 2026"
+                display_folder = folder_name.replace("_", " ")
+                files_in_folder = sorted(
+                    glob.glob(os.path.join(week_dir, "*.mp3")) +
+                    glob.glob(os.path.join(week_dir, "*.wav")),
+                    reverse=True
+                )
+                for fp in files_in_folder:
+                    real_fp = os.path.realpath(fp)
+                    if real_fp in seen_files:
+                        continue
+                    seen_files.add(real_fp)
+                    sz = os.path.getsize(fp)
+                    total_size += sz
+                    total_count += 1
+                    fname = os.path.basename(fp)
+                    if display_folder not in grouped:
+                        grouped[display_folder] = []
+                    grouped[display_folder].append({
+                        "path": fp,
+                        "folder_name": display_folder,
+                        "display": fname,
+                        "size_bytes": sz,
+                    })
+
+            # Reading List folder
+            rl_dir = os.path.join(scan_dir, "Reading List")
+            rl_files = sorted(
+                glob.glob(os.path.join(rl_dir, "*.mp3")) +
+                glob.glob(os.path.join(rl_dir, "*.wav")),
+                reverse=True
+            )
+            for fp in rl_files:
+                real_fp = os.path.realpath(fp)
+                if real_fp in seen_files:
+                    continue
+                seen_files.add(real_fp)
+                sz = os.path.getsize(fp)
+                total_size += sz
+                total_count += 1
+                fname = os.path.basename(fp)
+                if "Reading List" not in grouped:
+                    grouped["Reading List"] = []
+                grouped["Reading List"].append({
+                    "path": fp,
+                    "folder_name": "Reading List",
+                    "display": fname,
+                    "size_bytes": sz,
+                })
+
+        # Sort groups: weeks descending, Reading List last
+        sorted_groups = {}
+        week_keys = sorted([k for k in grouped if k.startswith("Week")], reverse=True)
+        other_keys = sorted([k for k in grouped if not k.startswith("Week")])
+        for k in week_keys + other_keys:
+            sorted_groups[k] = grouped[k]
+        grouped = sorted_groups
+
+        # Build the flat list for reference
+        for folder_files in grouped.values():
+            all_files_info.extend(folder_files)
+
+        # Update summary
+        total_mb = total_size / (1024 * 1024)
+        summary_label.configure(
+            text=f"Local Audio Storage: {total_mb:.1f} MB ({total_count} file{'s' if total_count != 1 else ''})"
+        )
+
+        # ── Populate the scrollable frame ──
+        if not grouped:
+            ctk.CTkLabel(
+                files_frame, text="No local audio files found.",
+                text_color=COLORS["text_muted"], font=ctk.CTkFont(size=12)
+            ).grid(row=0, column=0, pady=20)
+        else:
+            row_idx = 0
+            for folder_display, files in grouped.items():
+                folder_size_mb = sum(f["size_bytes"] for f in files) / (1024 * 1024)
+                ctk.CTkLabel(
+                    files_frame,
+                    text=f"▸ {folder_display}  ({folder_size_mb:.1f} MB)",
+                    font=ctk.CTkFont(size=13, weight="bold"),
+                    text_color=COLORS["text_primary"]
+                ).grid(row=row_idx, column=0, sticky="w", padx=8, pady=(8, 2))
+                row_idx += 1
+
+                for finfo in files:
+                    var = ctk.BooleanVar(value=False)
+                    var.trace_add("write", update_trash_button)
+                    file_checkboxes[finfo["path"]] = var
+                    size_mb = finfo["size_bytes"] / (1024 * 1024)
+                    label = f"{finfo['display']}  ({size_mb:.1f} MB)"
+                    ctk.CTkCheckBox(
+                        files_frame, text=label, variable=var,
+                        font=ctk.CTkFont(size=11)
+                    ).grid(row=row_idx, column=0, sticky="w", padx=(24, 10), pady=1)
+                    row_idx += 1
+
+        # ── Trash action ──
+        def do_trash():
+            selected_paths = [p for p, var in file_checkboxes.items() if var.get()]
+            if not selected_paths:
+                return
+            sel_size = sum(
+                info["size_bytes"] for info in all_files_info
+                if info["path"] in selected_paths
+            ) / (1024 * 1024)
+
+            # Confirmation dialog
+            confirm = ctk.CTkToplevel(dialog)
+            confirm.title("Confirm")
+            confirm.geometry("440x160")
+            confirm.transient(dialog)
+            confirm.lift()
+            confirm.grab_set()
+            confirm.grid_columnconfigure(0, weight=1)
+
+            ctk.CTkLabel(
+                confirm,
+                text=f"Move {len(selected_paths)} audio file{'s' if len(selected_paths) != 1 else ''} "
+                     f"({sel_size:.1f} MB) to Trash?\n"
+                     f"Text summaries will be preserved. Files can be recovered from Trash.",
+                font=ctk.CTkFont(size=13),
+                text_color=COLORS["text_primary"]
+            ).grid(row=0, column=0, padx=20, pady=(20, 15))
+
+            cfm_btns = ctk.CTkFrame(confirm, fg_color="transparent")
+            cfm_btns.grid(row=1, column=0, padx=20, pady=(0, 20))
+
+            def proceed():
+                confirm.destroy()
+                errors = 0
+                for fp in selected_paths:
+                    try:
+                        result = subprocess.run(
+                            ["osascript", "-e",
+                             f'tell application "Finder" to delete '
+                             f'(POSIX file "{fp}" as alias)'],
+                            capture_output=True, text=True, timeout=10
+                        )
+                        if result.returncode != 0:
+                            print(f"[LocalStorage] Trash failed for {fp}: {result.stderr}")
+                            errors += 1
+                    except Exception as e:
+                        print(f"[LocalStorage] Trash error for {fp}: {e}")
+                        errors += 1
+
+                moved = len(selected_paths) - errors
+                # Refresh the dialog
+                dialog.destroy()
+                if moved > 0:
+                    self._update_status(
+                        f"Moved {moved} audio file{'s' if moved != 1 else ''} to Trash", "green")
+                    # Re-open with updated file list
+                    self.after(300, self._show_local_storage_dialog)
+                else:
+                    self._update_status("Failed to move files to Trash", "red")
+
+            ctk.CTkButton(cfm_btns, text="Cancel", fg_color="gray", width=100,
+                          command=confirm.destroy).pack(side="left", padx=(0, 10))
+            ctk.CTkButton(cfm_btns, text="Move to Trash", fg_color=COLORS["danger"],
+                          width=130, command=proceed).pack(side="left")
+
+        btn_trash.configure(command=do_trash)
+
     def _build_home_page(self):
         """Build the Home/Dashboard page with quick actions."""
         page = self.pages["home"]
@@ -2449,6 +2761,12 @@ class AudioBriefingApp(ctk.CTk):
             drive_btn_frame, text="Manage Storage", width=130,
             fg_color="gray",
             command=self._show_drive_storage_dialog
+        ).pack(side="left", padx=(0, 8))
+
+        ctk.CTkButton(
+            drive_btn_frame, text="Local Storage", width=130,
+            fg_color="#7c3aed", hover_color="#6d28d9",
+            command=self._show_local_storage_dialog
         ).pack(side="left", padx=(0, 8))
 
         # ── API Usage & Limits card ──
@@ -6533,6 +6851,487 @@ Transcript:
         ctk.CTkButton(btn_frame, text="Cancel", fg_color="gray", command=cancel).grid(row=0, column=0, padx=5, sticky="ew")
         ctk.CTkButton(btn_frame, text="Generate As-Is", fg_color="orange", command=generate_as_is).grid(row=0, column=1, padx=5, sticky="ew")
         ctk.CTkButton(btn_frame, text="Fetch & Generate", fg_color="green", command=fetch_and_generate).grid(row=0, column=2, padx=5, sticky="ew")
+
+    # ------------------------------------------------------------------
+    # Reading List to Audio — URL-to-audio pipeline (no summarization)
+    # ------------------------------------------------------------------
+
+    def _open_reading_list_dialog(self):
+        """Open dialog for pasting article URLs to convert directly to audio."""
+        import threading
+        from execsum_processor import strip_utm_params
+
+        dlg = ctk.CTkToplevel(self)
+        dlg.title("Reading List to Audio")
+        dlg.geometry("620x520")
+        dlg.transient(self)
+        dlg.grab_set()
+        dlg.lift()
+        dlg.attributes("-topmost", True)
+        dlg.after(300, lambda: dlg.attributes("-topmost", False))
+        dlg.grid_columnconfigure(0, weight=1)
+
+        # Cancellation flag — shared with background thread
+        cancel_event = threading.Event()
+
+        # Header
+        ctk.CTkLabel(
+            dlg, text="Reading List to Audio",
+            font=ctk.CTkFont(size=18, weight="bold")
+        ).grid(row=0, column=0, padx=20, pady=(15, 5), sticky="w")
+
+        ctk.CTkLabel(
+            dlg,
+            text="Paste article URLs below (one per line). Content will be fetched,\n"
+                 "cleaned of marketing/CTAs, and converted to Kokoro audio.",
+            font=ctk.CTkFont(size=12), text_color="gray",
+            justify="left"
+        ).grid(row=1, column=0, padx=20, pady=(0, 8), sticky="w")
+
+        # URL textbox
+        url_textbox = ctk.CTkTextbox(dlg, height=160, font=ctk.CTkFont(size=13))
+        url_textbox.grid(row=2, column=0, padx=20, pady=(0, 5), sticky="ew")
+
+        # Info row: URL count + voice display
+        info_frame = ctk.CTkFrame(dlg, fg_color="transparent")
+        info_frame.grid(row=3, column=0, padx=20, pady=(0, 5), sticky="ew")
+        info_frame.grid_columnconfigure(1, weight=1)
+
+        url_count_label = ctk.CTkLabel(info_frame, text="0 valid URLs detected", font=ctk.CTkFont(size=12))
+        url_count_label.grid(row=0, column=0, sticky="w")
+
+        # Voice display name mapping
+        voice_names = {
+            "af_heart": "Heart", "af_sarah": "Sarah", "af_nova": "Nova",
+            "af_sky": "Sky", "af_bella": "Bella", "am_adam": "Adam",
+            "am_michael": "Michael", "am_echo": "Echo", "bf_emma": "Emma",
+            "bf_isabella": "Isabella", "bm_george": "George", "bm_lewis": "Lewis",
+        }
+        voice_id = self.voice_var.get()
+        voice_display = voice_names.get(voice_id, voice_id)
+        ctk.CTkLabel(
+            info_frame, text=f"Voice: {voice_display}",
+            font=ctk.CTkFont(size=12), text_color="gray"
+        ).grid(row=0, column=1, sticky="e")
+
+        # Progress label
+        progress_label = ctk.CTkLabel(dlg, text="", font=ctk.CTkFont(size=12))
+        progress_label.grid(row=4, column=0, padx=20, pady=(5, 5), sticky="w")
+
+        # Button row
+        btn_frame = ctk.CTkFrame(dlg, fg_color="transparent")
+        btn_frame.grid(row=5, column=0, padx=20, pady=(5, 15), sticky="ew")
+        btn_frame.grid_columnconfigure((0, 1), weight=1)
+
+        btn_cancel = ctk.CTkButton(btn_frame, text="Cancel", fg_color="gray", command=dlg.destroy)
+        btn_cancel.grid(row=0, column=0, padx=(0, 5), sticky="ew")
+
+        btn_process = ctk.CTkButton(btn_frame, text="Process", fg_color="green", state="disabled")
+        btn_process.grid(row=0, column=1, padx=(5, 0), sticky="ew")
+
+        # Parse URLs on each keystroke
+        parsed_urls = []
+
+        def update_url_count(event=None):
+            nonlocal parsed_urls
+            raw = url_textbox.get("1.0", "end-1c")
+            lines = [l.strip() for l in raw.splitlines()]
+            parsed_urls = []
+            for line in lines:
+                if line.startswith("http://") or line.startswith("https://"):
+                    parsed_urls.append(strip_utm_params(line))
+            count = len(parsed_urls)
+            url_count_label.configure(text=f"{count} valid URL{'s' if count != 1 else ''} detected")
+            btn_process.configure(state="normal" if count > 0 else "disabled")
+
+        url_textbox.bind("<KeyRelease>", update_url_count)
+
+        def do_cancel():
+            cancel_event.set()
+            progress_label.configure(text="Cancelling...", text_color="orange")
+            btn_cancel.configure(state="disabled")
+
+        def start_process():
+            if not parsed_urls:
+                return
+            cancel_event.clear()
+            btn_process.configure(state="disabled", text="Processing...")
+            # Cancel button stays active during processing
+            btn_cancel.configure(text="Cancel", fg_color="#c0392b", command=do_cancel)
+            threading.Thread(
+                target=self._process_reading_list,
+                args=(dlg, list(parsed_urls), progress_label, btn_process,
+                      btn_cancel, cancel_event),
+                daemon=True
+            ).start()
+
+        btn_process.configure(command=start_process)
+
+    def _process_reading_list(self, dialog, urls, progress_label, btn_process,
+                              btn_cancel, cancel_event):
+        """Background thread: fetch URLs, clean text, generate Kokoro audio.
+
+        Checks *cancel_event* between every step so the user can abort.
+        Gemini cleaning calls use a 120-second timeout to prevent hangs.
+        """
+        import time
+        import importlib
+
+        def _cancelled():
+            return cancel_event.is_set()
+
+        def _update(text, color="orange"):
+            try:
+                dialog.after(0, lambda: progress_label.configure(
+                    text=text, text_color=color))
+            except Exception:
+                pass  # dialog may have been destroyed
+
+        # Top-level guard — any uncaught exception surfaces in the UI
+        try:
+            self._process_reading_list_inner(
+                dialog, urls, progress_label, btn_process, btn_cancel,
+                cancel_event, _cancelled, _update)
+        except Exception as exc:
+            import traceback
+            print(f"[ReadingList] FATAL: {exc}\n{traceback.format_exc()}")
+            _update(f"Error: {exc}", "red")
+            self._reset_reading_list_buttons(dialog, btn_process, btn_cancel)
+
+    def _process_reading_list_inner(self, dialog, urls, progress_label,
+                                     btn_process, btn_cancel, cancel_event,
+                                     _cancelled, _update):
+        """Inner implementation — separated so top-level guard catches everything."""
+        import time
+        import importlib
+        import re as _mod_re
+
+        data_dir = get_data_directory()
+        reading_list_dir = os.path.join(data_dir, "Reading List")
+        os.makedirs(reading_list_dir, exist_ok=True)
+
+        log_path = os.path.join(data_dir, "gui_log.txt")
+
+        # ------ Step 1: Fetch articles (direct HTTP, no SourceFetcher needed) ------
+        from source_fetcher import _clean_title_for_audio
+        import requests as _requests
+        from bs4 import BeautifulSoup as _BS4
+        articles = []
+
+        for i, url in enumerate(urls):
+            if _cancelled():
+                _update("Cancelled.", "red")
+                self._reset_reading_list_buttons(dialog, btn_process, btn_cancel)
+                return
+            _update(f"[1/5] Fetching article {i+1}/{len(urls)}...")
+            try:
+                resp = _requests.get(url, timeout=30, headers={
+                    'User-Agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) '
+                                  'AppleWebKit/537.36 (KHTML, like Gecko) '
+                                  'Chrome/120.0.0.0 Safari/537.36'
+                })
+                resp.raise_for_status()
+                soup = _BS4(resp.text, 'html.parser')
+
+                title = ""
+                title_elem = soup.find('title') or soup.find('h1')
+                if title_elem:
+                    title = title_elem.get_text(strip=True)
+
+                for elem in soup.find_all(['script', 'style', 'nav', 'header',
+                                           'footer', 'aside', 'iframe']):
+                    elem.decompose()
+
+                main_elem = (
+                    soup.find('article') or soup.find('main') or
+                    soup.find(class_=_mod_re.compile(r'content|article|post', _mod_re.I)) or
+                    soup.find('body')
+                )
+                content = ""
+                if main_elem:
+                    paragraphs = main_elem.find_all('p')
+                    content = '\n\n'.join(
+                        p.get_text(strip=True) for p in paragraphs
+                        if len(p.get_text(strip=True)) > 50
+                    )
+
+                if content and len(content.strip()) > 100:
+                    articles.append({"title": title or url, "content": content, "url": url})
+                    print(f"[ReadingList] Fetched: {title} ({len(content)} chars)")
+                else:
+                    print(f"[ReadingList] Skipped (too short or empty): {url}")
+            except Exception as e:
+                print(f"[ReadingList] Failed to fetch {url}: {e}")
+
+        if not articles:
+            _update("No article content could be fetched. Check URLs.", "red")
+            self._reset_reading_list_buttons(dialog, btn_process, btn_cancel)
+            return
+
+        if _cancelled():
+            _update("Cancelled.", "red")
+            self._reset_reading_list_buttons(dialog, btn_process, btn_cancel)
+            return
+
+        # ------ Step 2: Clean each article via Gemini ------
+        api_key = ""
+        try:
+            api_key = self.gemini_key_entry.get().strip()
+        except Exception:
+            pass
+
+        if api_key:
+            try:
+                import google.generativeai as genai
+                genai.configure(api_key=api_key)
+                model_display = self.model_var.get()
+                model_map = {
+                    "Fast (FREE)": "gemini-2.0-flash",
+                    "Balanced (FREE)": "gemini-2.5-flash",
+                    "Best (FREE, 50/day)": "gemini-2.5-pro",
+                }
+                model_name = model_map.get(model_display, "gemini-2.5-flash")
+                model = genai.GenerativeModel(model_name)
+
+                for i, article in enumerate(articles):
+                    if _cancelled():
+                        _update("Cancelled.", "red")
+                        self._reset_reading_list_buttons(dialog, btn_process, btn_cancel)
+                        return
+                    _update(f"[2/5] Cleaning article {i+1}/{len(articles)} via {model_name}...")
+                    try:
+                        cleaned = self._clean_single_article(model, article["content"])
+                        article["cleaned"] = cleaned if cleaned else article["content"]
+                        print(f"[ReadingList] Cleaned: {article['title']} ({len(article['cleaned'])} chars)")
+                    except TimeoutError as e:
+                        print(f"[ReadingList] Cleaning timed out for {article['title']}: {e}")
+                        _update(f"[2/5] Cleaning timed out for article {i+1}, using raw text...")
+                        article["cleaned"] = article["content"]
+                    except Exception as e:
+                        print(f"[ReadingList] Cleaning failed for {article['title']}: {e}")
+                        article["cleaned"] = article["content"]
+            except Exception as e:
+                print(f"[ReadingList] Gemini setup failed: {e}. Using raw content.")
+                for article in articles:
+                    article["cleaned"] = article["content"]
+        else:
+            print("[ReadingList] No API key — skipping Gemini cleaning.")
+            for article in articles:
+                article["cleaned"] = article["content"]
+
+        if _cancelled():
+            _update("Cancelled.", "red")
+            self._reset_reading_list_buttons(dialog, btn_process, btn_cancel)
+            return
+
+        # ------ Step 3: Combine with spoken separators ------
+        _update("[3/5] Combining articles...")
+
+        combined_parts = []
+        for i, article in enumerate(articles):
+            clean_title = _clean_title_for_audio(article["title"])
+            if i > 0:
+                combined_parts.append("\n\nNext article.\n\n")
+            combined_parts.append(f"{clean_title}.\n\n")
+            combined_parts.append(article["cleaned"])
+
+        combined_text = "".join(combined_parts)
+
+        # ------ Step 4: Generate filename and save text ------
+        date_str = datetime.datetime.now().strftime("%Y-%m-%d")
+        title_slugs = []
+        for article in articles[:3]:
+            slug = _mod_re.sub(r'[^a-z0-9]+', '-', article["title"].lower().strip())[:30]
+            slug = slug.strip('-')
+            if slug:
+                title_slugs.append(slug)
+        slug_part = "_".join(title_slugs) if title_slugs else "reading-list"
+        if len(slug_part) > 80:
+            slug_part = slug_part[:80].rsplit('-', 1)[0]
+        output_basename = f"{date_str}_reading-list_{slug_part}"
+
+        text_path = os.path.join(reading_list_dir, f"{output_basename}.txt")
+        with open(text_path, "w", encoding="utf-8") as f:
+            f.write(combined_text)
+        print(f"[ReadingList] Saved text: {text_path} ({len(combined_text)} chars)")
+
+        if _cancelled():
+            _update("Cancelled (text saved, audio skipped).", "red")
+            self._reset_reading_list_buttons(dialog, btn_process, btn_cancel)
+            return
+
+        # ------ Step 5: Generate Kokoro audio ------
+        voice = self.voice_var.get()
+        wav_output = os.path.join(reading_list_dir, f"{output_basename}.wav")
+        use_mp3 = check_ffmpeg()
+
+        sentences_est = len(combined_text.split('. '))
+        _update(f"[5/5] Generating audio (~{sentences_est} sentences, may take a few minutes)...")
+
+        with open(log_path, "a", encoding="utf-8") as log:
+            log.write(f"\n{'='*60}\n")
+            log.write(f"[{time.strftime('%Y-%m-%d %H:%M:%S')}] Reading List to Audio\n")
+            log.write(f"URLs: {len(urls)}, Articles fetched: {len(articles)}\n")
+            log.write(f"Text: {text_path}\n")
+            log.write(f"Output: {wav_output}\n")
+            log.write(f"Voice: {voice}, Estimated sentences: {sentences_est}\n")
+
+        try:
+            if getattr(sys, "frozen", False):
+                # FROZEN MODE: run in-process
+                import io
+                from contextlib import redirect_stdout, redirect_stderr
+
+                old_argv = sys.argv
+                old_cwd = os.getcwd()
+                stdout_capture = io.StringIO()
+                stderr_capture = io.StringIO()
+
+                sys.argv = [
+                    "make_audio_quality.py",
+                    "--input", text_path,
+                    "--voice", voice,
+                    "--output", wav_output,
+                    "--format", "mp3" if use_mp3 else "wav",
+                    "--bitrate", "128k",
+                ]
+                os.chdir(data_dir)
+
+                try:
+                    import make_audio_quality
+                    importlib.reload(make_audio_quality)
+                    with redirect_stdout(stdout_capture), redirect_stderr(stderr_capture):
+                        make_audio_quality.main()
+                    return_code = 0
+                except SystemExit as e:
+                    return_code = e.code if e.code else 0
+                except Exception as e:
+                    return_code = 1
+                    import traceback
+                    print(f"[ReadingList] TTS error: {e}\n{traceback.format_exc()}")
+                finally:
+                    sys.argv = old_argv
+                    os.chdir(old_cwd)
+
+                with open(log_path, "a", encoding="utf-8") as log:
+                    log.write(f"TTS stdout:\n{stdout_capture.getvalue()}\n")
+                    log.write(f"TTS stderr:\n{stderr_capture.getvalue()}\n")
+                    log.write(f"Return code: {return_code}\n")
+            else:
+                # DEV MODE: subprocess
+                script_dir = os.path.dirname(__file__) or os.path.dirname(os.path.abspath(__file__))
+                python_exe = sys.executable
+                cmd = [
+                    python_exe,
+                    os.path.join(script_dir, "make_audio_quality.py"),
+                    "--input", text_path,
+                    "--voice", voice,
+                    "--output", wav_output,
+                    "--format", "mp3" if use_mp3 else "wav",
+                    "--bitrate", "128k",
+                ]
+                result = subprocess.run(cmd, capture_output=True, text=True, cwd=script_dir, timeout=3600)
+                return_code = result.returncode
+
+                with open(log_path, "a", encoding="utf-8") as log:
+                    log.write(f"TTS stdout:\n{result.stdout}\n")
+                    log.write(f"TTS stderr:\n{result.stderr}\n")
+                    log.write(f"Return code: {return_code}\n")
+
+            # Determine final output path
+            final_ext = "mp3" if use_mp3 else "wav"
+            final_path = os.path.join(reading_list_dir, f"{output_basename}.{final_ext}")
+
+            if return_code == 0 and (os.path.exists(final_path) or os.path.exists(wav_output)):
+                actual_path = final_path if os.path.exists(final_path) else wav_output
+                size_mb = os.path.getsize(actual_path) / (1024 * 1024)
+                self._on_reading_list_complete(dialog, progress_label, btn_process, btn_cancel,
+                                               True, output_basename, final_ext, size_mb,
+                                               file_path=actual_path)
+            else:
+                self._on_reading_list_complete(dialog, progress_label, btn_process, btn_cancel,
+                                               False, output_basename, final_ext, 0)
+
+        except subprocess.TimeoutExpired:
+            print("[ReadingList] TTS timed out after 1 hour")
+            self._on_reading_list_complete(dialog, progress_label, btn_process, btn_cancel,
+                                           False, output_basename, "wav", 0)
+        except Exception as e:
+            print(f"[ReadingList] TTS exception: {e}")
+            self._on_reading_list_complete(dialog, progress_label, btn_process, btn_cancel,
+                                           False, output_basename, "wav", 0)
+
+    def _reset_reading_list_buttons(self, dialog, btn_process, btn_cancel):
+        """Re-enable dialog buttons after processing ends (success, failure, or cancel)."""
+        try:
+            dialog.after(0, lambda: btn_process.configure(state="normal", text="Process"))
+            dialog.after(0, lambda: btn_cancel.configure(
+                state="normal", text="Close", fg_color="gray",
+                command=dialog.destroy))
+        except Exception:
+            pass  # dialog already destroyed
+
+    def _on_reading_list_complete(self, dialog, progress_label, btn_process, btn_cancel,
+                                   success, basename, ext, size_mb, file_path=""):
+        """Handle reading list audio completion — update dialog, send notification."""
+        if success:
+            try:
+                dialog.after(0, lambda: progress_label.configure(
+                    text=f"Done! Saved: Reading List/{basename}.{ext} ({size_mb:.1f} MB)",
+                    text_color="green"))
+            except Exception:
+                pass
+
+            # macOS desktop notification
+            try:
+                import subprocess as sp
+                sp.Popen([
+                    "osascript", "-e",
+                    f'display notification "Reading list audio ready ({size_mb:.1f} MB)" '
+                    f'with title "Daily Audio Briefing" '
+                    f'subtitle "Reading List Complete"'
+                ], stdout=sp.DEVNULL, stderr=sp.DEVNULL)
+            except Exception:
+                pass
+
+            # Replace Process button with "Reveal in Finder"
+            if file_path:
+                def _reveal():
+                    import subprocess as sp
+                    sp.Popen(["open", "-R", file_path],
+                             stdout=sp.DEVNULL, stderr=sp.DEVNULL)
+                try:
+                    dialog.after(0, lambda: btn_process.configure(
+                        text="Reveal in Finder", state="normal",
+                        fg_color="#2980b9", hover_color="#2471a3",
+                        command=_reveal))
+                    dialog.after(0, lambda: btn_cancel.configure(
+                        state="normal", text="Close", fg_color="gray",
+                        command=dialog.destroy))
+                except Exception:
+                    pass
+            else:
+                self._reset_reading_list_buttons(dialog, btn_process, btn_cancel)
+        else:
+            try:
+                dialog.after(0, lambda: progress_label.configure(
+                    text="Error generating audio. Check gui_log.txt for details.",
+                    text_color="red"))
+            except Exception:
+                pass
+
+            try:
+                import subprocess as sp
+                sp.Popen([
+                    "osascript", "-e",
+                    f'display notification "Reading list audio generation failed" '
+                    f'with title "Daily Audio Briefing" '
+                    f'subtitle "Error"'
+                ], stdout=sp.DEVNULL, stderr=sp.DEVNULL)
+            except Exception:
+                pass
+
+            self._reset_reading_list_buttons(dialog, btn_process, btn_cancel)
 
     def show_direct_audio_dialog(self, generation_type):
         """Show dialog to preview and edit cleaned text before audio generation.
