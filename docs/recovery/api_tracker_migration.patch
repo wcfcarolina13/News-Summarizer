@@ -1,0 +1,45 @@
+diff --git a/daily_audio_briefing/api_usage_tracker.py b/daily_audio_briefing/api_usage_tracker.py
+index c5454cb..b860f87 100644
+--- a/daily_audio_briefing/api_usage_tracker.py
++++ b/daily_audio_briefing/api_usage_tracker.py
+@@ -12,6 +12,7 @@ import json
+ import os
+ import sys
+ import threading
++from concurrent.futures import ThreadPoolExecutor, TimeoutError as FuturesTimeoutError
+ from datetime import date, datetime
+ from typing import Optional, Tuple
+ 
+@@ -374,10 +375,12 @@ class APIUsageTracker:
+ 
+             self._save()
+ 
+-    def tracked_generate(self, model, prompt: str, caller: str = "unknown"):
++    def tracked_generate(self, model, prompt: str, caller: str = "unknown",
++                         timeout: int = 120):
+         """Wrapper: check limit → model.generate_content(prompt) → track.
+ 
+         Raises APILimitExceeded if limits are reached.
++        Raises TimeoutError if the API call exceeds *timeout* seconds (default 120).
+         Returns the response object from generate_content().
+         """
+         # Auto-detect task context from thread-local
+@@ -405,8 +408,16 @@ class APIUsageTracker:
+                     if monthly_cost >= budget_cap:
+                         raise BudgetExceeded(monthly_cost, budget_cap)
+ 
+-        # Make the actual API call (outside lock)
+-        response = model.generate_content(prompt)
++        # Make the actual API call (outside lock) with timeout protection
++        with ThreadPoolExecutor(max_workers=1) as executor:
++            future = executor.submit(model.generate_content, prompt)
++            try:
++                response = future.result(timeout=timeout)
++            except FuturesTimeoutError:
++                future.cancel()
++                raise TimeoutError(
++                    f"Gemini API call timed out after {timeout}s (caller: {caller})"
++                )
+ 
+         # Extract model name
+         model_name = (
