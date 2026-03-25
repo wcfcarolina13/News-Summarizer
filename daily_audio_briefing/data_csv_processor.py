@@ -1,13 +1,26 @@
-# Source Generated with Decompyle++
-# File: data_csv_processor.pyc (Python 3.12)
+"""
+Data CSV Processor - Extract links and data from various sources into CSV format.
 
-__doc__ = '\nData CSV Processor - Extract links and data from various sources into CSV format.\n\nSupports:\n- Newsletters (beehiiv, Substack, etc.)\n- Articles\n- RSS Feeds\n- YouTube videos\n- Generic web pages\n\nFeatures:\n- Resolves redirect URLs (beehiiv tracking links)\n- Strips tracking parameters (utm_*, etc.)\n- Custom extraction rules per source/domain\n- Appends to existing CSV sheets\n'
+Supports:
+- Newsletters (beehiiv, Substack, etc.)
+- Articles
+- RSS Feeds
+- YouTube videos
+- Generic web pages
+
+Features:
+- Resolves redirect URLs (beehiiv tracking links)
+- Strips tracking parameters (utm_*, etc.)
+- Custom extraction rules per source/domain
+- Appends to existing CSV sheets
+"""
+
 import csv
 import os
 import re
 import json
 import ssl
-import urllib.request as urllib
+import urllib.request
 import requests
 from urllib.parse import urlparse, parse_qs, urlencode, urlunparse
 from datetime import datetime
@@ -16,158 +29,296 @@ from dataclasses import dataclass, field, asdict
 from bs4 import BeautifulSoup
 from concurrent.futures import ThreadPoolExecutor, as_completed
 import time
-SSL_CONTEXT = ssl.create_default_context()
-SSL_CONTEXT.set_ciphers('DEFAULT@SECLEVEL=1')
-ExtractedItem = <NODE:12>()
-ExtractionConfig = <NODE:12>()
+
+# Create SSL context that's more permissive for sites with strict SSL configs
+try:
+    SSL_CONTEXT = ssl.create_default_context()
+    SSL_CONTEXT.set_ciphers('DEFAULT@SECLEVEL=1')
+except:
+    SSL_CONTEXT = None
+
+
+# =============================================================================
+# DATA MODELS
+# =============================================================================
+
+@dataclass
+class ExtractedItem:
+    """Represents a single extracted item from a source."""
+    title: str = ""
+    url: str = ""
+    original_url: str = ""  # Before redirect resolution
+    source_name: str = ""
+    source_url: str = ""
+    category: str = ""
+    description: str = ""
+    author: str = ""
+    date_published: str = ""
+    date_extracted: str = field(default_factory=lambda: datetime.now().isoformat())
+    custom_fields: Dict[str, Any] = field(default_factory=dict)
+
+    def to_dict(self) -> Dict[str, Any]:
+        """Convert to dictionary, flattening custom_fields."""
+        base = asdict(self)
+        custom = base.pop('custom_fields', {})
+        return {**base, **custom}
+
+
+@dataclass
+class ExtractionConfig:
+    """Configuration for extraction behavior."""
+    resolve_redirects: bool = True
+    strip_tracking_params: bool = True
+    tracking_params: List[str] = field(default_factory=lambda: [
+        'utm_source', 'utm_medium', 'utm_campaign', 'utm_term', 'utm_content',
+        '_bhlid', 'ref', 'source', 'mc_cid', 'mc_eid', 'fbclid', 'gclid',
+        'msclkid', 'twclid', 'igshid', 's', 'si'  # social tracking params
+    ])
+    timeout: int = 10
+    max_workers: int = 5
+    user_agent: str = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"
+
+    # Fetch limiting
+    fetch_limit: int = 0  # 0 = no limit
+    start_date: str = ""  # YYYY-MM-DD format, empty = no filter
+    end_date: str = ""    # YYYY-MM-DD format, empty = no filter
+
+    # CSV output settings
+    csv_columns: List[str] = field(default_factory=lambda: [
+        'title', 'url', 'source_name', 'category', 'description',
+        'author', 'date_published', 'date_extracted'
+    ])
+    append_mode: bool = True
+
+    # Filter patterns from config file
+    include_patterns: List[str] = field(default_factory=list)
+    exclude_patterns: List[str] = field(default_factory=list)
+    blocked_domains: List[str] = field(default_factory=list)
+    allowed_domains: List[str] = field(default_factory=list)
+    exclude_sections: List[str] = field(default_factory=list)
+
+    @classmethod
+    def from_dict(cls, config_dict: Dict[str, Any]) -> 'ExtractionConfig':
+        """Create an ExtractionConfig from a dictionary (e.g., loaded from JSON)."""
+        config = cls()
+
+        # Map known fields
+        if 'csv_columns' in config_dict:
+            config.csv_columns = config_dict['csv_columns']
+        if 'include_patterns' in config_dict:
+            config.include_patterns = config_dict['include_patterns']
+        if 'exclude_patterns' in config_dict:
+            config.exclude_patterns = config_dict['exclude_patterns']
+        if 'blocked_domains' in config_dict:
+            config.blocked_domains = config_dict['blocked_domains']
+        if 'allowed_domains' in config_dict:
+            config.allowed_domains = config_dict['allowed_domains']
+        if 'exclude_sections' in config_dict:
+            config.exclude_sections = config_dict['exclude_sections']
+        if 'timeout' in config_dict:
+            config.timeout = config_dict['timeout']
+        if 'fetch_limit' in config_dict:
+            config.fetch_limit = config_dict['fetch_limit']
+
+        return config
+
+
+# =============================================================================
+# URL UTILITIES
+# =============================================================================
 
 class URLProcessor:
-    '''Handles URL cleaning, redirect resolution, and parameter stripping.'''
-    
-    def __init__(self = None, config = None):
+    """Handles URL cleaning, redirect resolution, and parameter stripping."""
+
+    def __init__(self, config: ExtractionConfig):
         self.config = config
         self.session = requests.Session()
-        self.session.headers.update({
-            'User-Agent': config.user_agent })
-        self._redirect_cache = { }
+        self.session.headers.update({'User-Agent': config.user_agent})
+        self._redirect_cache: Dict[str, str] = {}
 
-    
-    def clean_url(self = None, url = None):
-        '''Strip tracking parameters from URL.'''
+    def clean_url(self, url: str) -> str:
+        """Strip tracking parameters from URL."""
         if not self.config.strip_tracking_params:
             return url
-        parsed = urlparse(url)
-        query_params = parse_qs(parsed.query, keep_blank_values = True)
-    # WARNING: Decompyle incomplete
 
-    
-    def resolve_redirect(self = None, url = None):
-        '''Follow redirects to get final destination URL.'''
+        try:
+            parsed = urlparse(url)
+            query_params = parse_qs(parsed.query, keep_blank_values=True)
+
+            # Remove tracking parameters
+            cleaned_params = {
+                k: v for k, v in query_params.items()
+                if k.lower() not in [p.lower() for p in self.config.tracking_params]
+            }
+
+            # Rebuild URL
+            new_query = urlencode(cleaned_params, doseq=True) if cleaned_params else ""
+            cleaned = urlunparse((
+                parsed.scheme,
+                parsed.netloc,
+                parsed.path,
+                parsed.params,
+                new_query,
+                ""  # Remove fragment
+            ))
+            return cleaned.rstrip('?')
+        except Exception:
+            return url
+
+    def resolve_redirect(self, url: str) -> str:
+        """Follow redirects to get final destination URL."""
         if not self.config.resolve_redirects:
             return url
-        if None in self._redirect_cache:
-            return self._redirect_cache[url]
-        response = self.session.head(url, allow_redirects = True, timeout = self.config.timeout)
-        final_url = response.url
-        if response.status_code >= 400:
-            response = self.session.get(url, allow_redirects = True, timeout = self.config.timeout)
-            final_url = response.url
-        self._redirect_cache[url] = final_url
-        return final_url
-    # WARNING: Decompyle incomplete
 
-    
-    def process_url(self = None, url = None):
-        '''
+        # Check cache first
+        if url in self._redirect_cache:
+            return self._redirect_cache[url]
+
+        try:
+            # Use HEAD request first (faster), fall back to GET
+            response = self.session.head(
+                url,
+                allow_redirects=True,
+                timeout=self.config.timeout
+            )
+            final_url = response.url
+
+            # If HEAD didn't work well, try GET
+            if response.status_code >= 400:
+                response = self.session.get(
+                    url,
+                    allow_redirects=True,
+                    timeout=self.config.timeout
+                )
+                final_url = response.url
+
+            self._redirect_cache[url] = final_url
+            return final_url
+        except Exception as e:
+            print(f"  [!] Could not resolve redirect for {url[:50]}...: {e}")
+            return url
+
+    def process_url(self, url: str) -> tuple[str, str]:
+        """
         Process URL: resolve redirects and clean parameters.
         Returns (cleaned_url, original_url).
-        '''
+        """
         original = url
+
+        # Resolve redirects first
         resolved = self.resolve_redirect(url)
+
+        # Then clean tracking params
         cleaned = self.clean_url(resolved)
-        return (cleaned, original)
 
-    
-    def is_internal_link(self = None, url = None, base_domain = None):
-        '''Check if URL is internal to the base domain.'''
-        parsed = urlparse(url)
-        return base_domain in parsed.netloc
-    # WARNING: Decompyle incomplete
+        return cleaned, original
 
-    
-    def normalize_url(self = None, url = None, base_url = None):
-        '''Convert relative URLs to absolute.'''
+    def is_internal_link(self, url: str, base_domain: str) -> bool:
+        """Check if URL is internal to the base domain."""
+        try:
+            parsed = urlparse(url)
+            return base_domain in parsed.netloc
+        except:
+            return False
+
+    def normalize_url(self, url: str, base_url: str) -> str:
+        """Convert relative URLs to absolute."""
         if url.startswith('http'):
             return url
-        if None.startswith('//'):
+        if url.startswith('//'):
             return 'https:' + url
-        if None.startswith('/'):
+        if url.startswith('/'):
             parsed = urlparse(base_url)
-            return f'''{parsed.scheme}://{parsed.netloc}{url}'''
-        return None.rstrip('/') + '/' + url
+            return f"{parsed.scheme}://{parsed.netloc}{url}"
+        return base_url.rstrip('/') + '/' + url
 
 
+# =============================================================================
+# SOURCE-SPECIFIC EXTRACTORS
+# =============================================================================
 
 class BaseExtractor:
-    '''Base class for source-specific extractors.'''
-    name = 'base'
+    """Base class for source-specific extractors."""
+
+    name = "base"
     supported_domains: List[str] = []
-    
-    def __init__(self = None, url_processor = None, config = None):
+
+    def __init__(self, url_processor: URLProcessor, config: ExtractionConfig):
         self.url_processor = url_processor
         self.config = config
 
-    
-    def can_handle(self = None, url = None):
-        '''Check if this extractor can handle the given URL.'''
-        pass
-    # WARNING: Decompyle incomplete
+    def can_handle(self, url: str) -> bool:
+        """Check if this extractor can handle the given URL."""
+        parsed = urlparse(url)
+        return any(domain in parsed.netloc for domain in self.supported_domains)
 
-    
-    def preprocess_url(self = None, url = None):
-        '''Preprocess URL before fetching. Override in subclasses if needed.'''
+    def preprocess_url(self, url: str) -> str:
+        """Preprocess URL before fetching. Override in subclasses if needed."""
         return url
 
-    
-    def extract(self = None, url = None, html = None, custom_instructions = (None,)):
-        '''Extract items from the source. Override in subclasses.'''
+    def extract(self, url: str, html: str, custom_instructions: Dict = None) -> List[ExtractedItem]:
+        """Extract items from the source. Override in subclasses."""
         raise NotImplementedError
 
-    
-    def _get_soup(self = None, html = None):
-        '''Parse HTML with BeautifulSoup.'''
+    def _get_soup(self, html: str) -> BeautifulSoup:
+        """Parse HTML with BeautifulSoup."""
         return BeautifulSoup(html, 'html.parser')
 
 
-
 class BeehiivExtractor(BaseExtractor):
-    '''Extractor for Beehiiv newsletters (like CryptoSum).'''
-    name = 'beehiiv'
-    supported_domains = [
-        'beehiiv.com']
-    
-    def _find_latest_post_url(self = None, archive_html = None, base_url = None):
-        '''Given a beehiiv archive/homepage HTML, find the URL of the latest newsletter post.'''
+    """Extractor for Beehiiv newsletters (like CryptoSum)."""
+
+    name = "beehiiv"
+    supported_domains = ["beehiiv.com"]
+
+    def _find_latest_post_url(self, archive_html: str, base_url: str) -> str:
+        """Given a beehiiv archive/homepage HTML, find the URL of the latest newsletter post."""
         soup = BeautifulSoup(archive_html, 'html.parser')
         parsed_base = urlparse(base_url)
-        base_domain = f'''{parsed_base.scheme}://{parsed_base.netloc}'''
-        for a_tag in soup.find_all('a', href = True):
-            href = a_tag['href']
-            if not '/p/' in href:
-                continue
-            if href.startswith('/'):
-                
-                return soup.find_all('a', href = True), base_domain + href
-            if not soup.find_all('a', href = True).startswith('http'):
-                continue
-            
-            return None, href
-        return ''
+        base_domain = f"{parsed_base.scheme}://{parsed_base.netloc}"
 
-    
-    def preprocess_url(self = None, url = None):
-        '''If given a beehiiv homepage/archive, find and return the latest post URL.'''
+        # Look for links to /p/ paths (individual posts)
+        for a_tag in soup.find_all('a', href=True):
+            href = a_tag['href']
+            # Match absolute or relative /p/ links
+            if '/p/' in href:
+                if href.startswith('/'):
+                    return base_domain + href
+                elif href.startswith('http'):
+                    return href
+        return ""
+
+    def preprocess_url(self, url: str) -> str:
+        """If given a beehiiv homepage/archive, find and return the latest post URL."""
         parsed = urlparse(url)
         path = parsed.path.rstrip('/')
+
+        # If URL already points to a specific post, use as-is
         if '/p/' in path:
             return url
-        None('    [Beehiiv] Archive page detected, finding latest newsletter post...')
-        headers = {
-            'User-Agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36',
-            'Accept': 'text/html,application/xhtml+xml' }
-        resp = requests.get(url, headers = headers, timeout = 15)
-        resp.raise_for_status()
-        latest_url = self._find_latest_post_url(resp.text, url)
-        if latest_url:
-            print(f'''    [Beehiiv] Latest post: {latest_url[:80]}...''')
-            return latest_url
-        None('    [Beehiiv] No posts found on archive page, using original URL')
-        return url
-    # WARNING: Decompyle incomplete
 
-    
-    def get_archive_posts(self = None, base_url = None, since_date = None, on_progress = (None, None)):
-        '''
+        # This is a homepage/archive URL — fetch it and find the latest post
+        print(f"    [Beehiiv] Archive page detected, finding latest newsletter post...")
+        try:
+            headers = {
+                'User-Agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36',
+                'Accept': 'text/html,application/xhtml+xml',
+            }
+            resp = requests.get(url, headers=headers, timeout=15)
+            resp.raise_for_status()
+            latest_url = self._find_latest_post_url(resp.text, url)
+            if latest_url:
+                print(f"    [Beehiiv] Latest post: {latest_url[:80]}...")
+                return latest_url
+            else:
+                print(f"    [Beehiiv] No posts found on archive page, using original URL")
+                return url
+        except Exception as e:
+            print(f"    [Beehiiv] Error fetching archive: {e}")
+            return url
+
+    def get_archive_posts(self, base_url: str, since_date: str = None, on_progress=None) -> List[Dict[str, str]]:
+        """
         Crawl the beehiiv archive and return all post URLs with dates.
 
         Args:
@@ -178,339 +329,1953 @@ class BeehiivExtractor(BaseExtractor):
         Returns:
             List of dicts: [{"url": "https://...", "date": "2026-02-20"}, ...]
             Ordered oldest-first for chronological processing.
-        '''
+        """
         import time as _time
+
         parsed = urlparse(base_url)
-        base_domain = f'''{parsed.scheme}://{parsed.netloc}'''
+        base_domain = f"{parsed.scheme}://{parsed.netloc}"
         headers = {
             'User-Agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36',
-            'Accept': 'text/html,application/xhtml+xml' }
+            'Accept': 'text/html,application/xhtml+xml',
+        }
+
         all_posts = []
-        seen_slugs = set()
+        seen_slugs = set()  # Track /p/slug to avoid duplicates
         page = 0
         stop_crawling = False
-    # WARNING: Decompyle incomplete
 
-    
-    def extract(self = None, url = None, html = None, custom_instructions = (None,)):
-        '''Extract all links and topics from a Beehiiv newsletter.'''
+        while not stop_crawling:
+            # Use /archive endpoint with pagination (beehiiv's proper archive)
+            archive_url = f"{base_domain}/archive?page={page}" if page > 0 else f"{base_domain}/archive"
+            if on_progress:
+                on_progress(f"[Backfill] Scanning archive page {page}...")
+
+            try:
+                resp = requests.get(archive_url, headers=headers, timeout=15)
+                resp.raise_for_status()
+            except Exception as e:
+                if on_progress:
+                    on_progress(f"[Backfill] Error fetching page {page}: {e}")
+                break
+
+            soup = BeautifulSoup(resp.text, 'html.parser')
+
+            # Find post links with their dates
+            page_posts = []
+            raw_link_count = 0  # Track total /p/ links before dedup
+            for a_tag in soup.find_all('a', href=True):
+                href = a_tag['href']
+                if '/p/' not in href:
+                    continue
+
+                raw_link_count += 1
+
+                # Build full URL
+                if href.startswith('/'):
+                    post_url = base_domain + href
+                elif href.startswith('http'):
+                    post_url = href
+                else:
+                    continue
+
+                # Extract slug for dedup (e.g. /p/goldman-ceo-owns-bitcoin)
+                slug_match = re.search(r'/p/([^/?#]+)', post_url)
+                slug = slug_match.group(1) if slug_match else post_url
+                if slug in seen_slugs:
+                    continue
+                seen_slugs.add(slug)
+
+                # Try to find date from nearby <time> element
+                post_date = ""
+                parent = a_tag.parent
+                for _ in range(5):  # Walk up to 5 levels to find <time>
+                    if parent is None:
+                        break
+                    time_tag = parent.find('time')
+                    if time_tag:
+                        dt_str = time_tag.get('datetime', '') or time_tag.get_text(strip=True)
+                        try:
+                            # Parse various date formats
+                            for fmt in ('%Y-%m-%dT%H:%M:%S.%fZ', '%Y-%m-%dT%H:%M:%SZ',
+                                        '%Y-%m-%d', '%B %d, %Y', '%b %d, %Y'):
+                                try:
+                                    from datetime import datetime as dt_cls
+                                    parsed_dt = dt_cls.strptime(dt_str[:26], fmt)
+                                    post_date = parsed_dt.strftime('%Y-%m-%d')
+                                    break
+                                except ValueError:
+                                    continue
+                        except Exception:
+                            pass
+                        break
+                    parent = parent.parent
+
+                # Check if this post is before our cutoff date
+                if since_date and post_date and post_date < since_date:
+                    stop_crawling = True
+                    break
+
+                page_posts.append({"url": post_url, "date": post_date})
+
+            if raw_link_count == 0:
+                # Truly empty page — end of archive
+                break
+
+            if not page_posts and raw_link_count > 0:
+                # Page had links but all were duplicates (e.g. page 0 == page 1)
+                # Keep going — next page likely has new posts
+                page += 1
+                _time.sleep(0.5)
+                if page >= 50:
+                    break
+                continue
+
+            all_posts.extend(page_posts)
+            page += 1
+
+            # Rate limit: be polite
+            _time.sleep(0.5)
+
+            # Safety: max 50 pages (600 posts)
+            if page >= 50:
+                break
+
+        # Return oldest-first for chronological processing
+        all_posts.reverse()
+
+        if on_progress:
+            on_progress(f"[Backfill] Found {len(all_posts)} posts in archive")
+
+        return all_posts
+
+    def extract(self, url: str, html: str, custom_instructions: Dict = None) -> List[ExtractedItem]:
+        """Extract all links and topics from a Beehiiv newsletter."""
         soup = self._get_soup(html)
         items = []
-        seen_urls = set()
+        seen_urls = set()  # Track URLs to avoid duplicates
+
+        # Get newsletter metadata
         source_name = self._extract_source_name(soup, url)
         pub_date = self._extract_date(soup, url)
-        if not soup.find('div', class_ = 'post-content'):
-            soup.find('div', class_ = 'post-content')
-            if not soup.find('article'):
-                soup.find('article')
-        content_area = soup.body
+
+        # Get the main content area
+        content_area = soup.find('div', class_='post-content') or soup.find('article') or soup.body
+
         if not content_area:
             return items
-        current_category = None
-        for element in content_area.find_all([
-            'h1',
-            'h2',
-            'h3',
-            'h4',
-            'p',
-            'li']):
-            if element.name in ('h1', 'h2', 'h3', 'h4'):
-                header_text = element.get_text(strip = True)
+
+        # Extract all links with their context
+        current_category = "General"
+
+        # Only iterate over container elements and headers (not standalone <a> tags to avoid duplicates)
+        for element in content_area.find_all(['h1', 'h2', 'h3', 'h4', 'p', 'li']):
+            # Track category headers
+            if element.name in ['h1', 'h2', 'h3', 'h4']:
+                header_text = element.get_text(strip=True)
                 if header_text and len(header_text) < 100:
                     current_category = header_text
                 continue
-            links = element.find_all('a', href = True)
+
+            # Extract links from paragraphs and list items
+            links = element.find_all('a', href=True)
+
             for link in links:
                 href = link.get('href', '')
-                if href and href.startswith('#') or href.startswith('mailto:'):
+                if not href or href.startswith('#') or href.startswith('mailto:'):
                     continue
+
+                # Skip internal beehiiv links (subscribe, share, etc.)
                 if self._is_internal_link(href, url):
                     continue
-                link_text = link.get_text(strip = True)
+
+                # Get link text and surrounding context
+                link_text = link.get_text(strip=True)
                 context = self._get_link_context(link, element)
+
+                # Handle beehiiv redirect links (extract dest parameter)
                 original_url = href
                 if 'links.beehiiv.com' in href or 'beehiiv.com/r/' in href:
                     extracted_dest = self._extract_beehiiv_dest(href)
                     if extracted_dest:
                         href = extracted_dest
-                (cleaned_url, _) = self.url_processor.process_url(href)
+
+                # Process URL (resolve redirect, clean params)
+                cleaned_url, _ = self.url_processor.process_url(href)
+
+                # Skip duplicates
                 if cleaned_url in seen_urls:
                     continue
                 seen_urls.add(cleaned_url)
-                if not custom_instructions and self._passes_filter(cleaned_url, link_text, context, current_category, custom_instructions):
-                    continue
-                if not link_text:
-                    link_text
-                item = ExtractedItem(title = self._extract_title_from_url(cleaned_url), url = cleaned_url, original_url = original_url, source_name = source_name, source_url = url, category = current_category, description = context, date_published = pub_date)
+
+                # Apply custom instructions filtering if provided
+                if custom_instructions:
+                    if not self._passes_filter(cleaned_url, link_text, context, current_category, custom_instructions):
+                        continue
+
+                item = ExtractedItem(
+                    title=link_text or self._extract_title_from_url(cleaned_url),
+                    url=cleaned_url,
+                    original_url=original_url,
+                    source_name=source_name,
+                    source_url=url,
+                    category=current_category,
+                    description=context,
+                    date_published=pub_date,
+                )
+
+                # Add custom fields if specified
                 if custom_instructions and 'custom_fields' in custom_instructions:
                     for field_name, extractor_func in custom_instructions['custom_fields'].items():
-                        item.custom_fields[field_name] = extractor_func(link, element, soup)
-                items.append(item)
-        return items
-    # WARNING: Decompyle incomplete
+                        try:
+                            item.custom_fields[field_name] = extractor_func(link, element, soup)
+                        except:
+                            item.custom_fields[field_name] = ""
 
-    
-    def _extract_source_name(self = None, soup = None, url = None):
-        '''Extract the newsletter/publication name.'''
-        og_site = soup.find('meta', property = 'og:site_name')
+                items.append(item)
+
+        return items
+
+    def _extract_source_name(self, soup: BeautifulSoup, url: str) -> str:
+        """Extract the newsletter/publication name."""
+        # Try meta tags first
+        og_site = soup.find('meta', property='og:site_name')
         if og_site:
             return og_site.get('content', '')
-        title = None.find('title')
+
+        # Try title
+        title = soup.find('title')
         if title:
-            return title.get_text(strip = True).split('|')[0].strip()
-        parsed = None(url)
+            return title.get_text(strip=True).split('|')[0].strip()
+
+        # Fall back to domain
+        parsed = urlparse(url)
         return parsed.netloc.split('.')[0].title()
 
-    
-    def _extract_date(self = None, soup = None, url = None):
-        '''Extract publication date from newsletter.'''
-        date_meta = soup.find('meta', property = 'article:published_time')
-    # WARNING: Decompyle incomplete
+    def _extract_date(self, soup: BeautifulSoup, url: str = None) -> str:
+        """Extract publication date from newsletter."""
+        # Try meta tags first (most reliable)
+        date_meta = soup.find('meta', property='article:published_time')
+        if date_meta:
+            content = date_meta.get('content', '')
+            if content and len(content) >= 10:
+                return content[:10]
 
-    
-    def _is_internal_link(self = None, href = None, source_url = None):
-        '''Check if link is internal to the newsletter platform.'''
-        pass
-    # WARNING: Decompyle incomplete
+        # Try og:published_time
+        og_date = soup.find('meta', property='og:published_time')
+        if og_date:
+            content = og_date.get('content', '')
+            if content and len(content) >= 10:
+                return content[:10]
 
-    
-    def _extract_beehiiv_dest(self = None, url = None):
-        '''Extract destination URL from beehiiv redirect link.'''
-        parsed = urlparse(url)
-        query_params = parse_qs(parsed.query)
-        if 'dest' in query_params:
-            return query_params['dest'][0]
-        if None in query_params:
-            return query_params['url'][0]
-        for key, values in None.items():
-            for val in values:
-                if not val.startswith('http'):
-                    continue
-                
-                
-                return None.items(), values, val
-        return ''
-    # WARNING: Decompyle incomplete
+        # Try time elements with datetime attribute
+        time_elem = soup.find('time', datetime=True)
+        if time_elem:
+            dt = time_elem.get('datetime', '')
+            if dt and len(dt) >= 10:
+                return dt[:10]
 
-    
-    def _get_link_context(self = None, link = None, parent_element = None):
-        '''Get the text context around a link.'''
+        # Try any time element text
+        time_elem = soup.find('time')
+        if time_elem:
+            text = time_elem.get_text(strip=True)
+            # Try to parse common date formats
+            date_match = re.search(r'(\d{4}[-/]\d{1,2}[-/]\d{1,2})', text)
+            if date_match:
+                return date_match.group(1).replace('/', '-')
+
+        # Try to extract date from URL (beehiiv often has /p/YYYY-MM-DD-slug format)
+        if url:
+            url_date_match = re.search(r'/p/(\d{4}-\d{2}-\d{2})', url)
+            if url_date_match:
+                return url_date_match.group(1)
+
+        # Try schema.org datePublished
+        script_tags = soup.find_all('script', type='application/ld+json')
+        for script in script_tags:
+            try:
+                import json
+                data = json.loads(script.string)
+                if isinstance(data, dict):
+                    date_pub = data.get('datePublished', '')
+                    if date_pub and len(date_pub) >= 10:
+                        return date_pub[:10]
+            except:
+                pass
+
+        # Look for date in common page elements
+        date_patterns = [
+            r'(\d{4}[-/]\d{1,2}[-/]\d{1,2})',  # 2024-01-15 or 2024/01/15
+            r'((?:Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)[a-z]* \d{1,2},? \d{4})',  # January 15, 2024
+        ]
+
+        # Check common date container classes
+        for selector in ['.date', '.post-date', '.published', '.meta-date', '[class*="date"]']:
+            date_elem = soup.select_one(selector)
+            if date_elem:
+                text = date_elem.get_text(strip=True)
+                for pattern in date_patterns:
+                    match = re.search(pattern, text, re.IGNORECASE)
+                    if match:
+                        date_str = match.group(1)
+                        # Normalize format
+                        if '-' in date_str or '/' in date_str:
+                            return date_str.replace('/', '-')[:10]
+                        # Try parsing text dates like "January 15, 2024"
+                        try:
+                            from dateutil import parser
+                            parsed = parser.parse(date_str)
+                            return parsed.strftime('%Y-%m-%d')
+                        except:
+                            pass
+
+        # Fallback: return empty string to indicate no date found
+        # This is better than returning current date which is misleading
+        return ""
+
+    def _is_internal_link(self, href: str, source_url: str) -> bool:
+        """Check if link is internal to the newsletter platform."""
+        internal_patterns = [
+            'beehiiv.com/subscribe',
+            'beehiiv.com/login',
+            '/subscribe',
+            '/share',
+            'twitter.com/intent',
+            'facebook.com/sharer',
+            'linkedin.com/share',
+            'threads.net/intent',
+            'mailto:',
+            '#'
+        ]
+        return any(pattern in href.lower() for pattern in internal_patterns)
+
+    def _extract_beehiiv_dest(self, url: str) -> str:
+        """Extract destination URL from beehiiv redirect link."""
+        try:
+            parsed = urlparse(url)
+            query_params = parse_qs(parsed.query)
+
+            # beehiiv uses 'dest' parameter for destination
+            if 'dest' in query_params:
+                return query_params['dest'][0]
+
+            # Some use 'url' parameter
+            if 'url' in query_params:
+                return query_params['url'][0]
+
+            # Try to find any URL in query params
+            for key, values in query_params.items():
+                for val in values:
+                    if val.startswith('http'):
+                        return val
+
+            return ""
+        except:
+            return ""
+
+    def _get_link_context(self, link, parent_element) -> str:
+        """Get the text context around a link."""
         if parent_element and parent_element != link:
-            text = parent_element.get_text(separator = ' ', strip = True)
+            # Use separator=' ' to preserve word boundaries between elements
+            text = parent_element.get_text(separator=' ', strip=True)
+            # Normalize multiple spaces to single space
             text = ' '.join(text.split())
             return text[:200]
+        return ""
 
-    
-    def _extract_title_from_url(self = None, url = None):
-        '''Extract a title from URL path if no link text.'''
+    def _extract_title_from_url(self, url: str) -> str:
+        """Extract a title from URL path if no link text."""
         parsed = urlparse(url)
         path = parsed.path.strip('/').split('/')[-1]
+        # Convert slugs to readable text
         return path.replace('-', ' ').replace('_', ' ').title()[:100]
 
-    
-    def _passes_filter(self, url, text = None, context = None, category = None, instructions = ('url', str, 'text', str, 'context', str, 'category', str, 'instructions', Dict, 'return', bool)):
-        '''Check if item passes custom instruction filters.'''
-        pass
-    # WARNING: Decompyle incomplete
+    def _passes_filter(self, url: str, text: str, context: str, category: str, instructions: Dict) -> bool:
+        """Check if item passes custom instruction filters."""
+        # Require URL if specified
+        if instructions.get('require_url', False):
+            if not url or not url.strip() or url.strip() == '#':
+                return False
 
+        # Exclude categories
+        exclude_categories = instructions.get('exclude_categories', [])
+        if exclude_categories and category:
+            if any(cat.lower() in category.lower() for cat in exclude_categories):
+                return False
+
+        # Include patterns (empty list = include all)
+        include_patterns = instructions.get('include_patterns', [])
+        if include_patterns:  # Only filter if list is non-empty
+            combined = f"{url} {text} {context}".lower()
+            if not any(p.lower() in combined for p in include_patterns):
+                return False
+
+        # Exclude patterns
+        exclude_patterns = instructions.get('exclude_patterns', [])
+        if exclude_patterns:
+            combined = f"{url} {text} {context}".lower()
+            if any(p.lower() in combined for p in exclude_patterns):
+                return False
+
+        # Domain whitelist (empty list = allow all)
+        allowed_domains = instructions.get('allowed_domains', [])
+        if allowed_domains:  # Only filter if list is non-empty
+            parsed = urlparse(url)
+            if not any(d in parsed.netloc for d in allowed_domains):
+                return False
+
+        # Domain blacklist
+        blocked_domains = instructions.get('blocked_domains', [])
+        if blocked_domains:
+            parsed = urlparse(url)
+            if any(d in parsed.netloc for d in blocked_domains):
+                return False
+
+        return True
 
 
 class GenericWebExtractor(BaseExtractor):
-    '''Generic extractor for any web page.'''
-    name = 'generic'
-    supported_domains = []
-    
-    def can_handle(self = None, url = None):
-        '''Generic extractor handles any URL.'''
+    """Generic extractor for any web page."""
+
+    name = "generic"
+    supported_domains = []  # Handles any domain as fallback
+
+    def can_handle(self, url: str) -> bool:
+        """Generic extractor handles any URL."""
         return True
 
-    
-    def extract(self = None, url = None, html = None, custom_instructions = (None,)):
-        '''Extract all external links from a web page.'''
+    def extract(self, url: str, html: str, custom_instructions: Dict = None) -> List[ExtractedItem]:
+        """Extract all external links from a web page."""
         soup = self._get_soup(html)
         items = []
+
         source_name = self._extract_source_name(soup, url)
         parsed_source = urlparse(url)
-        for link in soup.find_all('a', href = True):
+
+        for link in soup.find_all('a', href=True):
             href = link.get('href', '')
-            if href and href.startswith('#') or href.startswith('mailto:'):
+            if not href or href.startswith('#') or href.startswith('mailto:'):
                 continue
+
+            # Normalize URL
             full_url = self.url_processor.normalize_url(href, url)
+
+            # Skip internal links
             parsed = urlparse(full_url)
             if parsed.netloc == parsed_source.netloc:
                 continue
-            (cleaned_url, original_url) = self.url_processor.process_url(full_url)
-            link_text = link.get_text(strip = True)
-            if not link_text:
-                link_text
-            item = ExtractedItem(title = self._extract_title_from_url(cleaned_url), url = cleaned_url, original_url = original_url, source_name = source_name, source_url = url, category = 'External Link')
+
+            # Process URL
+            cleaned_url, original_url = self.url_processor.process_url(full_url)
+
+            link_text = link.get_text(strip=True)
+
+            item = ExtractedItem(
+                title=link_text or self._extract_title_from_url(cleaned_url),
+                url=cleaned_url,
+                original_url=original_url,
+                source_name=source_name,
+                source_url=url,
+                category="External Link",
+            )
             items.append(item)
+
         return items
 
-    
-    def _extract_source_name(self = None, soup = None, url = None):
-        '''Extract page/site name.'''
-        og_site = soup.find('meta', property = 'og:site_name')
+    def _extract_source_name(self, soup: BeautifulSoup, url: str) -> str:
+        """Extract page/site name."""
+        og_site = soup.find('meta', property='og:site_name')
         if og_site:
             return og_site.get('content', '')
-        title = None.find('title')
-        if title:
-            return title.get_text(strip = True)[:50]
-        return None(url).netloc
 
-    
-    def _extract_title_from_url(self = None, url = None):
-        '''Extract title from URL.'''
+        title = soup.find('title')
+        if title:
+            return title.get_text(strip=True)[:50]
+
+        return urlparse(url).netloc
+
+    def _extract_title_from_url(self, url: str) -> str:
+        """Extract title from URL."""
         parsed = urlparse(url)
         path = parsed.path.strip('/').split('/')[-1]
-        if not path.replace('-', ' ').replace('_', ' ').title()[:100]:
-            path.replace('-', ' ').replace('_', ' ').title()[:100]
-        return parsed.netloc
-
+        return path.replace('-', ' ').replace('_', ' ').title()[:100] or parsed.netloc
 
 
 class RSSExtractor(BaseExtractor):
-    '''Extractor for RSS/Atom feeds.'''
-    name = 'rss'
-    supported_domains = []
-    
-    def can_handle(self = None, url = None):
-        '''Check if URL is an RSS feed.'''
-        pass
-    # WARNING: Decompyle incomplete
+    """Extractor for RSS/Atom feeds."""
 
-    
-    def extract(self = None, url = None, html = None, custom_instructions = (None,)):
-        '''Extract items from RSS feed.'''
+    name = "rss"
+    supported_domains = []
+
+    def can_handle(self, url: str) -> bool:
+        """Check if URL is an RSS feed."""
+        return any(ext in url.lower() for ext in ['.rss', '.xml', '/feed', '/rss', 'atom'])
+
+    def extract(self, url: str, html: str, custom_instructions: Dict = None) -> List[ExtractedItem]:
+        """Extract items from RSS feed."""
         soup = BeautifulSoup(html, 'xml')
         items = []
+
+        # Get feed title
         feed_title = soup.find('title')
-        source_name = feed_title.get_text(strip = True) if feed_title else urlparse(url).netloc
-        if not soup.find_all('item'):
-            soup.find_all('item')
-        entries = soup.find_all('entry')
+        source_name = feed_title.get_text(strip=True) if feed_title else urlparse(url).netloc
+
+        # Handle both RSS and Atom formats
+        entries = soup.find_all('item') or soup.find_all('entry')
+
         for entry in entries:
             title_elem = entry.find('title')
             link_elem = entry.find('link')
-            if not entry.find('description'):
-                entry.find('description')
-                if not entry.find('summary'):
-                    entry.find('summary')
-            desc_elem = entry.find('content')
-            if not entry.find('pubDate'):
-                entry.find('pubDate')
-                if not entry.find('published'):
-                    entry.find('published')
-            date_elem = entry.find('updated')
-            if not entry.find('author'):
-                entry.find('author')
-            author_elem = entry.find('dc:creator')
-            if link_elem:
-                if not link_elem.get('href'):
-                    link_elem.get('href')
-                link_url = link_elem.get_text(strip = True)
-            
-            (cleaned_url, original_url) = self.url_processor.process_url(link_url)
-            item = ExtractedItem(title = title_elem.get_text(strip = True) if title_elem else '', url = cleaned_url, original_url = original_url, source_name = source_name, source_url = url, category = 'RSS Feed', description = desc_elem.get_text(strip = True)[:500] if desc_elem else '', date_published = date_elem.get_text(strip = True) if date_elem else '', author = author_elem.get_text(strip = True) if author_elem else '')
-            items.append(item)
-        return items
+            desc_elem = entry.find('description') or entry.find('summary') or entry.find('content')
+            date_elem = entry.find('pubDate') or entry.find('published') or entry.find('updated')
+            author_elem = entry.find('author') or entry.find('dc:creator')
 
+            # Get link (RSS vs Atom format)
+            if link_elem:
+                link_url = link_elem.get('href') or link_elem.get_text(strip=True)
+            else:
+                continue
+
+            cleaned_url, original_url = self.url_processor.process_url(link_url)
+
+            item = ExtractedItem(
+                title=title_elem.get_text(strip=True) if title_elem else "",
+                url=cleaned_url,
+                original_url=original_url,
+                source_name=source_name,
+                source_url=url,
+                category="RSS Feed",
+                description=desc_elem.get_text(strip=True)[:500] if desc_elem else "",
+                date_published=date_elem.get_text(strip=True) if date_elem else "",
+                author=author_elem.get_text(strip=True) if author_elem else "",
+            )
+            items.append(item)
+
+        return items
 
 
 class TelegramExtractor(BaseExtractor):
-    '''Extractor for Telegram channel preview pages.'''
-    name = 'telegram'
-    supported_domains = [
-        't.me']
-    
-    def can_handle(self = None, url = None):
-        '''Check if URL is a Telegram channel.'''
-        parsed = urlparse(url)
-        return parsed.netloc == 't.me'
+    """Extractor for Telegram channel preview pages."""
 
-    
-    def preprocess_url(self = None, url = None):
-        '''Convert t.me/channel to t.me/s/channel preview format.'''
+    name = "telegram"
+    supported_domains = ["t.me"]
+
+    def can_handle(self, url: str) -> bool:
+        """Check if URL is a Telegram channel."""
         parsed = urlparse(url)
-        if parsed.netloc == 't.me' and '/s/' not in parsed.path:
+        # Match t.me/channelname or t.me/s/channelname
+        return parsed.netloc == "t.me"
+
+    def preprocess_url(self, url: str) -> str:
+        """Convert t.me/channel to t.me/s/channel preview format."""
+        parsed = urlparse(url)
+        if parsed.netloc == "t.me" and "/s/" not in parsed.path:
+            # Convert t.me/channelname to t.me/s/channelname
             channel = parsed.path.strip('/')
-            return f'''https://t.me/s/{channel}'''
+            return f"https://t.me/s/{channel}"
+        return url
 
-    
-    def _is_article_url(self = None, url = None):
-        '''Check if URL looks like an article (not a homepage).'''
+    def _is_article_url(self, url: str) -> bool:
+        """Check if URL looks like an article (not a homepage)."""
         parsed = urlparse(url)
         path = parsed.path.strip('/')
-        if bool(path):
-            bool(path)
-        if not '/' in path:
-            '/' in path
-        return len(path) > 20
+        # Article URLs typically have meaningful paths
+        return bool(path) and '/' in path or len(path) > 20
 
-    
-    def _select_best_link(self = None, links = None):
-        '''Select the best link from a list (prefer article URLs over homepages).'''
-        pass
-    # WARNING: Decompyle incomplete
+    def _select_best_link(self, links: list) -> str:
+        """Select the best link from a list (prefer article URLs over homepages)."""
+        article_links = [l for l in links if self._is_article_url(l)]
+        if article_links:
+            return article_links[-1]  # Last link is often the source
+        return links[-1] if links else None
 
-    
-    def extract(self = None, url = None, html = None, custom_instructions = (None,)):
-        '''Extract items from Telegram channel preview page.'''
+    def extract(self, url: str, html: str, custom_instructions: Dict = None) -> List[ExtractedItem]:
+        """Extract items from Telegram channel preview page."""
         soup = self._get_soup(html)
         items = []
         seen_urls = set()
-        channel_title = soup.find('div', class_ = 'tgme_channel_info_header_title')
-        source_name = channel_title.get_text(strip = True) if channel_title else 'Telegram Channel'
-        messages = soup.find_all('div', class_ = 'tgme_widget_message_wrap')
+
+        # Get channel name from page
+        channel_title = soup.find('div', class_='tgme_channel_info_header_title')
+        source_name = channel_title.get_text(strip=True) if channel_title else "Telegram Channel"
+
+        # Find all message containers
+        messages = soup.find_all('div', class_='tgme_widget_message_wrap')
+
         for msg in messages:
-            text_div = msg.find('div', class_ = 'tgme_widget_message_text')
+            # Get message text
+            text_div = msg.find('div', class_='tgme_widget_message_text')
             if not text_div:
                 continue
-            message_text = text_div.get_text(strip = True)
+
+            message_text = text_div.get_text(strip=True)
             if not message_text:
                 continue
+
+            # Get date
             time_elem = msg.find('time')
-            date_published = time_elem.get('datetime', '') if time_elem else ''
-            links = text_div.find_all('a', href = True)
+            date_published = time_elem.get('datetime', '') if time_elem else ""
+
+            # Get external links from the message
+            links = text_div.find_all('a', href=True)
             external_links = []
             for link in links:
                 href = link.get('href', '')
-                if not href:
-                    continue
-                if not href.startswith('http'):
-                    continue
-                if not 't.me' not in href:
-                    continue
-                external_links.append(href)
+                # Skip internal Telegram links
+                if href and href.startswith('http') and 't.me' not in href:
+                    external_links.append(href)
+
+            # If there are external links, pick the best one per message
             if external_links:
+                # Select the best link (prefer article URLs)
                 best_link = self._select_best_link(external_links)
-                if not best_link:
+                if best_link:
+                    cleaned_url, original_url = self.url_processor.process_url(best_link)
+
+                    # Skip if we've already seen this URL
+                    if cleaned_url in seen_urls:
+                        continue
+                    seen_urls.add(cleaned_url)
+
+                    # Use full message text as title (no truncation)
+                    title = message_text
+
+                    item = ExtractedItem(
+                        title=title,
+                        url=cleaned_url,
+                        original_url=original_url,
+                        source_name=source_name,
+                        source_url=url,
+                        category="Telegram",
+                        description="",  # Title already carries the full text
+                        date_published=date_published,
+                    )
+                    items.append(item)
+            else:
+                # No external links, still capture the message content
+                # Use message permalink as URL
+                msg_link = msg.find('a', class_='tgme_widget_message_date')
+                msg_url = msg_link.get('href', url) if msg_link else url
+
+                # Skip if we've already seen this URL
+                if msg_url in seen_urls:
                     continue
-                (cleaned_url, original_url) = self.url_processor.process_url(best_link)
-                if cleaned_url in seen_urls:
-                    continue
-                seen_urls.add(cleaned_url)
+                seen_urls.add(msg_url)
+
                 title = message_text
-                item = ExtractedItem(title = title, url = cleaned_url, original_url = original_url, source_name = source_name, source_url = url, category = 'Telegram', description = '', date_published = date_published)
+
+                item = ExtractedItem(
+                    title=title,
+                    url=msg_url,
+                    original_url=msg_url,
+                    source_name=source_name,
+                    source_url=url,
+                    category="Telegram",
+                    description="",  # Title already carries the full text
+                    date_published=date_published,
+                )
                 items.append(item)
-                continue
-            msg_link = msg.find('a', class_ = 'tgme_widget_message_date')
-            msg_url = msg_link.get('href', url) if msg_link else url
-            if msg_url in seen_urls:
-                continue
-            seen_urls.add(msg_url)
-            title = message_text
-            item = ExtractedItem(title = title, url = msg_url, original_url = msg_url, source_name = source_name, source_url = url, category = 'Telegram', description = '', date_published = date_published)
-            items.append(item)
+
         return items
 
 
+# =============================================================================
+# CSV MANAGER
+# =============================================================================
 
 class CSVManager:
-    '''Handles CSV file operations with append support.'''
-    
-    def __init__(self = None, config = None):
+    """Handles CSV file operations with append support."""
+
+    def __init__(self, config: ExtractionConfig):
         self.config = config
 
-    
-    def write_items(self = None, items = None, output_path = None, custom_columns = (None,)):
+    def write_items(self, items: List[ExtractedItem], output_path: str,
+                    custom_columns: List[str] = None) -> str:
+        """
+        Write extracted items to CSV file.
+
+        Args:
+            items: List of ExtractedItem objects
+            output_path: Path to CSV file
+            custom_columns: Optional custom column order
+
+        Returns:
+            Path to the written CSV file
+        """
+        if not items:
+            print("No items to write.")
+            return output_path
+
+        # Define the CANONICAL column order matching the user's sheet EXACTLY
+        # This order must be used regardless of append mode or existing files
+        canonical_columns = [
+            'title', 'url', 'source_name', 'category', 'description', 'author',
+            'date_published', 'date_extracted',
+            'grid_asset_id', 'grid_matched', 'grid_profile_id', 'grid_confidence',
+            'grid_entity_name', 'grid_match_count', 'grid_product_id', 'grid_profile_name',
+            'grid_product_name', 'grid_entity_id', 'grid_asset_name', 'grid_subjects',
+            'comments', 'grid_asset_ticker'
+        ]
+
+        # Start with canonical columns
+        columns = list(canonical_columns)
+
+        # Collect any extra custom fields from items (not in canonical list)
+        extra_fields = set()
+        for item in items:
+            for key in item.custom_fields.keys():
+                if key not in columns:
+                    extra_fields.add(key)
+
+        # Add extra fields at the end (sorted for consistency)
+        columns.extend(sorted(extra_fields))
+
+        # Check if file exists for append mode
+        file_exists = os.path.exists(output_path)
+        mode = 'a' if (self.config.append_mode and file_exists) else 'w'
+        write_header = not (self.config.append_mode and file_exists)
+
+        # When appending, we STILL use canonical order but add any new columns from existing file
+        if self.config.append_mode and file_exists:
+            existing_columns = self._read_existing_columns(output_path)
+            if existing_columns:
+                # Add any columns from existing file that aren't in our canonical list
+                for col in existing_columns:
+                    if col not in columns:
+                        columns.append(col)
+
+        with open(output_path, mode, newline='', encoding='utf-8') as f:
+            writer = csv.DictWriter(f, fieldnames=columns, extrasaction='ignore')
+
+            if write_header:
+                writer.writeheader()
+
+            # Checkbox columns that should default to FALSE
+            checkbox_columns = {'Processed', 'Added'}
+
+            for item in items:
+                row = item.to_dict()
+                # Add default FALSE for checkbox columns not in row
+                for col in columns:
+                    if col in checkbox_columns and col not in row:
+                        row[col] = 'FALSE'
+                writer.writerow(row)
+
+        print(f"{'Appended' if mode == 'a' else 'Wrote'} {len(items)} items to {output_path}")
+        return output_path
+
+    def _read_existing_columns(self, path: str) -> List[str]:
+        """Read column headers from existing CSV."""
+        try:
+            with open(path, 'r', encoding='utf-8') as f:
+                reader = csv.reader(f)
+                return next(reader, [])
+        except:
+            return []
+
+    def deduplicate(self, output_path: str, key_column: str = 'url') -> int:
+        """Remove duplicate entries from CSV based on key column."""
+        if not os.path.exists(output_path):
+            return 0
+
+        seen = set()
+        unique_rows = []
+        duplicates = 0
+
+        with open(output_path, 'r', encoding='utf-8') as f:
+            reader = csv.DictReader(f)
+            columns = reader.fieldnames
+
+            for row in reader:
+                key = row.get(key_column, '')
+                if key and key not in seen:
+                    seen.add(key)
+                    unique_rows.append(row)
+                else:
+                    duplicates += 1
+
+        if duplicates > 0:
+            with open(output_path, 'w', newline='', encoding='utf-8') as f:
+                writer = csv.DictWriter(f, fieldnames=columns)
+                writer.writeheader()
+                writer.writerows(unique_rows)
+
+            print(f"Removed {duplicates} duplicate entries.")
+
+        return duplicates
+
+
+# =============================================================================
+# MAIN PROCESSOR
+# =============================================================================
+
+class DataCSVProcessor:
+    """
+    Main processor for extracting data from various sources into CSV format.
+
+    Usage:
+        processor = DataCSVProcessor()
+
+        # Process a single URL
+        items = processor.process_url("https://cryptosum.beehiiv.com/p/...")
+        processor.save_to_csv(items, "output.csv")
+
+        # Process multiple URLs
+        all_items = processor.process_urls(["url1", "url2", ...])
+        processor.save_to_csv(all_items, "output.csv")
+
+        # With custom instructions
+        instructions = {
+            "include_patterns": ["bitcoin", "ethereum"],
+            "exclude_patterns": ["sponsor", "advertisement"],
+            "blocked_domains": ["twitter.com", "facebook.com"]
+        }
+        items = processor.process_url(url, custom_instructions=instructions)
+    """
+
+    def __init__(self, config: ExtractionConfig = None):
+        self.config = config or ExtractionConfig()
+        self.url_processor = URLProcessor(self.config)
+        self.csv_manager = CSVManager(self.config)
+
+        # Register extractors (order matters - specific before generic)
+        self.extractors: List[BaseExtractor] = [
+            BeehiivExtractor(self.url_processor, self.config),
+            TelegramExtractor(self.url_processor, self.config),
+            RSSExtractor(self.url_processor, self.config),
+            GenericWebExtractor(self.url_processor, self.config),
+        ]
+
+        # Source-specific custom instructions
+        self.source_instructions: Dict[str, Dict] = {}
+
+    def register_source_instructions(self, domain_pattern: str, instructions: Dict):
+        """
+        Register custom extraction instructions for a specific domain.
+
+        Args:
+            domain_pattern: Domain pattern to match (e.g., "cryptosum", "beehiiv.com")
+            instructions: Dictionary of extraction instructions
+        """
+        self.source_instructions[domain_pattern] = instructions
+
+    def _get_instructions_for_url(self, url: str, custom_instructions: Dict = None) -> Dict:
+        """Get combined instructions for a URL."""
+        combined = {}
+
+        # Check registered source instructions
+        parsed = urlparse(url)
+        for pattern, instructions in self.source_instructions.items():
+            if pattern.lower() in parsed.netloc.lower() or pattern.lower() in url.lower():
+                combined.update(instructions)
+                break
+
+        # Override with custom instructions if provided
+        if custom_instructions:
+            combined.update(custom_instructions)
+
+        return combined
+
+    # Max HTML size to load into memory (10MB) — prevents OOM on 512MB servers
+    MAX_RESPONSE_SIZE = 10 * 1024 * 1024
+
+    def _fetch_content(self, url: str) -> str:
+        """Fetch HTML content from URL with multiple fallback methods."""
+        # Browser-like headers to bypass bot detection
+        headers = {
+            'User-Agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+            'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8',
+            'Accept-Language': 'en-US,en;q=0.9',
+            'Accept-Encoding': 'gzip, deflate, br',
+            'DNT': '1',
+            'Connection': 'keep-alive',
+            'Upgrade-Insecure-Requests': '1',
+            'Sec-Fetch-Dest': 'document',
+            'Sec-Fetch-Mode': 'navigate',
+            'Sec-Fetch-Site': 'none',
+            'Sec-Fetch-User': '?1',
+            'Cache-Control': 'max-age=0',
+        }
+
+        # Method 1: Try requests first with full browser headers
+        try:
+            response = requests.get(
+                url,
+                headers=headers,
+                timeout=self.config.timeout,
+                allow_redirects=True,
+                stream=True
+            )
+            response.raise_for_status()
+            # Guard against huge responses (OOM on 512MB servers)
+            content_len = response.headers.get('content-length')
+            if content_len and int(content_len) > self.MAX_RESPONSE_SIZE:
+                print(f"    [!] Response too large ({int(content_len) // 1024 // 1024}MB), skipping")
+                response.close()
+                return ""
+            text = response.text
+            if len(text) > self.MAX_RESPONSE_SIZE:
+                print(f"    [!] Response body too large ({len(text) // 1024 // 1024}MB), truncating")
+                text = text[:self.MAX_RESPONSE_SIZE]
+            return text
+        except Exception as e:
+            print(f"    [!] requests failed: {e}")
+
+        # Method 2: Try urllib with custom SSL context
+        try:
+            req = urllib.request.Request(url, headers=headers)
+            if SSL_CONTEXT:
+                with urllib.request.urlopen(req, timeout=self.config.timeout, context=SSL_CONTEXT) as response:
+                    return response.read().decode('utf-8', errors='ignore')
+            else:
+                with urllib.request.urlopen(req, timeout=self.config.timeout) as response:
+                    return response.read().decode('utf-8', errors='ignore')
+        except Exception as e:
+            print(f"    [!] urllib failed: {e}")
+
+        # Method 3: Try with no SSL verification
+        try:
+            import ssl
+            no_verify_ctx = ssl.create_default_context()
+            no_verify_ctx.check_hostname = False
+            no_verify_ctx.verify_mode = ssl.CERT_NONE
+            req = urllib.request.Request(url, headers=headers)
+            with urllib.request.urlopen(req, timeout=self.config.timeout, context=no_verify_ctx) as response:
+                return response.read().decode('utf-8', errors='ignore')
+        except Exception as e:
+            print(f"    [!] SSL bypass failed: {e}")
+
+        # All direct fetch methods failed
+        return ""
+
+    def _web_search_fallback(self, query: str, original_url: str) -> str:
+        """
+        Search for article content via web search when direct fetch fails.
+        Uses DuckDuckGo HTML search (no API key needed).
+        Returns article text if found, empty string otherwise.
+        """
+        try:
+            # Clean up query - use headline without source prefix
+            search_query = query.strip()
+            if len(search_query) < 10:
+                return ""
+
+            print(f"    [*] Searching for article: {search_query[:50]}...")
+
+            # Search DuckDuckGo HTML
+            search_url = f"https://html.duckduckgo.com/html/?q={urllib.parse.quote(search_query + ' crypto news')}"
+            headers = {
+                'User-Agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36',
+                'Accept': 'text/html,application/xhtml+xml',
+            }
+
+            req = urllib.request.Request(search_url, headers=headers)
+            with urllib.request.urlopen(req, timeout=10) as response:
+                search_html = response.read().decode('utf-8', errors='ignore')
+
+            # Parse search results (try lxml, fall back to html.parser)
+            try:
+                soup = BeautifulSoup(search_html, 'lxml')
+            except Exception:
+                soup = BeautifulSoup(search_html, 'html.parser')
+            results = soup.find_all('a', class_='result__a')
+
+            # Try to fetch from alternative sources (skip the original blocked domain)
+            original_domain = urllib.parse.urlparse(original_url).netloc
+            blocked_domains = ['theblock.co', 'thedefiant.io', 'finsmes.com']  # Known to block
+
+            for result in results[:5]:
+                raw_url = result.get('href', '')
+
+                # DuckDuckGo returns redirect URLs like //duckduckgo.com/l/?uddg=https%3A...
+                # Extract the actual URL from the uddg parameter
+                if 'uddg=' in raw_url:
+                    try:
+                        parsed = urllib.parse.urlparse(raw_url)
+                        params = urllib.parse.parse_qs(parsed.query)
+                        if 'uddg' in params:
+                            result_url = urllib.parse.unquote(params['uddg'][0])
+                        else:
+                            continue
+                    except Exception:
+                        continue
+                elif raw_url.startswith('http'):
+                    result_url = raw_url
+                else:
+                    continue
+
+                result_domain = urllib.parse.urlparse(result_url).netloc
+                if result_domain == original_domain or any(bd in result_domain for bd in blocked_domains):
+                    continue
+
+                # Try to fetch this alternative source
+                try:
+                    alt_req = urllib.request.Request(result_url, headers=headers)
+                    with urllib.request.urlopen(alt_req, timeout=10) as alt_response:
+                        alt_html = alt_response.read().decode('utf-8', errors='ignore')
+
+                    # Extract article body
+                    alt_text = self._extract_article_body(alt_html)
+                    if alt_text and len(alt_text) > 200:
+                        print(f"    [*] Found alternative: {result_domain}")
+                        return alt_text
+
+                except Exception:
+                    continue
+
+            print(f"    [!] No accessible alternative sources found")
+            return ""
+
+        except Exception as e:
+            print(f"    [!] Web search failed: {e}")
+            return ""
+
+    def _get_extractor(self, url: str) -> BaseExtractor:
+        """Get the appropriate extractor for a URL."""
+        for extractor in self.extractors:
+            if extractor.can_handle(url):
+                return extractor
+        return self.extractors[-1]  # Generic fallback
+
+    def _filter_by_date(self, items: List[ExtractedItem]) -> List[ExtractedItem]:
+        """Filter items by date range if configured."""
+        if not self.config.start_date and not self.config.end_date:
+            return items
+
+        filtered = []
+        for item in items:
+            if not item.date_published:
+                # Keep items without dates (can't filter them)
+                filtered.append(item)
+                continue
+
+            try:
+                # Parse item date (handle various formats)
+                date_str = item.date_published
+                item_date = None
+
+                # Try ISO format first (2025-12-30T00:01:32+00:00)
+                if 'T' in date_str:
+                    item_date = datetime.fromisoformat(date_str.replace('Z', '+00:00'))
+                else:
+                    # Try simple date format
+                    for fmt in ['%Y-%m-%d', '%d/%m/%Y', '%m/%d/%Y', '%B %d, %Y']:
+                        try:
+                            item_date = datetime.strptime(date_str, fmt)
+                            break
+                        except ValueError:
+                            continue
+
+                if not item_date:
+                    # Can't parse date, keep the item
+                    filtered.append(item)
+                    continue
+
+                # Check date range
+                if self.config.start_date:
+                    start = datetime.strptime(self.config.start_date, '%Y-%m-%d')
+                    if item_date.replace(tzinfo=None) < start:
+                        continue
+
+                if self.config.end_date:
+                    end = datetime.strptime(self.config.end_date, '%Y-%m-%d')
+                    # Include the end date (add 1 day)
+                    end = end.replace(hour=23, minute=59, second=59)
+                    if item_date.replace(tzinfo=None) > end:
+                        continue
+
+                filtered.append(item)
+
+            except Exception:
+                # On any error, keep the item
+                filtered.append(item)
+
+        return filtered
+
+    def _apply_fetch_limit(self, items: List[ExtractedItem]) -> List[ExtractedItem]:
+        """Apply fetch limit if configured."""
+        if self.config.fetch_limit > 0 and len(items) > self.config.fetch_limit:
+            return items[:self.config.fetch_limit]
+        return items
+
+    def _process_telegram_with_pagination(self, url: str, extractor, instructions: Dict, max_pages: int = 25) -> List[ExtractedItem]:
+        """
+        Process Telegram channel with pagination to fetch historical messages.
+
+        Args:
+            url: Base Telegram URL (t.me/s/channelname format)
+            extractor: TelegramExtractor instance
+            instructions: Custom extraction instructions
+            max_pages: Maximum number of pages to fetch (each page ~20 messages)
+
+        Returns:
+            List of ExtractedItem objects
+        """
+        from bs4 import BeautifulSoup
+
+        all_items = []
+        seen_urls = set()
+        oldest_id = None
+        pages_fetched = 0
+
+        # Determine if we need to paginate based on date range
+        need_older = bool(self.config.start_date)
+        target_start = None
+        if self.config.start_date:
+            target_start = datetime.strptime(self.config.start_date, '%Y-%m-%d')
+
+        while pages_fetched < max_pages:
+            # Build URL with pagination
+            fetch_url = url
+            if oldest_id:
+                fetch_url = f"{url}?before={oldest_id}"
+
+            # Fetch page
+            html = self._fetch_content(fetch_url)
+            if not html:
+                break
+
+            # Extract items from this page
+            page_items = extractor.extract(fetch_url, html, instructions)
+            if not page_items:
+                break
+
+            # Track seen URLs to avoid duplicates
+            new_items = []
+            for item in page_items:
+                if item.url not in seen_urls:
+                    seen_urls.add(item.url)
+                    new_items.append(item)
+
+            all_items.extend(new_items)
+            pages_fetched += 1
+
+            # Find oldest message ID for pagination
+            soup = BeautifulSoup(html, 'html.parser')
+            msg_ids = []
+            for msg in soup.find_all('div', class_='tgme_widget_message_wrap'):
+                msg_link = msg.find('a', class_='tgme_widget_message_date')
+                if msg_link:
+                    href = msg_link.get('href', '')
+                    if '/' in href:
+                        try:
+                            msg_ids.append(int(href.split('/')[-1]))
+                        except ValueError:
+                            pass
+
+            if not msg_ids:
+                break
+
+            new_oldest = min(msg_ids)
+            if oldest_id and new_oldest >= oldest_id:
+                break  # No more older messages
+            oldest_id = new_oldest
+
+            # Check if we've reached the target start date
+            if target_start and new_items:
+                # Find the oldest date in this batch
+                oldest_item_date = None
+                for item in new_items:
+                    if item.date_published:
+                        try:
+                            if 'T' in item.date_published:
+                                item_date = datetime.fromisoformat(item.date_published.replace('Z', '+00:00'))
+                                item_date_naive = item_date.replace(tzinfo=None)
+                                if oldest_item_date is None or item_date_naive < oldest_item_date:
+                                    oldest_item_date = item_date_naive
+                        except Exception:
+                            pass
+
+                if oldest_item_date and oldest_item_date < target_start:
+                    print(f"    Reached target date range at page {pages_fetched}")
+                    break
+
+            # If no date filtering needed, just get first page
+            if not need_older:
+                break
+
+            print(f"    Page {pages_fetched}: {len(new_items)} new items (total: {len(all_items)})")
+
+        return all_items
+
+    def process_url(self, url: str, custom_instructions: Dict = None) -> List[ExtractedItem]:
+        """
+        Process a single URL and extract items.
+
+        Args:
+            url: URL to process
+            custom_instructions: Optional custom extraction instructions
+
+        Returns:
+            List of ExtractedItem objects
+        """
+        print(f"\n[*] Processing: {url[:80]}...")
+
+        # Get appropriate extractor
+        extractor = self._get_extractor(url)
+        print(f"    Using extractor: {extractor.name}")
+
+        # Allow extractor to preprocess URL (e.g., Telegram t.me/x -> t.me/s/x)
+        fetch_url = extractor.preprocess_url(url)
+        if fetch_url != url:
+            print(f"    Normalized URL: {fetch_url[:60]}...")
+
+        # Get combined instructions
+        instructions = self._get_instructions_for_url(url, custom_instructions)
+
+        # Special handling for Telegram with date range - use pagination
+        if extractor.name == "telegram" and self.config.start_date:
+            print(f"    Fetching historical messages (date range specified)...")
+            items = self._process_telegram_with_pagination(fetch_url, extractor, instructions)
+            print(f"    Total extracted: {len(items)} items")
+        else:
+            # Standard single-page extraction
+            html = self._fetch_content(fetch_url)
+            if not html:
+                return []
+            items = extractor.extract(fetch_url, html, instructions)
+            print(f"    Extracted {len(items)} items")
+
+        # Apply date filtering
+        if self.config.start_date or self.config.end_date:
+            original_count = len(items)
+            items = self._filter_by_date(items)
+            if len(items) != original_count:
+                print(f"    Date filtered: {len(items)} items (from {original_count})")
+
+        # Apply fetch limit
+        if self.config.fetch_limit > 0:
+            original_count = len(items)
+            items = self._apply_fetch_limit(items)
+            if len(items) != original_count:
+                print(f"    Limited to: {len(items)} items")
+
+        # Resolve redirects in parallel for speed
+        if self.config.resolve_redirects and items:
+            print(f"    Resolving redirects...")
+            self._resolve_redirects_parallel(items)
+
+        return items
+
+    def process_urls(self, urls: List[str], custom_instructions: Dict = None) -> List[ExtractedItem]:
+        """
+        Process multiple URLs and combine results.
+
+        Args:
+            urls: List of URLs to process
+            custom_instructions: Optional custom extraction instructions
+
+        Returns:
+            Combined list of ExtractedItem objects
+        """
+        all_items = []
+        for url in urls:
+            items = self.process_url(url, custom_instructions)
+            all_items.extend(items)
+        return all_items
+
+    def process_html(self, html: str, source_url: str = "",
+                     custom_instructions: Dict = None) -> List[ExtractedItem]:
+        """
+        Process HTML content directly (when you already have the HTML).
+
+        Args:
+            html: HTML content to process
+            source_url: URL of the source (for metadata and extractor selection)
+            custom_instructions: Optional custom extraction instructions
+
+        Returns:
+            List of ExtractedItem objects
+        """
+        print(f"\n[*] Processing HTML content...")
+        if source_url:
+            print(f"    Source: {source_url[:80]}")
+
+        # Get appropriate extractor
+        extractor = self._get_extractor(source_url) if source_url else self.extractors[-1]
+        print(f"    Using extractor: {extractor.name}")
+
+        # Get combined instructions
+        instructions = self._get_instructions_for_url(source_url, custom_instructions) if source_url else custom_instructions
+
+        # Extract items
+        items = extractor.extract(source_url, html, instructions)
+        print(f"    Extracted {len(items)} items")
+
+        # Resolve redirects in parallel for speed
+        if self.config.resolve_redirects and items:
+            print(f"    Resolving redirects...")
+            self._resolve_redirects_parallel(items)
+
+        return items
+
+    def process_file(self, file_path: str, source_url: str = "",
+                     custom_instructions: Dict = None) -> List[ExtractedItem]:
+        """
+        Process HTML content from a local file.
+
+        Args:
+            file_path: Path to HTML file
+            source_url: URL of the source (for metadata)
+            custom_instructions: Optional custom extraction instructions
+
+        Returns:
+            List of ExtractedItem objects
+        """
+        print(f"\n[*] Processing file: {file_path}")
+        try:
+            with open(file_path, 'r', encoding='utf-8') as f:
+                html = f.read()
+            return self.process_html(html, source_url, custom_instructions)
+        except Exception as e:
+            print(f"Error reading file {file_path}: {e}")
+            return []
+
+    def _resolve_redirects_parallel(self, items: List[ExtractedItem]):
+        """Resolve redirects for items in parallel."""
+        # Only resolve items that still have their original URL
+        to_resolve = [(i, item) for i, item in enumerate(items)
+                      if item.url == item.original_url or 'beehiiv' in item.original_url]
+
+        if not to_resolve:
+            return
+
+        def resolve_item(index_item):
+            i, item = index_item
+            cleaned, _ = self.url_processor.process_url(item.original_url)
+            return i, cleaned
+
+        with ThreadPoolExecutor(max_workers=self.config.max_workers) as executor:
+            futures = [executor.submit(resolve_item, item) for item in to_resolve]
+            for future in as_completed(futures):
+                try:
+                    i, cleaned_url = future.result()
+                    items[i].url = cleaned_url
+                except Exception as e:
+                    pass  # Keep original URL on error
+
+    def save_to_csv(self, items: List[ExtractedItem], output_path: str,
+                    custom_columns: List[str] = None) -> str:
+        """
+        Save extracted items to CSV file.
+
+        Args:
+            items: List of ExtractedItem objects
+            output_path: Path to output CSV file
+            custom_columns: Optional custom column order
+
+        Returns:
+            Path to the written CSV file
+        """
+        return self.csv_manager.write_items(items, output_path, custom_columns)
+
+    def enrich_with_grid(self, items: List[ExtractedItem], api_key: str = None, debug: bool = False) -> List[ExtractedItem]:
+        """
+        Enrich extracted items with The Grid API data.
+
+        Adds to each item's custom_fields:
+        - grid_matched: TRUE/FALSE
+        - grid_entity_id: The Grid entity ID
+        - grid_entity_name: Entity name in The Grid
+        - grid_entity_type: profile/product/asset
+        - grid_category: Category from The Grid
+        - grid_tags: Tags from The Grid
+        - tgs_recommendation: Recommended TGS data to use
+
+        Args:
+            items: List of ExtractedItem objects
+            api_key: Optional Grid API key
+            debug: If True, print detailed matching info
+
+        Returns:
+            Items with Grid data added to custom_fields
+        """
+        try:
+            from grid_api import GridEntityMatcher
+        except ImportError:
+            print("  [!] Grid API module not available")
+            return items
+
+        print(f"\n[*] Enriching {len(items)} items with Grid data...")
+
+        matcher = GridEntityMatcher(api_key=api_key)
+
+        for i, item in enumerate(items):
+            # Combine title + description for matching
+            full_text = f"{item.title} {item.description}"
+
+            if debug:
+                print(f"\n  [{i+1}] DEBUG:")
+                print(f"       Title: {item.title[:60]}...")
+                print(f"       Description: {item.description[:60]}..." if item.description else "       Description: (empty)")
+                # Show extracted keywords
+                keywords = matcher.extract_keywords(full_text)
+                print(f"       Keywords: {keywords}")
+
+            match = matcher.match_entity(item.title, item.url, item.description)
+
+            # Add Grid data to custom_fields
+            grid_data = match.to_dict()
+            for key, value in grid_data.items():
+                item.custom_fields[key] = value
+
+            if match.matched:
+                # Show all matched subjects
+                subjects = ", ".join(m.name for m in match.matches[:3])  # Show top 3
+                extra = f" (+{len(match.matches)-3} more)" if len(match.matches) > 3 else ""
+                conf = match.primary.confidence if match.primary else 0
+                print(f"  [{i+1}] ✓ {item.title[:40]}... → {subjects}{extra} (conf: {conf:.2f})")
+            else:
+                # Show why it didn't match
+                if debug:
+                    print(f"       No match found (no keywords or low confidence)")
+                else:
+                    print(f"  [{i+1}] ✗ {item.title[:40]}...")
+
+        matched_count = sum(1 for item in items if item.custom_fields.get("grid_matched"))
+        print(f"\n[*] Matched {matched_count}/{len(items)} items to Grid entities")
+
+        return items
+
+    def research_articles(self, items: List[ExtractedItem],
+                          categories: List[str] = None,
+                          search_terms: List[str] = None,
+                          only_unmatched: bool = True,
+                          all_items: bool = False,
+                          api_key: str = None) -> List[ExtractedItem]:
+        """
+        Research article content for blockchain/ecosystem mentions.
+
+        For items in specified categories (e.g., 'Venture Capital', 'Launches'),
+        fetches the article content and searches for mentions of specified terms.
+        Results are added to item.custom_fields['comments'].
+
+        Args:
+            items: List of ExtractedItem objects
+            categories: Categories to research (default: ['Venture Capital', 'Launches'])
+            search_terms: Terms to search for (default: ['Solana', 'Starknet', 'Tether'])
+            only_unmatched: Only research items that didn't get a Grid match
+            all_items: If True, research ALL items regardless of category
+            api_key: Gemini API key for LLM analysis (optional)
+
+        Returns:
+            Items with 'comments' field populated for researched articles
+        """
+        if categories is None:
+            categories = ['Venture Capital', 'Launches']
+        if search_terms is None:
+            # Only search for priority ecosystems - others are covered by Grid matches
+            search_terms = ['Solana', 'Starknet', 'Tether', 'USDT', 'SOL']
+
+        # Categories to exclude from research
+        exclude_categories = [
+            'extra reads', 'extra read',
+            'regulatory', 'regulation',
+            'cybersecurity', 'security', 'hacks',
+            'legal', 'enforcement'
+        ]
+
+        # Normalize categories for comparison
+        categories_lower = [c.lower() for c in categories]
+
+        # Build regex pattern for efficient searching
+        pattern = re.compile(
+            r'\b(' + '|'.join(re.escape(term) for term in search_terms) + r')\b',
+            re.IGNORECASE
+        )
+
+        # Filter items to research
+        items_to_research = []
+        for item in items:
+            item_cat = item.category.lower() if item.category else ''
+
+            # Skip excluded categories (even when all_items is True)
+            if any(exc in item_cat for exc in exclude_categories):
+                continue
+
+            # Check if category matches (skip if all_items is True)
+            if not all_items:
+                cat_match = any(cat in item_cat for cat in categories_lower)
+                if not cat_match:
+                    continue
+
+            # Check if we should skip matched items
+            if only_unmatched and item.custom_fields.get('grid_matched'):
+                continue
+
+            # Check if we have a valid URL
+            if not item.url or not item.url.startswith('http'):
+                continue
+
+            items_to_research.append(item)
+
+        if not items_to_research:
+            scope = "all categories" if all_items else f"categories: {categories}"
+            print(f"\n[*] No items to research ({scope})")
+            return items
+
+        scope_msg = "all items" if all_items else f"categories: {', '.join(categories)}"
+        print(f"\n[*] Researching {len(items_to_research)} articles ({scope_msg}) for mentions of: {', '.join(search_terms)}")
+
+        # Import Grid matcher once
+        try:
+            from grid_api import GridEntityMatcher
+            grid_available = True
+        except ImportError:
+            grid_available = False
+
+        for i, item in enumerate(items_to_research):
+            try:
+                print(f"  [{i+1}/{len(items_to_research)}] Fetching: {item.url[:60]}...")
+
+                # Fetch article content
+                html = self._fetch_content(item.url)
+                article_text = ""
+
+                if html:
+                    # Extract ONLY the main article body (avoid related articles, sidebars, etc.)
+                    article_text = self._extract_article_body(html)
+
+                # If direct fetch failed or extracted nothing, try web search fallback
+                if not article_text or len(article_text) < 100:
+                    # Use the item description as search query
+                    search_query = item.description if item.description else item.title
+                    article_text = self._web_search_fallback(search_query, item.url)
+
+                if not article_text or len(article_text) < 100:
+                    # Provide more detail about fetch failure
+                    if not html:
+                        item.custom_fields['comments'] = f"Fetch failed: Could not retrieve {item.url[:40]}..."
+                    else:
+                        item.custom_fields['comments'] = f"Parse failed: No article body extracted (got {len(article_text) if article_text else 0} chars)"
+                    print(f"       → {item.custom_fields['comments']}")
+                    continue
+
+                comments = []
+                found_ecosystem_terms = []
+                entities_mentioned = []  # Track all entities for user verification
+
+                # 1. Search for priority ecosystem mentions
+                try:
+                    mentions = pattern.findall(article_text)
+                    if mentions:
+                        term_counts = {}
+                        for term in mentions:
+                            # Handle both string and tuple results from regex
+                            if isinstance(term, tuple):
+                                term = term[0] if len(term) > 0 else ''
+                            if term and isinstance(term, str):
+                                term_title = term.strip().title()
+                                if term_title:
+                                    term_counts[term_title] = term_counts.get(term_title, 0) + 1
+                                    found_ecosystem_terms.append(term_title)
+
+                        if term_counts:
+                            # Sort by count descending and format for display
+                            sorted_terms = sorted(term_counts.items(), key=lambda x: x[1], reverse=True)
+                            comment_parts = [f"{name} ({count}x)" for name, count in sorted_terms]
+                            if comment_parts:
+                                comments.append(f"Mentions: {', '.join(comment_parts)}")
+                except Exception as regex_err:
+                    print(f"    [!] Regex error: {regex_err}")
+
+                # 2. Extract the MAIN SUBJECT of the article (company/project being discussed)
+                # This is critical for articles about entities NOT in Grid
+                main_subject = None
+                try:
+                    # Look for the main subject in common article patterns
+                    subject_patterns = [
+                        # "X raises/secures/closes $Y" pattern (very common for funding news)
+                        r'\b([A-Z][a-z]+(?:[A-Z][a-z]*)*)\s+(?:raises?|secures?|closes?|announces?|launches?|unveils?)\b',
+                        # "startup X" or "company X" pattern
+                        r'\b(?:startup|company|protocol|platform|exchange|wallet|project)\s+([A-Z][a-z]+(?:[A-Z][a-z]*)*)\b',
+                        # "X, a/the startup/company" pattern
+                        r'\b([A-Z][a-z]+(?:[A-Z][a-z]*)*),?\s+(?:a|the)\s+(?:startup|company|protocol|platform)\b',
+                    ]
+
+                    for sp in subject_patterns:
+                        subject_match = re.search(sp, article_text[:500], re.IGNORECASE)
+                        if subject_match:
+                            candidate = subject_match.group(1)
+                            # Verify it's not a common word
+                            if candidate and len(candidate) > 2 and candidate.lower() not in ['the', 'this', 'that', 'which', 'their']:
+                                main_subject = candidate
+                                break
+                except Exception:
+                    pass
+
+                # 3. Extract other entities mentioned in article for user verification
+                try:
+                    entity_patterns = [
+                        # Company/project names with suffixes
+                        r'\b([A-Z][a-z]+(?:\s+[A-Z][a-z]+){0,2})\s+(?:Labs?|Protocol|Network|Finance|Capital|Ventures|Fund|Foundation|Exchange|Wallet|DAO)\b',
+                        # CamelCase names (like DeFi projects)
+                        r'\b([A-Z][a-z]+[A-Z][a-z]+(?:[A-Z][a-z]*)*)\b',
+                        # Names with crypto suffixes
+                        r'\b([A-Z][a-z]+(?:Fi|Swap|Dex|Pay|Lend|Stake|Mint|Chain|Layer|Bridge|Vault|Coin|Token))\b',
+                        # Simple capitalized names (4+ chars to avoid noise)
+                        r'\b([A-Z][a-z]{3,})\b',
+                    ]
+
+                    found_entities = set()
+                    for ep in entity_patterns:
+                        matches = re.findall(ep, article_text[:2000])
+                        for m in matches:
+                            if isinstance(m, tuple):
+                                m = m[0]
+                            if m and len(m) > 3:
+                                found_entities.add(m)
+
+                    # Filter out common words
+                    common_words = {
+                        'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday', 'Sunday',
+                        'January', 'February', 'March', 'April', 'May', 'June', 'July', 'August',
+                        'September', 'October', 'November', 'December', 'CEO', 'CTO', 'CFO', 'COO',
+                        'The', 'This', 'That', 'They', 'Their', 'There', 'These', 'Those',
+                        'With', 'From', 'Into', 'About', 'After', 'Before', 'During', 'Through',
+                        'However', 'According', 'While', 'Although', 'Because', 'Since', 'Until',
+                        'Read', 'More', 'Also', 'Other', 'Some', 'Most', 'Many', 'Much', 'Such',
+                        'New', 'First', 'Last', 'Next', 'Year', 'Years', 'Month', 'Week', 'Day'
+                    }
+                    entities_mentioned = [e for e in found_entities if e not in common_words]
+
+                    # Add main subject at the beginning if found
+                    if main_subject and main_subject not in entities_mentioned:
+                        entities_mentioned.insert(0, main_subject)
+                    elif main_subject:
+                        # Move main subject to front
+                        entities_mentioned.remove(main_subject)
+                        entities_mentioned.insert(0, main_subject)
+
+                    entities_mentioned = entities_mentioned[:8]  # Limit to 8
+                except Exception as ent_err:
+                    print(f"    [!] Entity extraction error: {ent_err}")
+                    entities_mentioned = []
+                    if main_subject:
+                        entities_mentioned = [main_subject]
+
+                # 4. Try Grid matching - first on ecosystem terms found, then on keywords
+                if grid_available:
+                    article_matcher = GridEntityMatcher()
+                    best_match = None
+
+                    # Priority: Match ecosystem terms directly (Solana, Tether, Starknet)
+                    for eco_term in set(found_ecosystem_terms):
+                        match = article_matcher.match_entity(eco_term, item.url, article_text[:200])
+                        if match.matched and match.primary and match.primary.confidence >= 0.7:
+                            best_match = match
+                            break
+
+                    # Fallback: Try article body keywords
+                    if not best_match:
+                        article_keywords = article_matcher.extract_keywords(article_text[:500])
+                        for kw in article_keywords[:3]:
+                            match = article_matcher.match_entity(kw, item.url, article_text[:200])
+                            if match.matched and match.primary and match.primary.confidence >= 0.8:
+                                best_match = match
+                                break
+
+                    # Update Grid fields if we found a match
+                    if best_match and best_match.matched:
+                        for key, value in best_match.to_dict().items():
+                            item.custom_fields[key] = value
+                        # Show all matched subjects
+                        subjects = ", ".join(m.name for m in best_match.matches[:2])
+                        comments.append(f"Grid: {subjects}")
+
+                        # LLM analysis for Grid profile suggestions
+                        try:
+                            from grid_api import analyze_grid_profile_with_llm
+                            primary_match = best_match.primary
+                            print(f"       [LLM Debug] primary={primary_match is not None}, text={len(article_text) if article_text else 0}, key={'set' if api_key else 'None'}")
+                            if primary_match and article_text and api_key:
+                                entity_name = primary_match.name
+                                print(f"       [LLM] Analyzing: {entity_name}")
+                                # Try to get profile details (works for profiles, may be empty for assets)
+                                profile_details = article_matcher.client.get_profile_details(entity_name)
+                                # If no profile found, create minimal context from the match
+                                if not profile_details.get("profile"):
+                                    profile_details = {
+                                        "profile": {
+                                            "name": entity_name,
+                                            "descriptionShort": primary_match.description or f"{primary_match.grid_type}: {entity_name}"
+                                        },
+                                        "products": [],
+                                        "assets": []
+                                    }
+                                suggestion = analyze_grid_profile_with_llm(article_text, profile_details, api_key=api_key)
+                                if suggestion:
+                                    comments.append(f"Suggest: {suggestion}")
+                                else:
+                                    print(f"       [LLM] No suggestion returned")
+                            elif not api_key:
+                                print(f"       [LLM] Skipped - no API key")
+                        except Exception as llm_err:
+                            print(f"       [!] LLM error: {llm_err}")
+                            pass  # LLM analysis is optional
+
+                # 5. ALWAYS check for USDT/Solana/Starknet support (even with fuzzy matches)
+                # Extract context to confirm actual support vs just mentions
+                try:
+                    support_findings = []
+                    support_ecosystems = {
+                        'Solana': ['solana', 'sol'],
+                        'Starknet': ['starknet', 'strk'],
+                        'USDT': ['usdt', 'tether']
+                    }
+
+                    # Positive support indicators
+                    support_indicators = [
+                        r'(?:launch|deploy|build|integrate|support|add|enable|live|available|expand)\w*\s+(?:on|to|for|with)',
+                        r'(?:on|to|for|with)\s+\w*\s*(?:launch|deploy|integration|support)',
+                        r'(?:native|built|powered)\s+(?:on|by)',
+                        r'(?:chain|network|blockchain|ecosystem)',
+                        r'(?:wallet|swap|bridge|dex|defi|nft)',
+                    ]
+                    support_pattern_str = '|'.join(support_indicators)
+
+                    for ecosystem, terms in support_ecosystems.items():
+                        term_pattern = '|'.join(re.escape(t) for t in terms)
+                        # Find mentions with surrounding context (100 chars before/after)
+                        context_pattern = re.compile(
+                            r'.{0,100}\b(' + term_pattern + r')\b.{0,100}',
+                            re.IGNORECASE | re.DOTALL
+                        )
+
+                        context_matches = context_pattern.findall(article_text)
+                        if context_matches:
+                            # Check if any context suggests actual support
+                            full_contexts = context_pattern.finditer(article_text)
+                            for ctx_match in full_contexts:
+                                context = ctx_match.group(0).strip()
+                                # Check for support indicators in context
+                                if re.search(support_pattern_str, context, re.IGNORECASE):
+                                    # Clean up the context for display
+                                    context_clean = ' '.join(context.split())[:150]
+                                    support_findings.append(f"{ecosystem}: \"{context_clean}...\"")
+                                    break
+                            else:
+                                # No strong support indicator, but term was mentioned
+                                support_findings.append(f"{ecosystem}: mentioned (verify manually)")
+
+                    if support_findings:
+                        # Include source URL for reference
+                        support_summary = "; ".join(support_findings[:3])  # Limit to 3 ecosystems
+                        comments.append(f"Support check [{item.url}]: {support_summary}")
+                except Exception as support_err:
+                    print(f"    [!] Support check error: {support_err}")
+
+                # 6. Add entities mentioned section for verification
+                if entities_mentioned:
+                    comments.append(f"Entities: {', '.join(entities_mentioned[:6])}")
+
+                # Combine comments
+                if comments:
+                    item.custom_fields['comments'] = ' | '.join(comments)
+                    print(f"       → {item.custom_fields['comments']}")
+                else:
+                    item.custom_fields['comments'] = "No relevant mentions"
+                    print(f"       → No relevant mentions")
+
+            except Exception as e:
+                import traceback
+                tb = traceback.format_exc()
+                # Include more context in error message
+                error_detail = str(e)
+                if 'timeout' in error_detail.lower():
+                    item.custom_fields['comments'] = f"Timeout: {item.url[:30]}... took too long"
+                elif 'connection' in error_detail.lower() or 'refused' in error_detail.lower():
+                    item.custom_fields['comments'] = f"Connection error: Could not reach {item.url[:30]}..."
+                elif '403' in error_detail or '401' in error_detail:
+                    item.custom_fields['comments'] = f"Access denied: {item.url[:30]}... requires auth"
+                elif '404' in error_detail:
+                    item.custom_fields['comments'] = f"Not found: {item.url[:30]}... may be deleted"
+                elif 'unpack' in error_detail.lower():
+                    # Log full traceback for debugging tuple unpacking errors
+                    print(f"       [DEBUG] Tuple unpack error at: {tb[-500:]}")
+                    item.custom_fields['comments'] = f"Parse error: Data format issue in article text"
+                else:
+                    item.custom_fields['comments'] = f"Research error: {error_detail[:80]}"
+                print(f"       → {item.custom_fields['comments']}")
+
+        researched_count = sum(1 for item in items_to_research if 'comments' in item.custom_fields)
+        print(f"\n[*] Researched {researched_count}/{len(items_to_research)} articles")
+
+        return items
+
+    def _extract_article_body(self, html: str) -> str:
+        """
+        Extract only the main article body content, avoiding:
+        - Related articles
+        - Sidebars
+        - Navigation
+        - Comments sections
+        - Infinite scroll content
+        - Footer content
+        """
+        # Try lxml first (faster), fall back to html.parser if lxml fails on malformed HTML
+        try:
+            soup = BeautifulSoup(html, 'lxml')
+        except Exception:
+            soup = BeautifulSoup(html, 'html.parser')
+
+        # Remove elements that are definitely not article content
+        for tag in soup.find_all(['script', 'style', 'nav', 'footer', 'header',
+                                   'aside', 'iframe', 'noscript', 'form']):
+            tag.decompose()
+
+        # Remove common "related articles" patterns
+        related_patterns = [
+            'related', 'recommended', 'more-stories', 'more-articles',
+            'also-read', 'you-may-like', 'trending', 'popular',
+            'sidebar', 'widget', 'advertisement', 'ad-container',
+            'social-share', 'comments', 'newsletter', 'subscribe'
+        ]
+
+        for pattern in related_patterns:
+            # Remove by class
+            for tag in soup.find_all(class_=lambda x: x and pattern in x.lower()):
+                tag.decompose()
+            # Remove by id
+            for tag in soup.find_all(id=lambda x: x and pattern in x.lower()):
+                tag.decompose()
+
+        # Try to find the main article content using semantic tags
+        article_content = None
+
+        # Priority 1: <article> tag
+        article_tag = soup.find('article')
+        if article_tag:
+            article_content = article_tag
+
+        # Priority 2: Common content class names
+        if not article_content:
+            content_classes = ['article-content', 'article-body', 'post-content',
+                              'entry-content', 'story-body', 'article__body',
+                              'content-body', 'main-content', 'article-text']
+            for cls in content_classes:
+                found = soup.find(class_=lambda x: x and cls in str(x).lower())
+                if found:
+                    article_content = found
+                    break
+
+        # Priority 3: <main> tag
+        if not article_content:
+            main_tag = soup.find('main')
+            if main_tag:
+                article_content = main_tag
+
+        # Priority 4: Largest <div> with significant text (heuristic)
+        if not article_content:
+            article_content = soup.body if soup.body else soup
+
+        # Extract text from the identified content
+        if article_content:
+            # Get text with proper spacing
+            text = article_content.get_text(separator=' ', strip=True)
+
+            # Clean up excessive whitespace
+            text = ' '.join(text.split())
+
+            # Limit to reasonable article length (avoid infinite scroll content)
+            # Most articles are under 10000 characters
+            return text[:10000]
+
+        return ""
+
+    def deduplicate_csv(self, csv_path: str, key_column: str = 'url') -> int:
+        """Remove duplicates from CSV file."""
+        return self.csv_manager.deduplicate(csv_path, key_column)
+
+
+# =============================================================================
+# CUSTOM INSTRUCTIONS LOADER
+# =============================================================================
+
+def load_custom_instructions(path: str) -> Dict:
+    """
+    Load custom extraction instructions from JSON file.
+
+    Expected format:
+    {
+        "include_patterns": ["crypto", "bitcoin", "ethereum"],
+        "exclude_patterns": ["sponsor", "advertisement", "subscribe"],
+        "allowed_domains": [],  // Empty = all allowed
+        "blocked_domains": ["twitter.com", "facebook.com", "linkedin.com"],
+        "csv_columns": ["title", "url", "category", "source_name", "date_published"]
+    }
+    """
+    try:
+        with open(path, 'r') as f:
+            return json.load(f)
+    except Exception as e:
+        print(f"Error loading custom instructions: {e}")
+        return {}
+
+
+def save_custom_instructions(instructions: Dict, path: str):
+    """Save custom instructions to JSON file."""
+    with open(path, 'w') as f:
+        json.dump(instructions, f, indent=2)
+
+
+# =============================================================================
+# CLI INTERFACE
+# =============================================================================
+
+def main():
+    """Command-line interface for the data CSV processor."""
+    import argparse
+
+    parser = argparse.ArgumentParser(
+        description='Extract links and data from web sources into CSV format.'
+    )
+    parser.add_argument('urls', nargs='+', help='URLs to process')
+    parser.add_argument('-o', '--output', default='extracted_data.csv',
+                        help='Output CSV file path')
+    parser.add_argument('-c', '--config', help='Path to custom instructions JSON file')
+    parser.add_argument('--no-redirects', action='store_true',
+                        help='Skip redirect resolution')
+    parser.add_argument('--no-clean', action='store_true',
+                        help='Keep tracking parameters in URLs')
+    parser.add_argument('--no-append', action='store_true',
+                        help='Overwrite CSV instead of appending')
+    parser.add_argument('--dedupe', action='store_true',
+                        help='Remove duplicates after processing')
+    parser.add_argument('--columns', nargs='+',
+                        help='Custom CSV columns (space-separated)')
+
+    args = parser.parse_args()
+
+    # Build config
+    config = ExtractionConfig(
+        resolve_redirects=not args.no_redirects,
+        strip_tracking_params=not args.no_clean,
+        append_mode=not args.no_append,
+    )
+
+    if args.columns:
+        config.csv_columns = args.columns
+
+    # Load custom instructions if provided
+    custom_instructions = None
+    if args.config:
+        custom_instructions = load_custom_instructions(args.config)
+
+    # Process URLs
+    processor = DataCSVProcessor(config)
+    items = processor.process_urls(args.urls, custom_instructions)
+
+    # Save to CSV
+    if items:
+        processor.save_to_csv(items, args.output)
+
+        if args.dedupe:
+            processor.deduplicate_csv(args.output)
+
+        print(f"\n✓ Done! Output saved to: {args.output}")
+    else:
+        print("\n✗ No items extracted.")
+
+
+if __name__ == "__main__":
+    main()
