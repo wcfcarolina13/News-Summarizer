@@ -66,6 +66,7 @@ def setup_gemini(model_name="gemini-2.5-flash"):
     return genai.GenerativeModel(model_name)
 
 def clean_vtt(text):
+    import re
     lines = text.splitlines()
     cleaned = []
     last_line = ""
@@ -79,11 +80,30 @@ def clean_vtt(text):
         if line.startswith("Language:"): continue
         if line == last_line: continue
         if "<" in line and ">" in line:
-            import re
             line = re.sub(r"<[^>]+>", "", line)
         cleaned.append(line)
         last_line = line
-    return "\n".join(cleaned)
+
+    text = "\n".join(cleaned)
+
+    # Remove speech disfluencies before sending to AI
+    # This catches filler words the AI model sometimes misses,
+    # especially in later videos when context is large
+    filler_patterns = [
+        r'\b[Uu]h+\b',           # uh, uhh, uhhh
+        r'\b[Uu]m+\b',           # um, umm, ummm
+        r'\b[Hh]mm+\b',          # hmm, hmmm
+        r'\b[Ee]r+\b(?!\w)',     # er, err (but not "error", "era", etc.)
+        r'\b[Aa]h+\b',           # ah, ahh
+    ]
+    for pattern in filler_patterns:
+        text = re.sub(pattern, '', text)
+
+    # Clean up artifacts: double spaces, space before punctuation
+    text = re.sub(r'  +', ' ', text)
+    text = re.sub(r' ([,.])', r'\1', text)
+
+    return text
 
 def get_transcript_text(video_id):
     url = f"https://www.youtube.com/watch?v={video_id}"
@@ -178,10 +198,11 @@ def summarize_text(model, text, previous_context=""):
             "RULES:\n"
             "1. Cross-Message Deduplication: If duplicative, output ONLY: \"Skipped [Video Title] as duplicative.\"\n"
             "2. Tutorials/Promotions: If tutorial/promo, output ONLY: \"Skipped [Video Title] as tutorial/promotion.\"\n"
-            "3. Comprehensive Coverage: Extract ALL key insights, unique perspectives, and actionable information. "
+            "3. Chart Technical Analysis: If the video is PRIMARILY about chart patterns, trading setups, "
+            "price targets, RSI/MACD/indicators, candlestick analysis, or order blocks, "
+            "output ONLY: \"Skipped [Video Title] as technical analysis.\"\n"
+            "4. Comprehensive Coverage: Extract ALL key insights, unique perspectives, and actionable information. "
             "Don't skip important details, data points, analysis, or unique angles that provide value or 'alpha'.\n"
-            "4. Technical Analysis: Include both big picture/sentiment AND specific technical details, price levels, "
-            "indicators, or trading insights when mentioned.\n"
             "5. Key Points to Capture:\n"
             "   - All significant data, statistics, and metrics\n"
             "   - Unique insights, contrarian views, or novel analysis\n"
@@ -195,11 +216,13 @@ def summarize_text(model, text, previous_context=""):
             "   - Write out dates (e.g., December fifth).\n"
             "   - NO timestamps.\n"
             "   - Organize into coherent paragraphs with smooth transitions.\n"
-            "7. Transcript Cleanup: The source is a raw video transcript. Remove ALL speech disfluencies "
-            "(um, uh, like, you know, I mean, sort of, kind of, right, okay so). Remove verbal tics, "
-            "false starts, self-corrections, and direct-address phrases (hey guys, what's up everyone). "
-            "Paraphrase conversational/rambling sections into clean prose. The output should read as "
-            "polished writing, not a transcription.\n"
+            "7. Transcript Cleanup (CRITICAL — apply this rule rigorously regardless of context length): "
+            "The source is a raw video transcript. You MUST remove ALL speech disfluencies — "
+            "um, uh, uhh, ah, hmm, like, you know, I mean, sort of, kind of, right, okay so. "
+            "Remove verbal tics, false starts, self-corrections, and direct-address phrases "
+            "(hey guys, what's up everyone). Paraphrase conversational/rambling sections into "
+            "clean prose. The output MUST read as polished writing, never a transcription. "
+            "If any filler word remains in your output, you have failed this rule.\n"
             f"{custom_section}\n"
             
             "TRANSCRIPT:\n"
@@ -227,6 +250,52 @@ def process_channel(channel_url, model, shared_context, cutoff_date, cutoff_time
     new_summaries = []
     # cutoff_date provided by caller; cutoff_time for hours mode
     
+    # Title patterns that indicate pure technical analysis / chart trading videos
+    # These are skipped before transcript fetch to save API calls
+    TA_SKIP_PATTERNS = [
+        r'\bchart\b.*\banalysis\b',
+        r'\btechnical analysis\b',
+        r'\bprice prediction\b',
+        r'\bprice target\b',
+        r'\bsupport and resistance\b',
+        r'\btrading setup\b',
+        r'\btrade setup\b',
+        r'\btrading strategy\b',
+        r'\bscalp(ing)?\b',
+        r'\bbull(ish)? flag\b',
+        r'\bbear(ish)? flag\b',
+        r'\bhead and shoulders\b',
+        r'\bwedge pattern\b',
+        r'\brsi\b.*\bdivergence\b',
+        r'\bfibonacci\b',
+        r'\bElliott wave\b',
+        r'\bmoving average\b',
+        r'\bMACD\b',
+        r'\bBollinger\b',
+        r'\bichimoku\b',
+        r'\bcandlestick\b',
+        r'\border block\b',
+        r'\bbreakout\b.*\btarget\b',
+        r'\blong\b.*\bshort\b.*\btrade\b',
+        r'\brisk.to.reward\b',
+    ]
+    import re as _re
+    _ta_regex = _re.compile('|'.join(TA_SKIP_PATTERNS), _re.IGNORECASE)
+
+    # Title keywords that strongly suggest TA content (matched as substrings)
+    TA_TITLE_KEYWORDS = [
+        'major move for',
+        'pump incoming',
+        'dump incoming',
+        'buy now',
+        'sell now',
+        'exact target',
+        'next target',
+        'moon soon',
+        'altcoin season',
+        'altcoins to buy',
+    ]
+
     processed_count = 0
     videos_on_target_date = 0
     for video in videos:
@@ -234,6 +303,12 @@ def process_channel(channel_url, model, shared_context, cutoff_date, cutoff_time
 
         video_id = video["videoId"]
         title = video["title"]["runs"][0]["text"]
+
+        # Skip pure technical analysis / chart trading videos
+        title_lower = title.lower()
+        if _ta_regex.search(title) or any(kw in title_lower for kw in TA_TITLE_KEYWORDS):
+            log(f"  [SKIP-TA] Technical analysis video: {title[:60]}...")
+            continue
 
         date_info = video.get("publishedTimeText", {}).get("simpleText")
 
