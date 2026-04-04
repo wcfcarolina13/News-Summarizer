@@ -229,14 +229,13 @@ def summarize_text(model, text, previous_context=""):
             f"{text[:50000]}"
         )
         
-        from api_usage_tracker import get_tracker, FreeTierExceeded, BudgetExceeded
-        response = get_tracker().tracked_generate(model, prompt, "yt_news.summarize")
-        return response.text
-    except (FreeTierExceeded, BudgetExceeded) as e:
-        log(f"  -> Rate/budget limit hit — skipping: {e}")
-        return "Skipped [rate limit]"
+        from llm_fallback import generate_with_fallback
+        result = generate_with_fallback(
+            prompt, gemini_model=model, caller="yt_news.summarize"
+        )
+        return result or "Skipped [all providers failed]"
     except Exception as e:
-        log(f"  -> Gemini Error: {e}")
+        log(f"  -> Summarization Error: {e}")
         return f"Error summarizing: {e}"
 
 def process_channel(channel_url, model, shared_context, cutoff_date, cutoff_time=None):

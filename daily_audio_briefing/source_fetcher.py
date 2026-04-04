@@ -796,13 +796,11 @@ Your output goes directly to TTS. Any markdown, preambles, or raw transcript spe
             else:
                 prompt = f"{base_prompt}\n\nTranscript:\n{transcript[:15000]}"
 
-            from api_usage_tracker import get_tracker, BudgetExceeded, FreeTierExceeded
-            response = get_tracker().tracked_generate(model, prompt, "fetcher._summarize_yt")
-            return response.text
-
-        except (BudgetExceeded, FreeTierExceeded) as e:
-            _debug_log(f"[YouTube] Rate/budget limit hit — skipping: {e}")
-            return None
+            from llm_fallback import generate_with_fallback
+            result = generate_with_fallback(
+                prompt, gemini_model=model, caller="fetcher._summarize_yt"
+            )
+            return result
 
         except Exception as e:
             _debug_log(f"[YouTube] Summarization error: {e}")
@@ -861,15 +859,13 @@ Your output goes directly to TTS. Any markdown or preambles will sound wrong whe
             else:
                 prompt = f"{base_prompt}\n\nArticle Content:\n{content[:15000]}"
 
-            from api_usage_tracker import get_tracker, BudgetExceeded, FreeTierExceeded
-            response = get_tracker().tracked_generate(model, prompt, "fetcher._summarize_article")
-            summary = response.text
-            _debug_log(f"[Article] Summarized {len(content)} chars to {len(summary)} chars")
-            return summary
-
-        except (BudgetExceeded, FreeTierExceeded) as e:
-            _debug_log(f"[Article] Rate/budget limit hit — skipping: {e}")
-            return None
+            from llm_fallback import generate_with_fallback
+            result = generate_with_fallback(
+                prompt, gemini_model=model, caller="fetcher._summarize_article"
+            )
+            if result:
+                _debug_log(f"[Article] Summarized {len(content)} chars to {len(result)} chars")
+            return result
 
         except Exception as e:
             _debug_log(f"[Article] Summarization error: {e}")
