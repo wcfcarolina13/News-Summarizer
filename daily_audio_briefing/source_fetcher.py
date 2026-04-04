@@ -796,17 +796,17 @@ Your output goes directly to TTS. Any markdown, preambles, or raw transcript spe
             else:
                 prompt = f"{base_prompt}\n\nTranscript:\n{transcript[:15000]}"
 
-            from api_usage_tracker import get_tracker, BudgetExceeded
+            from api_usage_tracker import get_tracker, BudgetExceeded, FreeTierExceeded
             response = get_tracker().tracked_generate(model, prompt, "fetcher._summarize_yt")
             return response.text
 
-        except BudgetExceeded:
-            _debug_log("[YouTube] Budget exceeded — skipping summarization")
-            return None  # Caller should skip this video rather than use raw transcript
+        except (BudgetExceeded, FreeTierExceeded) as e:
+            _debug_log(f"[YouTube] Rate/budget limit hit — skipping: {e}")
+            return None
 
         except Exception as e:
             _debug_log(f"[YouTube] Summarization error: {e}")
-            return None  # Skip rather than return raw transcript
+            return None
 
     def _summarize_article(self, title: str, content: str, custom_instructions: str) -> str:
         """Summarize article content using Gemini.
@@ -861,15 +861,15 @@ Your output goes directly to TTS. Any markdown or preambles will sound wrong whe
             else:
                 prompt = f"{base_prompt}\n\nArticle Content:\n{content[:15000]}"
 
-            from api_usage_tracker import get_tracker, BudgetExceeded
+            from api_usage_tracker import get_tracker, BudgetExceeded, FreeTierExceeded
             response = get_tracker().tracked_generate(model, prompt, "fetcher._summarize_article")
             summary = response.text
             _debug_log(f"[Article] Summarized {len(content)} chars to {len(summary)} chars")
             return summary
 
-        except BudgetExceeded:
-            _debug_log("[Article] Budget exceeded — skipping summarization")
-            return None  # Caller should skip rather than use raw content
+        except (BudgetExceeded, FreeTierExceeded) as e:
+            _debug_log(f"[Article] Rate/budget limit hit — skipping: {e}")
+            return None
 
         except Exception as e:
             _debug_log(f"[Article] Summarization error: {e}")

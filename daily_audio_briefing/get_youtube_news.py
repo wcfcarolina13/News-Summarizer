@@ -229,9 +229,12 @@ def summarize_text(model, text, previous_context=""):
             f"{text[:50000]}"
         )
         
-        from api_usage_tracker import get_tracker
+        from api_usage_tracker import get_tracker, FreeTierExceeded, BudgetExceeded
         response = get_tracker().tracked_generate(model, prompt, "yt_news.summarize")
         return response.text
+    except (FreeTierExceeded, BudgetExceeded) as e:
+        log(f"  -> Rate/budget limit hit — skipping: {e}")
+        return "Skipped [rate limit]"
     except Exception as e:
         log(f"  -> Gemini Error: {e}")
         return f"Error summarizing: {e}"

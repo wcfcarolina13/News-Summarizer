@@ -31,6 +31,22 @@ CHARS_PER_TOKEN = 4  # rough approximation
 # Gemini 2.5 models generate ~3-8x more tokens internally for "thinking"
 # than they return as visible output. This multiplier adjusts cost estimates.
 THINKING_TOKEN_MULTIPLIER = 5
+
+# ---------------------------------------------------------------------------
+# Free tier rate limits (Google AI Studio, per-key)
+# These are enforced regardless of the user's budget settings to ensure
+# the app stays within the free tier and never triggers billing.
+# Source: https://ai.google.dev/pricing
+# ---------------------------------------------------------------------------
+FREE_TIER_LIMITS = {
+    "gemini-2.5-flash": {"rpm": 10, "rpd": 500},   # conservative vs 15/1500
+    "gemini-2.5-pro":   {"rpm": 5,  "rpd": 50},
+    "gemini-2.0-flash": {"rpm": 10, "rpd": 1000},
+    "gemini-1.5-flash": {"rpm": 10, "rpd": 1000},
+    "gemini-1.5-pro":   {"rpm": 2,  "rpd": 50},
+}
+# Default fallback if model not in table
+FREE_TIER_DEFAULT = {"rpm": 5, "rpd": 100}
 MAX_LOG_ENTRIES = 500
 MAX_HISTORY_DAYS = 90
 
@@ -111,12 +127,24 @@ def _get_usage_path() -> str:
 # ---------------------------------------------------------------------------
 # Tracker
 # ---------------------------------------------------------------------------
+class FreeTierExceeded(Exception):
+    """Raised when a call would exceed free tier rate limits."""
+
+    def __init__(self, limit_type: str, current: int, maximum: int):
+        self.limit_type = limit_type
+        self.current = current
+        self.maximum = maximum
+        super().__init__(f"Free tier {limit_type} limit: {current}/{maximum}")
+
+
 class APIUsageTracker:
     """Thread-safe API usage tracker with JSON persistence."""
 
     def __init__(self):
         self._lock = threading.Lock()
         self._path = _get_usage_path()
+        # Per-minute call timestamps for RPM enforcement (in-memory only)
+        self._recent_calls: list = []  # list of datetime
         self._data = self._load()
         self._apply_env_overrides()
 
@@ -144,6 +172,7 @@ class APIUsageTracker:
                 "enabled": True,
                 "monthly_budget_usd": 0.0,
                 "cooldown_enabled": True,
+                "free_tier_only": True,
             },
             "current_period": {
                 "date": date.today().isoformat(),
@@ -204,6 +233,10 @@ class APIUsageTracker:
         val = os.environ.get("API_COOLDOWN_ENABLED")
         if val is not None:
             limits["cooldown_enabled"] = val.lower() in ("true", "1", "yes")
+
+        val = os.environ.get("API_FREE_TIER_ONLY")
+        if val is not None:
+            limits["free_tier_only"] = val.lower() in ("true", "1", "yes")
 
     def _save(self):
         """Atomic write to disk. Called under lock."""
@@ -280,6 +313,45 @@ class APIUsageTracker:
             output_tokens * thinking_multiplier * pricing[1] / 1_000_000
         )
         return round(cost, 6)
+
+    # --- Free tier enforcement ---
+
+    def _get_free_tier_limits(self, model) -> dict:
+        """Get RPM/RPD limits for the given model."""
+        model_name = (
+            getattr(model, "_model_name", None)
+            or getattr(model, "model_name", None)
+            or "unknown"
+        )
+        if isinstance(model_name, str) and model_name.startswith("models/"):
+            model_name = model_name[len("models/"):]
+        for prefix, limits in FREE_TIER_LIMITS.items():
+            if prefix in str(model_name):
+                return limits
+        return FREE_TIER_DEFAULT
+
+    def _enforce_free_tier(self, model):
+        """Check RPM and RPD against free tier limits. Must be called under lock.
+
+        Raises FreeTierExceeded if the call would exceed free tier limits.
+        """
+        now = datetime.now()
+        ft = self._get_free_tier_limits(model)
+
+        # RPM check — count calls in the last 60 seconds
+        one_minute_ago = now.timestamp() - 60
+        self._recent_calls = [t for t in self._recent_calls if t > one_minute_ago]
+        if len(self._recent_calls) >= ft["rpm"]:
+            raise FreeTierExceeded("rpm", len(self._recent_calls), ft["rpm"])
+
+        # RPD check — use daily_calls from persisted data
+        period = self._data.get("current_period", {})
+        daily = period.get("daily_calls", 0)
+        if daily >= ft["rpd"]:
+            raise FreeTierExceeded("rpd", daily, ft["rpd"])
+
+        # Record this call timestamp for RPM tracking
+        self._recent_calls.append(now.timestamp())
 
     # --- Core API ---
 
@@ -419,6 +491,15 @@ class APIUsageTracker:
                     monthly_cost = period.get("monthly_cost_estimate", 0)
                     if monthly_cost >= budget_cap:
                         raise BudgetExceeded(monthly_cost, budget_cap)
+
+            # Free tier rate limiting — enforced regardless of other limits.
+            # Keeps usage within Google AI Studio's free tier to avoid billing.
+            if limits.get("free_tier_only", True):
+                self._enforce_free_tier(model)
+
+        # Sleep outside lock if we're close to RPM to space out calls
+        import time
+        time.sleep(0.5)  # small delay between calls to stay well under RPM
 
         # Make the actual API call (outside lock) with timeout guard
         with ThreadPoolExecutor(max_workers=1) as executor:
