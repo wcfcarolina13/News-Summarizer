@@ -17,6 +17,9 @@ from datetime import date, datetime
 from typing import Optional, Tuple
 
 # Gemini pricing (input $/1M tokens, output $/1M tokens)
+# Note: Gemini 2.5 models use "thinking" tokens internally which are billed
+# at output token rates but NOT visible in the response text. The thinking
+# multiplier below accounts for this hidden cost.
 MODEL_PRICING = {
     "gemini-2.5-flash": (0.15, 0.60),
     "gemini-2.5-pro": (1.25, 10.00),
@@ -25,6 +28,9 @@ MODEL_PRICING = {
     "gemini-1.5-pro": (1.25, 5.00),
 }
 CHARS_PER_TOKEN = 4  # rough approximation
+# Gemini 2.5 models generate ~3-8x more tokens internally for "thinking"
+# than they return as visible output. This multiplier adjusts cost estimates.
+THINKING_TOKEN_MULTIPLIER = 5
 MAX_LOG_ENTRIES = 500
 MAX_HISTORY_DAYS = 90
 
@@ -263,8 +269,15 @@ class APIUsageTracker:
 
         input_tokens = input_chars / CHARS_PER_TOKEN
         output_tokens = output_chars / CHARS_PER_TOKEN
+
+        # Gemini 2.5 models use hidden "thinking" tokens billed at output rates.
+        # These aren't in the response text, so we apply a multiplier.
+        thinking_multiplier = 1
+        if "2.5" in model_name:
+            thinking_multiplier = THINKING_TOKEN_MULTIPLIER
+
         cost = (input_tokens * pricing[0] / 1_000_000) + (
-            output_tokens * pricing[1] / 1_000_000
+            output_tokens * thinking_multiplier * pricing[1] / 1_000_000
         )
         return round(cost, 6)
 

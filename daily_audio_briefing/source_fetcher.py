@@ -489,6 +489,11 @@ class SourceFetcher:
                     videos_filtered_by_date += 1
                     continue
 
+                # Skip pure technical analysis / chart trading videos by title
+                if self._is_ta_video(title):
+                    _debug_log(f"[YouTube] Skipping TA video by title: {title[:50]}...")
+                    continue
+
                 # Check video cache — skip if already processed
                 if video_id in video_cache.get('videos', {}):
                     _debug_log(f"[YouTube] Skipping (already in cache): {title[:40]}...")
@@ -507,7 +512,17 @@ class SourceFetcher:
 
                 # Summarize
                 summary = self._summarize_youtube(title, transcript, custom_instructions)
+                if not summary:
+                    _debug_log(f"[YouTube] Summarization returned None (budget/error), skipping: {title[:40]}...")
+                    continue
+
                 _debug_log(f"[YouTube] Got summary ({len(summary)} chars)")
+
+                # Skip if AI flagged as technical analysis
+                if summary.strip().startswith("SKIP_TA") or (summary.strip().startswith("Skipped") and "technical analysis" in summary.lower()):
+                    _debug_log(f"[YouTube] AI skipped as TA: {title[:40]}...")
+                    newly_processed.append(video_id)  # still cache it so we don't re-process
+                    continue
 
                 items.append(FetchedItem(
                     title=title,
@@ -623,8 +638,57 @@ class SourceFetcher:
             traceback.print_exc()
             return None
 
+    # Title patterns indicating pure technical analysis / chart trading videos
+    _TA_PATTERNS = re.compile('|'.join([
+        r'\bchart\b.*\banalysis\b',
+        r'\btechnical analysis\b',
+        r'\bprice prediction\b',
+        r'\bprice target\b',
+        r'\bsupport and resistance\b',
+        r'\btrading setup\b',
+        r'\btrade setup\b',
+        r'\btrading strategy\b',
+        r'\bscalp(ing)?\b',
+        r'\bbull(ish)? flag\b',
+        r'\bbear(ish)? flag\b',
+        r'\bhead and shoulders\b',
+        r'\bwedge pattern\b',
+        r'\brsi\b.*\bdivergence\b',
+        r'\bfibonacci\b',
+        r'\bElliott wave\b',
+        r'\bmoving average\b',
+        r'\bMACD\b',
+        r'\bBollinger\b',
+        r'\bichimoku\b',
+        r'\bcandlestick\b',
+        r'\border block\b',
+        r'\bbreakout\b.*\btarget\b',
+        r'\blong\b.*\bshort\b.*\btrade\b',
+        r'\brisk.to.reward\b',
+    ]), re.IGNORECASE)
+
+    _TA_KEYWORDS = [
+        'major move for',
+        'pump incoming',
+        'dump incoming',
+        'buy now',
+        'sell now',
+        'exact target',
+        'next target',
+        'moon soon',
+        'altcoin season',
+        'altcoins to buy',
+    ]
+
+    def _is_ta_video(self, title: str) -> bool:
+        """Check if a video title indicates pure technical analysis content."""
+        if self._TA_PATTERNS.search(title):
+            return True
+        title_lower = title.lower()
+        return any(kw in title_lower for kw in self._TA_KEYWORDS)
+
     def _clean_vtt(self, text: str) -> str:
-        """Clean VTT subtitle format to plain text."""
+        """Clean VTT subtitle format to plain text, stripping filler words."""
         lines = text.splitlines()
         cleaned = []
         last_line = ""
@@ -653,7 +717,26 @@ class SourceFetcher:
             cleaned.append(line)
             last_line = line
 
-        return " ".join(cleaned)
+        text = " ".join(cleaned)
+
+        # Remove speech disfluencies before sending to AI.
+        # The AI prompt also asks for this, but filler words leak through
+        # on later videos when the model's context is large.
+        filler_patterns = [
+            r'\b[Uu]h+\b',           # uh, uhh, uhhh
+            r'\b[Uu]m+\b',           # um, umm, ummm
+            r'\b[Hh]mm+\b',          # hmm, hmmm
+            r'\b[Ee]r+\b(?!\w)',     # er, err (but not "error", "era", etc.)
+            r'\b[Aa]h+\b',           # ah, ahh
+        ]
+        for pattern in filler_patterns:
+            text = re.sub(pattern, '', text)
+
+        # Clean up artifacts: double spaces, space before punctuation
+        text = re.sub(r'  +', ' ', text)
+        text = re.sub(r' ([,.])', r'\1', text)
+
+        return text
 
     def _summarize_youtube(self, title: str, transcript: str, custom_instructions: str) -> str:
         """Summarize a YouTube transcript using Gemini."""
@@ -691,7 +774,21 @@ CRITICAL FORMAT REQUIREMENTS - THIS WILL BE READ ALOUD BY TEXT-TO-SPEECH:
 
 5. Keep it comprehensive but conversational.
 
-Your output goes directly to TTS. Any markdown or preambles will sound wrong when read aloud.
+6. SKIP CHART TECHNICAL ANALYSIS: If this video is PRIMARILY about chart patterns,
+   trading setups, price targets, RSI/MACD/indicators, candlestick analysis,
+   order blocks, or similar chart-based technical analysis, output ONLY:
+   "SKIP_TA"
+   Do NOT summarize pure technical analysis/chart trading videos.
+
+7. TRANSCRIPT CLEANUP (CRITICAL - apply rigorously):
+   The source is a raw video transcript. You MUST remove ALL speech disfluencies:
+   um, uh, uhh, ah, hmm, like, you know, I mean, sort of, kind of, right, okay so.
+   Remove verbal tics, false starts, self-corrections, and direct-address phrases
+   (hey guys, what's up everyone). Paraphrase conversational/rambling sections into
+   clean, polished prose. The output MUST read as polished writing, NEVER a transcription.
+   If any filler words or transcript-style speech patterns remain, you have failed.
+
+Your output goes directly to TTS. Any markdown, preambles, or raw transcript speech will sound wrong when read aloud.
 """
 
             if custom_instructions:
@@ -704,12 +801,12 @@ Your output goes directly to TTS. Any markdown or preambles will sound wrong whe
             return response.text
 
         except BudgetExceeded:
-            _debug_log("[YouTube] Budget exceeded — returning raw transcript")
-            return transcript[:2000]
+            _debug_log("[YouTube] Budget exceeded — skipping summarization")
+            return None  # Caller should skip this video rather than use raw transcript
 
         except Exception as e:
             _debug_log(f"[YouTube] Summarization error: {e}")
-            return transcript[:2000]  # Return truncated transcript as fallback
+            return None  # Skip rather than return raw transcript
 
     def _summarize_article(self, title: str, content: str, custom_instructions: str) -> str:
         """Summarize article content using Gemini.
@@ -771,8 +868,8 @@ Your output goes directly to TTS. Any markdown or preambles will sound wrong whe
             return summary
 
         except BudgetExceeded:
-            _debug_log("[Article] Budget exceeded — returning raw content")
-            return content[:2000] + "..." if len(content) > 2000 else content
+            _debug_log("[Article] Budget exceeded — skipping summarization")
+            return None  # Caller should skip rather than use raw content
 
         except Exception as e:
             _debug_log(f"[Article] Summarization error: {e}")
