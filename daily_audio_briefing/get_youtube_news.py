@@ -241,9 +241,12 @@ def summarize_text(model, text, previous_context=""):
 def process_channel(channel_url, model, shared_context, cutoff_date, cutoff_time=None):
     log(f"--- Processing Channel: {channel_url} ---")
     limit = 20
+    # scrapetube has been flaky against YouTube's evolving HTML; use the
+    # combined scrapetube + RSS fallback so transient breakage doesn't blank
+    # out the whole brief.
     try:
-        video_generator = scrapetube.get_channel(channel_url=channel_url, limit=limit)
-        videos = list(video_generator)
+        from youtube_rss import fetch_channel_videos_with_fallback
+        videos = fetch_channel_videos_with_fallback(channel_url, limit=limit, debug_log=log)
         log(f"Fetched {len(videos)} recent videos.")
     except Exception as e:
         log(f"Error fetching videos for {channel_url}: {e}")

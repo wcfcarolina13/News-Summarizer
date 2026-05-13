@@ -871,9 +871,11 @@ Examples:
 - CHAIN_SUPPORT: Added Starknet deployment
 - No updates needed"""
 
-        from api_usage_tracker import get_tracker
-        response = get_tracker().tracked_generate(model, prompt, "grid.analyze_profile")
-        suggestion = response.text.strip()
+        from llm_fallback import generate_with_fallback
+        suggestion = generate_with_fallback(prompt, gemini_model=model, caller="grid.analyze_profile")
+        if not suggestion:
+            return None
+        suggestion = suggestion.strip()
 
         # Only return meaningful suggestions
         if suggestion and "no update" not in suggestion.lower():

@@ -70,3 +70,14 @@ plan.md
 __pycache__/
 daily_audio_briefing/__pycache__/
 daily_audio_briefing/*.pyc
+
+# =============================================================================
+# BUILD ARCHIVES (PyInstaller .app snapshots — large, contain credentials)
+# =============================================================================
+_archive/
+build_*.log
+
+# =============================================================================
+# USER DATA (additional)
+# =============================================================================
+daily_audio_briefing/processed_videos.json

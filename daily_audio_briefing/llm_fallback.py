@@ -1,9 +1,16 @@
 """
-LLM Fallback Chain — Gemini (free tier) → Groq (free tier) → extractive.
+LLM Fallback Chain — Gemini (free tier) → Groq (free tier).
 
 Provides a single generate() function that tries providers in order.
 Each provider is only attempted if its API key is configured.
-The extractive fallback needs no API and always works.
+
+If both providers fail, ``generate_with_fallback`` returns None so the caller
+can skip the item. The previous "extractive" fallback (first-25-sentences of
+the raw transcript) was removed because it silently emitted unsummarized,
+disfluency-laden transcript text into the audio brief.
+
+Set ALLOW_EXTRACTIVE=1 in the environment to opt back into the old behaviour
+if you really want a degraded-but-present output.
 """
 
 import os
@@ -12,12 +19,23 @@ import time
 import threading
 from typing import Optional
 
-_debug = os.environ.get("DEBUG_FALLBACK", "").lower() in ("1", "true")
+# Default to ON — fall-through events are rare and important. Set
+# DEBUG_FALLBACK=0 in the environment to silence them.
+_debug = os.environ.get("DEBUG_FALLBACK", "1").lower() in ("1", "true", "yes")
+_allow_extractive = os.environ.get("ALLOW_EXTRACTIVE", "").lower() in ("1", "true", "yes")
 
 
 def _log(msg: str):
     if _debug:
+        # Print to stdout (captured by the scheduler/web log) AND tee into
+        # fetch_debug.log so post-mortems can see why a brief came up empty.
         print(f"[LLM Fallback] {msg}")
+        try:
+            here = os.path.dirname(os.path.abspath(__file__))
+            with open(os.path.join(here, "fetch_debug.log"), "a") as f:
+                f.write(f"[LLM Fallback] {msg}\n")
+        except Exception:
+            pass
 
 
 # ---------------------------------------------------------------------------
@@ -151,6 +169,9 @@ def generate_with_fallback(
     Returns:
         Generated text, or None if all providers fail.
     """
+    gemini_failed_reason: Optional[str] = None
+    groq_failed_reason: Optional[str] = None
+
     # --- Attempt 1: Gemini (free tier) ---
     if gemini_model is not None:
         try:
@@ -160,24 +181,43 @@ def generate_with_fallback(
             )
             text = response.text
             if text and text.strip():
-                _log(f"Gemini succeeded ({len(text)} chars)")
+                _log(f"Gemini succeeded ({len(text)} chars) for {caller}")
                 return text
+            gemini_failed_reason = "empty response"
         except (FreeTierExceeded, BudgetExceeded, APILimitExceeded) as e:
-            _log(f"Gemini rate/budget limited: {e}")
+            gemini_failed_reason = f"rate/budget: {e}"
+            _log(f"Gemini rate/budget limited for {caller}: {e}")
         except Exception as e:
-            _log(f"Gemini error: {e}")
+            gemini_failed_reason = f"error: {e}"
+            _log(f"Gemini error for {caller}: {e}")
+    else:
+        gemini_failed_reason = "no model provided"
 
     # --- Attempt 2: Groq (free tier) ---
     groq_result = _groq_generate(prompt)
     if groq_result:
+        _log(f"Groq fallback succeeded for {caller}")
         return groq_result
+    if _get_groq_client() is None:
+        groq_failed_reason = "GROQ_API_KEY not configured"
+    else:
+        groq_failed_reason = "groq returned nothing (rate-limited or error)"
 
-    # --- Attempt 3: extractive (no AI) ---
-    # Try to extract the transcript from the prompt
-    transcript = _extract_transcript_from_prompt(prompt)
-    if transcript:
-        _log("Falling back to extractive summary")
-        return _extractive_summary(transcript)
+    # --- Both providers failed ---
+    _log(
+        f"BOTH PROVIDERS FAILED for {caller} — "
+        f"gemini=({gemini_failed_reason}) groq=({groq_failed_reason}). "
+        f"Skipping item (no raw-transcript fallback)."
+    )
+
+    if _allow_extractive:
+        # Opt-in only — emits raw-ish transcript text. Off by default because
+        # it produces incomplete, disfluency-laden output that's worse than
+        # silence.
+        transcript = _extract_transcript_from_prompt(prompt)
+        if transcript:
+            _log(f"ALLOW_EXTRACTIVE=1: emitting extractive summary for {caller}")
+            return _extractive_summary(transcript)
 
     return None
 

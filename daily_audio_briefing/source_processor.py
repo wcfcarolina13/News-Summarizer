@@ -296,6 +296,8 @@ def auto_select_newsletter_config(url: str) -> Dict:
         # Map domains to configs
         domain_config_map = {
             "execsum.co": "execsum",
+            "cryptosum.beehiiv.com": "cryptosum",
+            "rwa-world.beehiiv.com": "rwa-world",
             # Add more mappings as users create configs
         }
 

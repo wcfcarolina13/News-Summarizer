@@ -196,7 +196,10 @@ class APIUsageTracker:
 
           API_DAILY_MAX_CALLS   — Max Gemini calls per day (default 500)
           API_MONTHLY_MAX_CALLS — Max Gemini calls per month (default 10000)
-          API_MONTHLY_BUDGET    — Dollar cap per month (e.g. "0.50")
+          API_MONTHLY_BUDGET    — Dollar cap per month. 0 means zero spend
+                                   allowed (every call falls through to Groq).
+                                   Set API_COOLDOWN_ENABLED=false to disable
+                                   the dollar cap entirely.
           API_LIMITS_ENABLED    — "true"/"false" (default true)
           API_COOLDOWN_ENABLED  — "true"/"false" (default true)
 
@@ -370,28 +373,34 @@ class APIUsageTracker:
             return daily < daily_max and monthly < monthly_max
 
     def is_over_budget(self) -> bool:
-        """Return True if monthly cost exceeds budget cap. Thread-safe."""
+        """Return True if monthly cost is at or above the budget cap.
+
+        budget == 0 means "spend zero dollars" — always over budget so the
+        fallback chain takes every call. To opt out of the dollar cap entirely,
+        set ``cooldown_enabled`` to False (this method ignores that flag; use
+        ``is_cooldown_active`` for the user-facing gate).
+        """
         with self._lock:
             self._maybe_rollover()
             limits = self._data.get("limits", {})
             budget = limits.get("monthly_budget_usd", 0)
-            if budget <= 0:
-                return False
             cost = self._data.get("current_period", {}).get(
                 "monthly_cost_estimate", 0
             )
             return cost >= budget
 
     def is_cooldown_active(self) -> bool:
-        """Return True if over budget AND cooldown mode is enabled. Thread-safe."""
+        """Return True when Gemini should be skipped in favor of the fallback.
+
+        Active when ``cooldown_enabled`` is True and monthly cost is at or above
+        ``monthly_budget_usd``. A budget of 0 keeps cooldown permanently active.
+        """
         with self._lock:
             self._maybe_rollover()
             limits = self._data.get("limits", {})
             if not limits.get("cooldown_enabled", True):
                 return False
             budget = limits.get("monthly_budget_usd", 0)
-            if budget <= 0:
-                return False
             cost = self._data.get("current_period", {}).get(
                 "monthly_cost_estimate", 0
             )
@@ -485,9 +494,12 @@ class APIUsageTracker:
                 if monthly >= monthly_max:
                     raise APILimitExceeded("monthly", monthly, monthly_max)
 
-                # Dollar-based budget cap
-                budget_cap = limits.get("monthly_budget_usd", 0)
-                if budget_cap > 0 and limits.get("cooldown_enabled", True):
+                # Dollar-based budget cap. budget == 0 with cooldown enabled
+                # means "spend nothing" — every call raises so the fallback
+                # chain (Groq) handles it. Set cooldown_enabled to False to
+                # disable the dollar cap entirely.
+                if limits.get("cooldown_enabled", True):
+                    budget_cap = limits.get("monthly_budget_usd", 0)
                     monthly_cost = period.get("monthly_cost_estimate", 0)
                     if monthly_cost >= budget_cap:
                         raise BudgetExceeded(monthly_cost, budget_cap)

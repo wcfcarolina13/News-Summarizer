@@ -208,6 +208,13 @@ class Scheduler:
         config_path = get_scheduler_config_path(self.data_dir)
         loaded_from = None
 
+        # Snapshot current in-memory last_run before replacing self.tasks.
+        # If a task is mid-execution, its last_run was already set to now (before
+        # execution started) but save_tasks() hasn't been called yet.  Preserving
+        # the more-recent in-memory value prevents load_tasks() from re-scheduling
+        # a catch-up for a task that is already running today.
+        in_memory_last_run = {t.id: t.last_run for t in self.tasks}
+
         if os.path.exists(config_path):
             try:
                 with open(config_path, 'r', encoding='utf-8') as f:
@@ -217,6 +224,19 @@ class Scheduler:
             except Exception as e:
                 print(f"[Scheduler] Error loading tasks from file: {e}")
                 self.tasks = []
+
+        # Restore in-memory last_run where it is more recent than what's on disk
+        now_date = datetime.now().date()
+        for task in self.tasks:
+            mem_lr = in_memory_last_run.get(task.id)
+            if mem_lr:
+                try:
+                    mem_dt = datetime.fromisoformat(mem_lr)
+                    disk_dt = datetime.fromisoformat(task.last_run) if task.last_run else None
+                    if disk_dt is None or mem_dt > disk_dt:
+                        task.last_run = mem_lr
+                except (ValueError, TypeError):
+                    pass
 
         # Fallback 1: Google Sheets persistence (server mode)
         if not self.tasks and self.server_mode:
@@ -522,14 +542,18 @@ class Scheduler:
             daily_limit = stats.get('daily_limit', 500)
             enabled = stats.get('limits_enabled', True)
             cooldown = stats.get('cooldown_enabled', True)
+            if cooldown:
+                cap_str = f"${budget:.2f}" if budget > 0 else "$0 (zero-spend → Groq fallback)"
+            else:
+                cap_str = "uncapped (cooldown OFF)"
             print(f"[Scheduler] API budget status: "
                   f"daily={daily}/{daily_limit}, "
-                  f"monthly_cost=${cost:.4f}/{f'${budget:.2f}' if budget > 0 else 'unlimited'}, "
+                  f"monthly_cost=${cost:.4f}/{cap_str}, "
                   f"limits={'ON' if enabled else 'OFF'}, "
                   f"cooldown={'ON' if cooldown else 'OFF'}")
-            if budget <= 0:
-                print(f"[Scheduler] WARNING: No monthly budget cap set! "
-                      f"Set API_MONTHLY_BUDGET env var to prevent runaway costs.")
+            if not cooldown:
+                print(f"[Scheduler] WARNING: cooldown disabled — Gemini spend is uncapped. "
+                      f"Set API_COOLDOWN_ENABLED=true to re-enable the dollar cap.")
         except Exception:
             pass
 
@@ -630,6 +654,7 @@ class Scheduler:
 
                 # Calculate next run and save
                 task.next_run = self._calculate_next_run(task)
+                self._sync_task_state(task)
                 self.save_tasks()
 
                 if self._on_task_complete:
@@ -751,6 +776,7 @@ class Scheduler:
 
             # Calculate next run
             task.next_run = self._calculate_next_run(task)
+            self._sync_task_state(task)
             self.save_tasks()
 
             # Callback
@@ -760,6 +786,7 @@ class Scheduler:
         except Exception as e:
             task.last_result = f"Error: {str(e)[:100]}"
             task.next_run = self._calculate_next_run(task)
+            self._sync_task_state(task)
             self.save_tasks()
 
             if self._on_task_complete:
@@ -772,6 +799,23 @@ class Scheduler:
             self._running_tasks.discard(task.id)
             # Force garbage collection after task to reclaim memory (512MB limit)
             gc.collect()
+
+    def _sync_task_state(self, task: ScheduledTask):
+        """Sync a task's mutable state back into self.tasks by ID.
+
+        load_tasks() replaces self.tasks every 60s. If a task is mid-execution
+        when that happens, save_tasks() would write the stale version loaded from
+        disk (with yesterday's last_run), causing the catch-up loop to re-trigger
+        forever. This method ensures the in-memory task state wins before we save.
+        """
+        with self._lock:
+            for t in self.tasks:
+                if t.id == task.id:
+                    t.last_run = task.last_run
+                    t.next_run = task.next_run
+                    t.last_result = task.last_result
+                    t.items_extracted = task.items_extracted
+                    break
 
     def _execute_pipeline_task(self, task: ScheduledTask):
         """Execute a briefing pipeline task: fetch → summarize → audio → Drive.
@@ -873,39 +917,58 @@ class Scheduler:
         summary_path = os.path.join(week_folder, f"{today.isoformat()}_News.txt")
         audio_path = os.path.join(week_folder, f"{today.isoformat()}_News.mp3")
 
-        if os.path.exists(summary_path):
-            self._log(task.id, f"[Pipeline] Checkpoint: {summary_path} already exists, skipping to Drive upload")
+        # Full checkpoint: both summary + audio already done → just upload.
+        if os.path.exists(summary_path) and (self.server_mode or os.path.exists(audio_path)):
+            self._log(task.id, f"[Pipeline] Checkpoint: summary+audio already exist, skipping to Drive upload")
             audio_file = audio_path if os.path.exists(audio_path) else None
             self._pipeline_drive_upload(task, summary_path, audio_file, data_dir, 0)
             return
 
-        # --- Step 2: Fetch + summarize ---
-        fetcher = SourceFetcher(api_key=api_key, model_name="gemini-2.5-flash", data_dir=data_dir)
-        cutoff_hours = task.custom_hours if task.custom_hours else 24
-        cutoff = datetime.now() - timedelta(hours=cutoff_hours)
-        items = fetcher.fetch_all_sources(enabled, cutoff)
+        # Partial checkpoint: summary text exists but audio is missing (e.g. previous
+        # TTS run timed out). Resume from the TTS step using the saved text instead
+        # of re-fetching from sources and re-summarizing (which would waste API quota).
+        resume_from_tts = False
+        if os.path.exists(summary_path):
+            try:
+                with open(summary_path, "r", encoding="utf-8") as f:
+                    text = f.read()
+                if text.strip():
+                    self._log(task.id, f"[Pipeline] Checkpoint: summary exists but audio missing — resuming at TTS ({len(text)} chars)")
+                    resume_from_tts = True
+                    items = []  # unknown; count not available on resume
+            except Exception as e:
+                self._log(task.id, f"[Pipeline] Could not read existing summary ({e}), will regenerate")
 
-        if not items:
-            task.last_result = "No items found from sources"
-            task.items_extracted = 0
-            self._log(task.id, f"[Pipeline] {task.last_result}")
-            return
+        if not resume_from_tts:
+            # --- Step 2: Fetch + summarize ---
+            fetcher = SourceFetcher(api_key=api_key, model_name="gemini-2.5-flash", data_dir=data_dir)
+            cutoff_hours = task.custom_hours if task.custom_hours else 24
+            cutoff = datetime.now() - timedelta(hours=cutoff_hours)
+            items = fetcher.fetch_all_sources(enabled, cutoff)
 
-        self._log(task.id, f"[Pipeline] Fetched {len(items)} items, formatting for audio...")
+            if not items:
+                task.last_result = "No items found from sources"
+                task.items_extracted = 0
+                self._log(task.id, f"[Pipeline] {task.last_result}")
+                return
 
-        # --- Step 3: Format for audio ---
-        text = format_items_for_audio(items)
-        if not text.strip():
-            task.last_result = f"Fetched {len(items)} items but text was empty"
-            task.items_extracted = len(items)
-            self._log(task.id, f"[Pipeline] {task.last_result}")
-            return
+            self._log(task.id, f"[Pipeline] Fetched {len(items)} items, formatting for audio...")
 
-        # --- Step 4: Save summary text ---
-        os.makedirs(week_folder, exist_ok=True)
-        with open(summary_path, "w", encoding="utf-8") as f:
-            f.write(text)
-        self._log(task.id, f"[Pipeline] Saved summary ({len(text)} chars) to {week_folder}")
+            # --- Step 3: Format for audio ---
+            text = format_items_for_audio(items)
+            if not text.strip():
+                task.last_result = f"Fetched {len(items)} items but text was empty"
+                task.items_extracted = len(items)
+                self._log(task.id, f"[Pipeline] {task.last_result}")
+                return
+
+            # --- Step 4: Save summary text ---
+            os.makedirs(week_folder, exist_ok=True)
+            with open(summary_path, "w", encoding="utf-8") as f:
+                f.write(text)
+            self._log(task.id, f"[Pipeline] Saved summary ({len(text)} chars) to {week_folder}")
+        else:
+            os.makedirs(week_folder, exist_ok=True)
 
         # --- Step 5: Generate audio (skip in server mode) ---
         audio_file = None

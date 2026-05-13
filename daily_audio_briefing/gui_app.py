@@ -1613,14 +1613,27 @@ class AudioBriefingApp(ctk.CTk):
             # Budget cap display
             if hasattr(self, 'budget_bar'):
                 budget_cap = stats.get("monthly_budget_usd", 0)
-                if budget_cap > 0:
+                cooldown_on = stats.get("cooldown_enabled", True)
+                if budget_cap == 0 and cooldown_on:
+                    # Zero-spend mode: every Gemini call routes to Groq fallback.
+                    self.budget_bar.set(1.0)
+                    self.budget_status_label.configure(
+                        text=f"$0 cap — routing AI to Groq fallback (Gemini tracked: ${monthly_cost:.4f})",
+                        text_color=COLORS.get("warning", "#f59e0b"),
+                    )
+                elif not cooldown_on:
+                    self.budget_bar.set(0)
+                    self.budget_status_label.configure(
+                        text=f"Dollar cap disabled — Gemini spend ${monthly_cost:.4f} this month",
+                        text_color=COLORS["text_muted"],
+                    )
+                else:
                     pct = min(monthly_cost / budget_cap, 1.0)
                     self.budget_bar.set(pct)
                     pct_display = pct * 100
                     self.budget_status_label.configure(
                         text=f"${monthly_cost:.4f} / ${budget_cap:.2f} ({pct_display:.0f}% used)"
                     )
-                    # Color coding
                     if pct >= 1.0:
                         self.budget_status_label.configure(
                             text_color=COLORS.get("error", "#ef4444")
@@ -1633,16 +1646,10 @@ class AudioBriefingApp(ctk.CTk):
                         self.budget_status_label.configure(
                             text_color=COLORS["text_muted"]
                         )
-                else:
-                    self.budget_bar.set(0)
-                    self.budget_status_label.configure(
-                        text="No budget cap set (0 = unlimited)",
-                        text_color=COLORS["text_muted"]
-                    )
 
                 # Cooldown indicator
                 if hasattr(self, 'cooldown_indicator'):
-                    if budget_cap > 0 and monthly_cost >= budget_cap and stats.get("cooldown_enabled", True):
+                    if cooldown_on and monthly_cost >= budget_cap:
                         self.cooldown_indicator.grid()
                     else:
                         self.cooldown_indicator.grid_remove()
@@ -2892,7 +2899,7 @@ class AudioBriefingApp(ctk.CTk):
 
         # Budget status label
         self.budget_status_label = ctk.CTkLabel(
-            usage_content, text="No budget cap set (0 = unlimited)",
+            usage_content, text="Loading budget status…",
             font=ctk.CTkFont(size=11), text_color=COLORS["text_muted"]
         )
         self.budget_status_label.grid(row=13, column=0, columnspan=2, sticky="w", pady=(0, 4))
@@ -4515,9 +4522,12 @@ ARTICLE URL: {url}
 RAW CONTENT:
 {raw_content[:20000]}"""  # Limit content length
 
-            from api_usage_tracker import get_tracker, APILimitExceeded, BudgetExceeded
-            response = get_tracker().tracked_generate(model, prompt, "gui._clean_article")
-            cleaned = response.text.strip()
+            from llm_fallback import generate_with_fallback
+            cleaned = generate_with_fallback(prompt, gemini_model=model, caller="gui._clean_article")
+            if not cleaned:
+                print(f"[Clean Article] All LLM providers failed, using raw content")
+                return raw_content[:5000]
+            cleaned = cleaned.strip()
 
             # Ensure we got meaningful content back
             if len(cleaned) > 50:
@@ -4526,9 +4536,6 @@ RAW CONTENT:
                 print(f"[Clean Article] AI returned too short response, using original")
                 return raw_content[:5000]
 
-        except (APILimitExceeded, BudgetExceeded) as e:
-            print(f"[Clean Article] {e}")
-            return raw_content[:5000]
         except Exception as e:
             print(f"[Clean Article] Error: {e}")
             return raw_content[:5000]  # Return truncated raw content as fallback
@@ -4567,12 +4574,12 @@ Transcript:
 Transcript:
 {video_result['transcript'][:15000]}"""  # Limit transcript length
 
-            from api_usage_tracker import get_tracker, APILimitExceeded, BudgetExceeded
-            response = get_tracker().tracked_generate(model, prompt, "gui._summarize_yt")
-            return response.text.strip()
-        except (APILimitExceeded, BudgetExceeded) as e:
-            print(f"[Summarize] {e}")
-            return f"API limit reached: {e.limit_type} ({e.current}/{e.maximum}). Try again tomorrow or increase limits in Settings."
+            from llm_fallback import generate_with_fallback
+            summary = generate_with_fallback(prompt, gemini_model=model, caller="gui._summarize_yt")
+            if summary:
+                return summary.strip()
+            print(f"[Summarize] All LLM providers failed, returning truncated transcript")
+            return video_result['transcript'][:2000]
         except Exception as e:
             print(f"[Summarize] Error: {e}")
             return video_result['transcript'][:2000]  # Return truncated transcript as fallback
@@ -7830,12 +7837,12 @@ TEXT TO CLEAN:
 """
 
         try:
-            from api_usage_tracker import get_tracker, APILimitExceeded, BudgetExceeded
-            response = get_tracker().tracked_generate(model, prompt, "gui._process_audio")
-            return response.text.strip()
-        except (APILimitExceeded, BudgetExceeded) as e:
-            print(f"[Clean] {e}")
-            return text  # Return original when limit hit
+            from llm_fallback import generate_with_fallback
+            cleaned = generate_with_fallback(prompt, gemini_model=model, caller="gui._process_audio")
+            if cleaned:
+                return cleaned.strip()
+            print(f"[Clean] All LLM providers failed, returning original text")
+            return text
         except Exception as e:
             print(f"[Clean] Error cleaning article: {e}")
             return text  # Return original on error

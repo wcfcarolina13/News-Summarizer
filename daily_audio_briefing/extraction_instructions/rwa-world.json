@@ -1,0 +1,84 @@
+{
+  "name": "RWA World Newsletter",
+  "description": "Custom extraction rules for RWA World beehiiv newsletter (weekly Wed tokenization digest). Pulls headlines + funding from Rapid Fire Takeaways and emoji-prefixed deep sections. Filters out subscribe CTAs, feedback widgets, and Beehiiv platform chrome.",
+
+  "include_patterns": [],
+
+  "exclude_patterns": [
+    "subscribe",
+    "unsubscribe",
+    "share this",
+    "refer a friend",
+    "advertisement",
+    "sponsored",
+    "Powered by beehiiv",
+    "How was this newsletter",
+    "Forwarded this email",
+    "Happy Wednesday",
+    "Happy Thursday",
+    "Let's dive right in",
+    "see you next Wednesday",
+    "we're here for all of it"
+  ],
+
+  "exclude_sections": [
+    "Subscribe",
+    "Footer",
+    "Feedback",
+    "How was this newsletter"
+  ],
+
+  "include_sections": [
+    "Rapid Fire Takeaways",
+    "Rapid Fire Q1 Takeaways"
+  ],
+
+  "allowed_domains": [],
+
+  "blocked_domains": [
+    "twitter.com",
+    "x.com",
+    "facebook.com",
+    "linkedin.com",
+    "instagram.com",
+    "tiktok.com",
+    "t.me",
+    "rwa-world.beehiiv.com"
+  ],
+
+  "allowed_source_domains": [],
+
+  "require_url": false,
+  "require_include_pattern": false,
+  "extract_markets_section": true,
+
+  "source_url_patterns": [
+    "rwa-world.beehiiv.com"
+  ],
+
+  "capabilities": {
+    "csv_export": true,
+    "grid_enrichment": true,
+    "research_articles": true
+  },
+
+  "csv_columns": [
+    "url",
+    "description",
+    "source_name",
+    "date_published",
+    "comments",
+    "Processed",
+    "Added"
+  ],
+
+  "google_sheets": {
+    "enabled": true,
+    "spreadsheet_id": "",
+    "sheet_name": "RWA World",
+    "columns": ["url", "description", "source_name", "date_published", "comments", "Processed", "Added"],
+    "notes": "Set spreadsheet_id in the Daily Audio Briefing app settings. Recommended: same Sheet as CryptoSum but a separate tab ('RWA World') so both pipelines coexist."
+  },
+
+  "notes": "Extracts tokenization / RWA / stablecoin news from RWA World's weekly Wednesday issue. Pulls structured headlines from the '🔥 Rapid Fire Takeaways' bullet list and supporting context from emoji-prefixed deep sections (💰, ⚡, 🏛️, 🔓, 📊, 💸). Blocks self-referencing rwa-world.beehiiv.com links to avoid recursive ingest. Cadence: weekly Wed; first 2026 issue 2026-04-08 after winter hiatus."
+}

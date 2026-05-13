@@ -20,6 +20,7 @@ scrapetube
 
 # AI summarization (lazy-loaded, only for YouTube + newsletter features)
 google-generativeai
+groq                   # Free-tier Llama 3.3 70B fallback when Gemini hits budget cap
 
 # Google Sheets (used by scheduler for export + config persistence)
 google-api-python-client

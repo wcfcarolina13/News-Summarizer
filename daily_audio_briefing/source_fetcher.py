@@ -424,8 +424,8 @@ class SourceFetcher:
         Uses scrapetube to get video list and yt_dlp for transcripts.
         Filters to only include videos between cutoff_date and end_date (inclusive).
         """
-        import scrapetube
         import traceback
+        from youtube_rss import fetch_channel_videos_with_fallback
 
         items = []
         newly_processed = []
@@ -433,11 +433,10 @@ class SourceFetcher:
         _debug_log(f"[YouTube] Cutoff date: {cutoff_date.date()}")
         video_cache = load_cache(self.data_dir)
 
+        # scrapetube → RSS fallback. Returns [] on total failure, never raises.
+        _debug_log(f"[YouTube] Calling fetch_channel_videos (scrapetube + RSS fallback)...")
         try:
-            # Get recent videos from channel
-            _debug_log(f"[YouTube] Calling scrapetube.get_channel...")
-            video_generator = scrapetube.get_channel(channel_url=source.url, limit=20)
-            videos = list(video_generator)
+            videos = fetch_channel_videos_with_fallback(source.url, limit=20, debug_log=_debug_log)
             _debug_log(f"[YouTube] Got {len(videos)} videos from channel")
         except Exception as e:
             _debug_log(f"[YouTube] Error fetching channel {source.url}: {e}")
@@ -791,10 +790,12 @@ CRITICAL FORMAT REQUIREMENTS - THIS WILL BE READ ALOUD BY TEXT-TO-SPEECH:
 Your output goes directly to TTS. Any markdown, preambles, or raw transcript speech will sound wrong when read aloud.
 """
 
+            # Match the cap used by get_youtube_news.py (50K) so long videos
+            # aren't silently truncated to ~25 minutes of speech.
             if custom_instructions:
-                prompt = f"{base_prompt}\n\nAdditional preferences:\n{custom_instructions}\n\nTranscript:\n{transcript[:15000]}"
+                prompt = f"{base_prompt}\n\nAdditional preferences:\n{custom_instructions}\n\nTranscript:\n{transcript[:50000]}"
             else:
-                prompt = f"{base_prompt}\n\nTranscript:\n{transcript[:15000]}"
+                prompt = f"{base_prompt}\n\nTranscript:\n{transcript[:50000]}"
 
             from llm_fallback import generate_with_fallback
             result = generate_with_fallback(
