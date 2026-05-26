@@ -611,22 +611,36 @@ class Scheduler:
             except Exception:
                 pass
 
-        # Pre-flight budget check: skip task if API budget is exhausted
+        # Pre-flight budget check: only hard-skip when cooldown is disabled.
+        # With cooldown enabled (the default), tasks must be allowed to run so
+        # the Gemini→Groq fallback chain can handle calls — budget=0 is the
+        # configured "literal zero-spend, route everything to Groq" mode.
+        # See api_usage_tracker.py:497 and _execute_pipeline_task's inner check.
         from api_usage_tracker import set_current_task, clear_current_task, get_tracker
         tracker = get_tracker()
         if tracker.is_cooldown_active():
-            stats = tracker.get_stats()
-            cost = stats.get('monthly_cost_estimate', 0)
-            budget = stats.get('monthly_budget_usd', 0)
-            msg = f"Skipped — API budget exhausted (${cost:.4f} / ${budget:.2f})"
-            self._log(task.id, f"[Scheduler] Task '{task.name}': {msg}")
-            task.last_result = msg
-            task.next_run = self._calculate_next_run(task)
-            self.save_tasks()
-            self._running_tasks.discard(task.id)
-            if self._on_task_complete:
-                self._on_task_complete(task, False, msg)
-            return
+            limits = tracker._data.get("limits", {})
+            cooldown_enabled = limits.get("cooldown_enabled", True)
+            if not cooldown_enabled:
+                stats = tracker.get_stats()
+                cost = stats.get('monthly_cost_estimate', 0)
+                budget = stats.get('monthly_budget_usd', 0)
+                msg = f"Skipped — API budget exhausted (${cost:.4f} / ${budget:.2f})"
+                self._log(task.id, f"[Scheduler] Task '{task.name}': {msg}")
+                task.last_result = msg
+                task.next_run = self._calculate_next_run(task)
+                self.save_tasks()
+                self._running_tasks.discard(task.id)
+                if self._on_task_complete:
+                    self._on_task_complete(task, False, msg)
+                return
+            # Cooldown enabled: fall through. Pipeline tasks handle cooldown
+            # at scheduler.py:845; extraction tasks rely on generate_with_fallback
+            # to route BudgetExceeded → Groq.
+            self._log(
+                task.id,
+                f"[Scheduler] Task '{task.name}': budget exhausted but cooldown active — proceeding with fallback chain",
+            )
         if not tracker.check_limit():
             stats = tracker.get_stats()
             daily = stats.get('daily_calls', 0)
