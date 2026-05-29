@@ -1,8 +1,12 @@
 """
-LLM Fallback Chain — Gemini (free tier) → Groq (free tier).
+LLM Fallback Chain — Gemini (free tier) → Groq (free tier) → local Ollama.
 
 Provides a single generate() function that tries providers in order.
-Each provider is only attempted if its API key is configured.
+Each provider is only attempted if it is configured/reachable. The local
+Ollama tier (gpt-oss:20b-tuned by default) is a zero-cost, no-rate-limit
+safety net so a Groq throttle or outage never silently drops an item.
+Override via env: GROQ_MODEL, GROQ_MAX_RETRIES, ENABLE_LOCAL_FALLBACK,
+OLLAMA_HOST, LOCAL_LLM_MODEL, LOCAL_LLM_TIMEOUT.
 
 If both providers fail, ``generate_with_fallback`` returns None so the caller
 can skip the item. The previous "extractive" fallback (first-25-sentences of
@@ -81,24 +85,114 @@ def _get_groq_client():
             return None
 
 
+_GROQ_MODEL = os.environ.get("GROQ_MODEL", "llama-3.3-70b-versatile")
+_GROQ_MAX_RETRIES = int(os.environ.get("GROQ_MAX_RETRIES", "3"))
+
+
+def _is_rate_limit_error(e: Exception) -> bool:
+    """Detect a 429 / rate-limit error across groq SDK versions."""
+    if e.__class__.__name__ in ("RateLimitError", "TooManyRequests"):
+        return True
+    if getattr(e, "status_code", None) == 429 or getattr(e, "code", None) == 429:
+        return True
+    return "rate limit" in str(e).lower() or "429" in str(e)
+
+
+def _retry_after_seconds(e: Exception, attempt: int) -> float:
+    """Honour a Retry-After header if present; else exponential backoff (capped)."""
+    resp = getattr(e, "response", None)
+    if resp is not None:
+        try:
+            ra = resp.headers.get("retry-after")
+            if ra:
+                return min(float(ra), 30.0)
+        except Exception:
+            pass
+    return min(2.0 * (2 ** attempt), 30.0)  # 2s, 4s, 8s … capped at 30s
+
+
 def _groq_generate(prompt: str, max_tokens: int = 4096) -> Optional[str]:
-    """Call Groq's free-tier Llama model. Returns None on any failure."""
+    """Call Groq's free-tier Llama model, retrying on 429. None on hard failure.
+
+    The free tier throttles on tokens-per-minute, which is easy to hit on a burst
+    of long transcripts. Without retry a throttled video was silently dropped.
+    """
     client = _get_groq_client()
     if not client:
         return None
 
+    for attempt in range(_GROQ_MAX_RETRIES):
+        try:
+            response = client.chat.completions.create(
+                model=_GROQ_MODEL,
+                messages=[{"role": "user", "content": prompt}],
+                max_tokens=max_tokens,
+                temperature=0.3,
+            )
+            text = response.choices[0].message.content
+            _log(f"Groq returned {len(text)} chars")
+            return text
+        except Exception as e:
+            if _is_rate_limit_error(e) and attempt < _GROQ_MAX_RETRIES - 1:
+                wait = _retry_after_seconds(e, attempt)
+                _log(f"Groq 429/rate-limited (attempt {attempt + 1}/{_GROQ_MAX_RETRIES}); retrying in {wait:.0f}s")
+                time.sleep(wait)
+                continue
+            _log(f"Groq error: {e}")
+            return None
+    return None
+
+
+# ---------------------------------------------------------------------------
+# Local provider — Ollama (gpt-oss:20b-tuned by default). Zero cost, no rate
+# limits, fully offline. Slower than Groq, so it sits below it in the chain as
+# a safety net so a Groq throttle/outage never silently drops a video.
+# ---------------------------------------------------------------------------
+_LOCAL_ENABLED = os.environ.get("ENABLE_LOCAL_FALLBACK", "1").lower() in ("1", "true", "yes")
+_OLLAMA_HOST = os.environ.get("OLLAMA_HOST", "http://localhost:11434").rstrip("/")
+_LOCAL_MODEL = os.environ.get("LOCAL_LLM_MODEL", "gpt-oss:20b-tuned")
+_LOCAL_TIMEOUT = int(os.environ.get("LOCAL_LLM_TIMEOUT", "300"))
+
+
+def _ollama_generate(prompt: str, max_tokens: int = 4096) -> Optional[str]:
+    """Call a local Ollama model. Returns None if Ollama is down or errors.
+
+    Uses stdlib urllib (no extra dependency). Fails fast to None when Ollama
+    isn't running rather than hanging the pipeline.
+    """
+    if not _LOCAL_ENABLED:
+        return None
+
+    import json
+    import urllib.request
+    import urllib.error
+
+    payload = json.dumps({
+        "model": _LOCAL_MODEL,
+        "prompt": prompt,
+        "stream": False,
+        "options": {"temperature": 0.3, "num_predict": max_tokens},
+    }).encode("utf-8")
+
+    req = urllib.request.Request(
+        f"{_OLLAMA_HOST}/api/generate",
+        data=payload,
+        headers={"Content-Type": "application/json"},
+    )
     try:
-        response = client.chat.completions.create(
-            model="llama-3.3-70b-versatile",
-            messages=[{"role": "user", "content": prompt}],
-            max_tokens=max_tokens,
-            temperature=0.3,
-        )
-        text = response.choices[0].message.content
-        _log(f"Groq returned {len(text)} chars")
-        return text
+        with urllib.request.urlopen(req, timeout=_LOCAL_TIMEOUT) as resp:
+            data = json.loads(resp.read())
+        text = (data.get("response") or "").strip()
+        if text:
+            _log(f"Local ({_LOCAL_MODEL}) returned {len(text)} chars")
+            return text
+        _log(f"Local ({_LOCAL_MODEL}) returned empty response")
+        return None
+    except urllib.error.URLError as e:
+        _log(f"Local LLM unreachable ({_OLLAMA_HOST}): {e}. Is Ollama running?")
+        return None
     except Exception as e:
-        _log(f"Groq error: {e}")
+        _log(f"Local LLM error: {e}")
         return None
 
 
@@ -203,10 +297,22 @@ def generate_with_fallback(
     else:
         groq_failed_reason = "groq returned nothing (rate-limited or error)"
 
-    # --- Both providers failed ---
+    # --- Attempt 3: Local LLM (Ollama) — zero cost, no rate limits, offline ---
+    local_failed_reason: Optional[str] = None
+    if _LOCAL_ENABLED:
+        local_result = _ollama_generate(prompt)
+        if local_result:
+            _log(f"Local fallback ({_LOCAL_MODEL}) succeeded for {caller}")
+            return local_result
+        local_failed_reason = "local LLM unreachable/empty (is Ollama running?)"
+    else:
+        local_failed_reason = "disabled (ENABLE_LOCAL_FALLBACK=0)"
+
+    # --- All providers failed ---
     _log(
-        f"BOTH PROVIDERS FAILED for {caller} — "
-        f"gemini=({gemini_failed_reason}) groq=({groq_failed_reason}). "
+        f"ALL PROVIDERS FAILED for {caller} — "
+        f"gemini=({gemini_failed_reason}) groq=({groq_failed_reason}) "
+        f"local=({local_failed_reason}). "
         f"Skipping item (no raw-transcript fallback)."
     )
 
