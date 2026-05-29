@@ -493,6 +493,11 @@ class SourceFetcher:
                     _debug_log(f"[YouTube] Skipping TA video by title: {title[:50]}...")
                     continue
 
+                # Skip Sui-shilling videos from Raoul Pal / Real Vision (user preference)
+                if self._is_sui_from_promo_channel(title, source.url, channel_name):
+                    _debug_log(f"[YouTube] Skipping Sui-from-RealVision/Raoul: {title[:50]}...")
+                    continue
+
                 # Check video cache — skip if already processed
                 if video_id in video_cache.get('videos', {}):
                     _debug_log(f"[YouTube] Skipping (already in cache): {title[:40]}...")
@@ -510,7 +515,8 @@ class SourceFetcher:
                 _debug_log(f"[YouTube] Got transcript ({len(transcript)} chars), summarizing...")
 
                 # Summarize
-                summary = self._summarize_youtube(title, transcript, custom_instructions)
+                summary = self._summarize_youtube(title, transcript, custom_instructions,
+                                                  source_url=source.url, channel_name=channel_name)
                 if not summary:
                     _debug_log(f"[YouTube] Summarization returned None (budget/error), skipping: {title[:40]}...")
                     continue
@@ -686,6 +692,27 @@ class SourceFetcher:
         title_lower = title.lower()
         return any(kw in title_lower for kw in self._TA_KEYWORDS)
 
+    # Channels operated by Raoul Pal / Real Vision, which relentlessly promote Sui.
+    # Per user preference, Sui content from these sources is filtered out entirely.
+    _SUI_PROMO_CHANNELS = ('realvision', 'raoulpal')
+    _SUI_PATTERN = re.compile(r'\bsui\b', re.IGNORECASE)
+
+    def _is_sui_promo_channel(self, source_url: str, channel_name: str = "") -> bool:
+        """True if the source is a Raoul Pal / Real Vision channel."""
+        haystack = f"{source_url} {channel_name}".lower().replace(" ", "")
+        return any(c in haystack for c in self._SUI_PROMO_CHANNELS)
+
+    def _is_sui_from_promo_channel(self, title: str, source_url: str, channel_name: str = "") -> bool:
+        """True if a Sui-centric video comes from a Raoul Pal / Real Vision channel.
+
+        Matches on channel identity (URL handle or channel name) plus a Sui
+        mention in the title, so the whole video is skipped before we spend an
+        API call summarizing it.
+        """
+        if not self._is_sui_promo_channel(source_url, channel_name):
+            return False
+        return bool(self._SUI_PATTERN.search(title))
+
     def _clean_vtt(self, text: str) -> str:
         """Clean VTT subtitle format to plain text, stripping filler words."""
         lines = text.splitlines()
@@ -737,10 +764,23 @@ class SourceFetcher:
 
         return text
 
-    def _summarize_youtube(self, title: str, transcript: str, custom_instructions: str) -> str:
+    def _summarize_youtube(self, title: str, transcript: str, custom_instructions: str,
+                           source_url: str = "", channel_name: str = "") -> str:
         """Summarize a YouTube transcript using Gemini."""
         try:
             model = self._get_model()
+
+            # Channel-specific topic suppression: drop Sui coverage from the
+            # Raoul Pal / Real Vision channels (they are paid Sui promoters).
+            sui_clause = ""
+            if self._is_sui_promo_channel(source_url, channel_name):
+                sui_clause = (
+                    "\n\nCHANNEL-SPECIFIC RULE (MANDATORY): This video is from a Raoul Pal / "
+                    "Real Vision channel, which promotes the Sui blockchain. OMIT every mention "
+                    "of Sui (the SUI token, Sui Network, or Sui ecosystem) from your summary. "
+                    "If after removing all Sui content nothing of substance remains, output ONLY: "
+                    "\"SKIP_TA\"."
+                )
 
             base_prompt = f"""Summarize this YouTube video transcript for an audio news briefing.
 
@@ -779,7 +819,22 @@ CRITICAL FORMAT REQUIREMENTS - THIS WILL BE READ ALOUD BY TEXT-TO-SPEECH:
    "SKIP_TA"
    Do NOT summarize pure technical analysis/chart trading videos.
 
-7. TRANSCRIPT CLEANUP (CRITICAL - apply rigorously):
+7. OMIT PROMOTIONAL CONTENT (apply even when the rest of the video is worth keeping):
+   Cut every sponsor read, advertisement, paid promotion, promo/discount code,
+   giveaway, affiliate or referral pitch, and ALL invitations to join or subscribe
+   to a paid group, Discord, Telegram, Patreon, newsletter, trading "community" or
+   private platform (for example "join our Empire community", "link in the
+   description", "members get the charts"). Do not name or describe these offers.
+   Summarize only the substantive news, analysis, and insight.
+
+8. OMIT INTRADAY / SHORT-TERM TECHNICAL ANALYSIS (even inside non-TA videos):
+   Drop short-term chart calls, specific price levels and targets, support/resistance,
+   RSI/MACD/indicator readings, candlestick/order-block talk, and rapid-fire per-coin
+   "shitcoin" chart rundowns. Keep only higher-timeframe macro view, market sentiment,
+   narrative shifts, and fundamental developments. If technical analysis is the only
+   thing of value remaining, output ONLY: "SKIP_TA".
+
+9. TRANSCRIPT CLEANUP (CRITICAL - apply rigorously):
    The source is a raw video transcript. You MUST remove ALL speech disfluencies:
    um, uh, uhh, ah, hmm, like, you know, I mean, sort of, kind of, right, okay so.
    Remove verbal tics, false starts, self-corrections, and direct-address phrases
@@ -787,13 +842,19 @@ CRITICAL FORMAT REQUIREMENTS - THIS WILL BE READ ALOUD BY TEXT-TO-SPEECH:
    clean, polished prose. The output MUST read as polished writing, NEVER a transcription.
    If any filler words or transcript-style speech patterns remain, you have failed.
 
-Your output goes directly to TTS. Any markdown, preambles, or raw transcript speech will sound wrong when read aloud.
+Your output goes directly to TTS. Any markdown, preambles, or raw transcript speech will sound wrong when read aloud.{sui_clause}
 """
 
             # Match the cap used by get_youtube_news.py (50K) so long videos
             # aren't silently truncated to ~25 minutes of speech.
+            # User preferences are MANDATORY filters, not soft suggestions — they
+            # override the "keep it comprehensive" guidance above.
             if custom_instructions:
-                prompt = f"{base_prompt}\n\nAdditional preferences:\n{custom_instructions}\n\nTranscript:\n{transcript[:50000]}"
+                prompt = (
+                    f"{base_prompt}\n\nUSER PREFERENCES (MANDATORY — these override the "
+                    f"comprehensiveness guidance; obey every omit/filter instruction):\n"
+                    f"{custom_instructions}\n\nTranscript:\n{transcript[:50000]}"
+                )
             else:
                 prompt = f"{base_prompt}\n\nTranscript:\n{transcript[:50000]}"
 

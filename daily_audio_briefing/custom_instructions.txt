@@ -3,10 +3,16 @@ I'm interested in cryptocurrency, AI, geopolitics, and finance.
 Focus on:
 - Main points, takeaways, and unique insights ("alpha")
 - Specific data points, predictions, and actionable recommendations
-- Market sentiment, macro trends, and narrative shifts (NOT chart technical analysis)
+- Market sentiment, macro trends, and narrative shifts (higher-timeframe only, NOT intraday chart technical analysis)
 - Companies, projects, or entities mentioned (with brief context)
 
 Please organize summaries to highlight information most relevant to my interests.
 
-Omit:
-- Marketing, sales pitches, demos, promo codes, advertizements, sponsors
+Omit entirely:
+- Marketing, sales pitches, demos, promo/discount codes, advertisements, and sponsors
+- Invitations to join or subscribe to private communities, groups, Discords, Telegrams, Patreons, newsletters, or paid trading "platforms" (e.g. someone inviting the audience to join their "Empire" community)
+- Intraday and short-term technical analysis: specific price levels and targets, support/resistance, RSI/MACD/indicators, candlesticks, and order blocks
+- Long rapid-fire rundowns of dozens of small-cap "shitcoins"
+- Marketing disguised as fundamental analysis (e.g. a newly opened commodity mine pitched as an investment opportunity)
+
+If technical analysis is duplicated across videos, condense and dedupe it, and reduce it to a higher-timeframe view only. Do not dwell on it.

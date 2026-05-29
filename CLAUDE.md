@@ -40,6 +40,39 @@ Extraction configs: `extraction_instructions/*.json` (execsum, rwa, cryptosum, _
 - Scripts run via subprocess
 - Launch with: `Launch Audio Briefing.command`
 
+## ⚠️ Where the daily briefing ACTUALLY runs (read before debugging output)
+
+The scheduled briefing the user listens to is **NOT** produced by the `.app` bundle and
+**NOT** by `/Users/roti/News-Summarizer/` (that is a stale clone — ignore it). It is produced by:
+
+- **This repo**, run live as a LaunchAgent: `~/Library/LaunchAgents/com.dailyaudiobriefing.scheduler.plist`
+  (`Label=com.dailyaudiobriefing.scheduler`, `KeepAlive=true`) running
+  `scheduler_daemon.py run` under the **system framework Python 3.12** in *development mode*.
+- Note `gemini_projects/` is a symlink to `pontus/`, so this repo is reachable as both
+  `~/gemini_projects/News-Summarizer-new/` and `~/pontus/News-Summarizer-new/`.
+- **Daemon does not hot-reload.** After editing any `.py`, restart it or the next run uses old code:
+  `launchctl kickstart -k gui/$(id -u)/com.dailyaudiobriefing.scheduler` (verify new PID in `scheduler_daemon.pid`).
+- Live state/output dir: `~/Library/Application Support/Daily Audio Briefing/`
+  (`scheduler_daemon.log`, `custom_instructions.txt`, `channels.txt`, `sources.json`, `Week_N_YYYY/`).
+
+### Briefing summarization path (the one that matters)
+`scheduler._execute_pipeline_task()` → `SourceFetcher.fetch_all_sources()` →
+`source_fetcher._summarize_youtube()`. The manual "Get Summaries" button uses
+`get_youtube_news.summarize_text()` instead — **two separate prompts; keep both in sync.**
+
+### Content-filter gotchas (fixed 2026-05-29)
+- `fetch_all_sources()` defaults `youtube_instructions=""`. The scheduler MUST pass the loaded
+  `custom_instructions` or **every user omit-rule is silently dropped** (this was the root cause of
+  promos + intraday TA leaking into the brief). Load order: `data_dir` → App Support → `script_dir`.
+- The summarizer prompts only skipped *whole* TA videos; they had **no rule to strip promo /
+  community-invite / sponsor segments or intraday-TA segments from otherwise-kept videos**. Both
+  prompts now omit those, and treat `custom_instructions` as MANDATORY (overriding "be comprehensive").
+- **Sui / Raoul Pal / Real Vision:** `@RealVisionFinance` and `@RaoulPalTJM` are paid Sui promoters.
+  Sui-titled videos from those channels are hard-skipped (`_is_sui_from_promo_channel`), and in-video
+  Sui mentions from those channels are dropped via a channel-specific prompt clause.
+- Two `custom_instructions.txt` exist (live `script_dir` + App Support). The GUI (frozen) writes App
+  Support; the daemon (dev) reads `script_dir` first. **Keep them identical** or filters drift.
+
 ## Source Processing Pipeline
 
 - `sources.json`: Schema v2.0 with `type` (youtube|newsletter|rss) and `config` fields

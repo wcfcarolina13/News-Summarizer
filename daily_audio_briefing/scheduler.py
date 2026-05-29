@@ -955,10 +955,37 @@ class Scheduler:
 
         if not resume_from_tts:
             # --- Step 2: Fetch + summarize ---
+            # Load the user's custom instructions so the summarizer actually applies
+            # them (omit promos, intraday TA, etc.). Same fallback chain as sources:
+            # data_dir -> App Support -> script_dir. Without this, fetch_all_sources
+            # defaults youtube_instructions="" and silently ignores all user filters.
+            custom_instructions = ""
+            for _ci_path in (
+                os.path.join(data_dir, "custom_instructions.txt"),
+                os.path.join(_app_support, "custom_instructions.txt"),
+                os.path.join(script_dir, "custom_instructions.txt"),
+            ):
+                try:
+                    if os.path.exists(_ci_path):
+                        with open(_ci_path, "r", encoding="utf-8") as _cf:
+                            _content = _cf.read().strip()
+                        if _content:
+                            custom_instructions = _content
+                            self._log(task.id, f"[Pipeline] Loaded custom instructions from: {_ci_path}")
+                            break
+                except Exception as _e:
+                    self._log(task.id, f"[Pipeline] Could not read {_ci_path}: {_e}")
+            if not custom_instructions:
+                self._log(task.id, "[Pipeline] No custom instructions found — using built-in filters only")
+
             fetcher = SourceFetcher(api_key=api_key, model_name="gemini-2.5-flash", data_dir=data_dir)
             cutoff_hours = task.custom_hours if task.custom_hours else 24
             cutoff = datetime.now() - timedelta(hours=cutoff_hours)
-            items = fetcher.fetch_all_sources(enabled, cutoff)
+            items = fetcher.fetch_all_sources(
+                enabled, cutoff,
+                youtube_instructions=custom_instructions,
+                article_instructions=custom_instructions,
+            )
 
             if not items:
                 task.last_result = "No items found from sources"

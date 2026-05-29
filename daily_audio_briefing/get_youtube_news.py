@@ -183,11 +183,27 @@ def load_custom_instructions():
             pass
     return ""
 
-def summarize_text(model, text, previous_context=""):
+def summarize_text(model, text, previous_context="", channel_url=""):
     try:
         custom_instructions = load_custom_instructions()
-        custom_section = f"\n\nUSER PROFILE & PREFERENCES:\n{custom_instructions}\n" if custom_instructions else ""
-        
+        custom_section = (
+            "\n\nUSER PROFILE & PREFERENCES (MANDATORY — these override the comprehensiveness "
+            f"guidance above; obey every omit/filter instruction):\n{custom_instructions}\n"
+            if custom_instructions else ""
+        )
+
+        # Channel-specific topic suppression: drop Sui coverage from Raoul Pal /
+        # Real Vision channels (paid Sui promoters), per user preference.
+        sui_clause = ""
+        _chan = (channel_url or "").lower()
+        if "realvision" in _chan or "raoulpal" in _chan:
+            sui_clause = (
+                "8. CHANNEL-SPECIFIC RULE (MANDATORY): This video is from a Raoul Pal / Real Vision "
+                "channel, which promotes the Sui blockchain. OMIT every mention of Sui (the SUI token, "
+                "Sui Network, or Sui ecosystem). If nothing of substance remains afterward, output ONLY: "
+                "\"Skipped [Video Title] as promotional.\"\n"
+            )
+
         prompt = (
             "You are an expert news analyst producing content for an AUDIO BRIEFING.\n"
             "Use the following rules to summarize the provided video transcript.\n\n"
@@ -201,8 +217,18 @@ def summarize_text(model, text, previous_context=""):
             "3. Chart Technical Analysis: If the video is PRIMARILY about chart patterns, trading setups, "
             "price targets, RSI/MACD/indicators, candlestick analysis, or order blocks, "
             "output ONLY: \"Skipped [Video Title] as technical analysis.\"\n"
+            "3b. Omit Promotional Content (even when the rest of the video is worth keeping): "
+            "Cut every sponsor read, advertisement, paid promotion, promo/discount code, giveaway, "
+            "affiliate/referral pitch, and ALL invitations to join or subscribe to a paid group, Discord, "
+            "Telegram, Patreon, newsletter, or trading 'community'/private platform (e.g. 'join our Empire "
+            "community', 'link in the description', 'members get the charts'). Do not name or describe these offers.\n"
+            "3c. Omit Intraday/Short-Term TA (even inside non-TA videos): Drop short-term chart calls, specific "
+            "price levels and targets, support/resistance, indicator readings, candlestick/order-block talk, and "
+            "rapid-fire per-coin 'shitcoin' rundowns. Keep only higher-timeframe macro view, sentiment, narrative "
+            "shifts, and fundamentals.\n"
             "4. Comprehensive Coverage: Extract ALL key insights, unique perspectives, and actionable information. "
-            "Don't skip important details, data points, analysis, or unique angles that provide value or 'alpha'.\n"
+            "Don't skip important details, data points, analysis, or unique angles that provide value or 'alpha' "
+            "(subject to the omit rules in 2, 3b, and 3c, which always take priority).\n"
             "5. Key Points to Capture:\n"
             "   - All significant data, statistics, and metrics\n"
             "   - Unique insights, contrarian views, or novel analysis\n"
@@ -223,8 +249,9 @@ def summarize_text(model, text, previous_context=""):
             "(hey guys, what's up everyone). Paraphrase conversational/rambling sections into "
             "clean prose. The output MUST read as polished writing, never a transcription. "
             "If any filler word remains in your output, you have failed this rule.\n"
+            f"{sui_clause}"
             f"{custom_section}\n"
-            
+
             "TRANSCRIPT:\n"
             f"{text[:50000]}"
         )
@@ -315,6 +342,12 @@ def process_channel(channel_url, model, shared_context, cutoff_date, cutoff_time
             log(f"  [SKIP-TA] Technical analysis video: {title[:60]}...")
             continue
 
+        # Skip Sui-shilling videos from Raoul Pal / Real Vision (user preference)
+        _chan = channel_url.lower()
+        if ("realvision" in _chan or "raoulpal" in _chan) and _re.search(r"\bsui\b", title, _re.IGNORECASE):
+            log(f"  [SKIP-SUI] Sui video from RealVision/Raoul: {title[:60]}...")
+            continue
+
         date_info = video.get("publishedTimeText", {}).get("simpleText")
 
         pub_date = None
@@ -360,7 +393,7 @@ def process_channel(channel_url, model, shared_context, cutoff_date, cutoff_time
         log("  -> Transcript retrieved. Summarizing...")
         
         current_context_str = "\n".join(shared_context[-5:])
-        summary = summarize_text(model, transcript, current_context_str)
+        summary = summarize_text(model, transcript, current_context_str, channel_url=channel_url)
         
         if summary.strip().startswith("Skipped"):
             log(f"  -> Gemini Skipped: {summary.strip()}")
