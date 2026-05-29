@@ -87,6 +87,16 @@ def _get_groq_client():
 
 _GROQ_MODEL = os.environ.get("GROQ_MODEL", "llama-3.3-70b-versatile")
 _GROQ_MAX_RETRIES = int(os.environ.get("GROQ_MAX_RETRIES", "3"))
+# Groq free tier is ~12,000 tokens/minute. A request near/over that 429s no
+# matter how it's paced, so we route oversized requests to the local model
+# first and don't waste a doomed Groq attempt + retry on them. Default 10K
+# leaves headroom under the 12K TPM ceiling for prompt + output.
+_GROQ_TPM_SAFE_TOKENS = int(os.environ.get("GROQ_TPM_SAFE_TOKENS", "10000"))
+
+
+def _estimate_tokens(text: str) -> int:
+    """Rough token estimate (~4 chars/token) — good enough for routing."""
+    return len(text) // 4
 
 
 def _is_rate_limit_error(e: Exception) -> bool:
@@ -252,7 +262,13 @@ def generate_with_fallback(
     caller: str = "unknown",
     timeout: int = 120,
 ) -> Optional[str]:
-    """Try Gemini → Groq → extractive, returning the first success.
+    """Try Gemini → (Groq/local, ordered by size) → skip, first success wins.
+
+    Gemini is tried first when a model is provided and it's within budget.
+    The Groq/local order is token-aware: requests that fit Groq's free-tier
+    ~12K-tokens/min window try Groq first (fast) then local; oversized requests
+    that would 429 regardless go local-first (no limits) with Groq as a long
+    shot. This stops the daily burst from 429-dropping videos.
 
     Args:
         prompt: The full prompt including transcript.
@@ -287,30 +303,55 @@ def generate_with_fallback(
     else:
         gemini_failed_reason = "no model provided"
 
-    # --- Attempt 2: Groq (free tier) ---
-    groq_result = _groq_generate(prompt)
-    if groq_result:
-        _log(f"Groq fallback succeeded for {caller}")
-        return groq_result
-    if _get_groq_client() is None:
-        groq_failed_reason = "GROQ_API_KEY not configured"
-    else:
-        groq_failed_reason = "groq returned nothing (rate-limited or error)"
+    # --- Attempts 2 & 3: Groq + local, ordered by request size ---
+    # Groq is fast but capped at ~12K tokens/min on the free tier. For requests
+    # that fit, try Groq first (speed) then local. For oversized requests that
+    # would 429 regardless of pacing, go local first (no limits) and only try
+    # Groq as a long shot — so the daily 40-video burst never drops a video and
+    # never wastes time on a doomed Groq call.
+    groq_failed_reason = None
+    local_failed_reason = None
+    est_tokens = _estimate_tokens(prompt)
 
-    # --- Attempt 3: Local LLM (Ollama) — zero cost, no rate limits, offline ---
-    local_failed_reason: Optional[str] = None
-    if _LOCAL_ENABLED:
-        local_result = _ollama_generate(prompt)
-        if local_result:
-            _log(f"Local fallback ({_LOCAL_MODEL}) succeeded for {caller}")
-            return local_result
+    def _try_groq():
+        nonlocal groq_failed_reason
+        result = _groq_generate(prompt)
+        if result:
+            _log(f"Groq succeeded for {caller}")
+            return result
+        if _get_groq_client() is None:
+            groq_failed_reason = "GROQ_API_KEY not configured"
+        else:
+            groq_failed_reason = "groq returned nothing (rate-limited or error)"
+        return None
+
+    def _try_local():
+        nonlocal local_failed_reason
+        if not _LOCAL_ENABLED:
+            local_failed_reason = "disabled (ENABLE_LOCAL_FALLBACK=0)"
+            return None
+        result = _ollama_generate(prompt)
+        if result:
+            _log(f"Local ({_LOCAL_MODEL}) succeeded for {caller}")
+            return result
         local_failed_reason = "local LLM unreachable/empty (is Ollama running?)"
+        return None
+
+    if est_tokens <= _GROQ_TPM_SAFE_TOKENS:
+        order = [_try_groq, _try_local]
     else:
-        local_failed_reason = "disabled (ENABLE_LOCAL_FALLBACK=0)"
+        _log(f"Request ~{est_tokens} tok > Groq TPM-safe {_GROQ_TPM_SAFE_TOKENS} "
+             f"for {caller}; routing to local first")
+        order = [_try_local, _try_groq]
+
+    for attempt in order:
+        result = attempt()
+        if result:
+            return result
 
     # --- All providers failed ---
     _log(
-        f"ALL PROVIDERS FAILED for {caller} — "
+        f"ALL PROVIDERS FAILED for {caller} (~{est_tokens} tok) — "
         f"gemini=({gemini_failed_reason}) groq=({groq_failed_reason}) "
         f"local=({local_failed_reason}). "
         f"Skipping item (no raw-transcript fallback)."
