@@ -64,7 +64,7 @@ import urllib.error as _urlerr
 _HTTP_PROVIDERS = [
     {"name": "cerebras",     "key_env": "CEREBRAS_API_KEY",   "ceiling": 60000,
      "base": "https://api.cerebras.ai/v1",
-     "model_env": "CEREBRAS_MODEL",     "model": "llama-3.3-70b"},
+     "model_env": "CEREBRAS_MODEL",     "model": "gpt-oss-120b"},
     {"name": "cloudflare",   "key_env": "CF_API_TOKEN",       "ceiling": 60000,
      "base": "https://api.cloudflare.com/client/v4/accounts/{CF_ACCOUNT_ID}/ai/v1",
      "model_env": "CF_MODEL",           "model": "@cf/meta/llama-3.3-70b-instruct-fp8-fast"},

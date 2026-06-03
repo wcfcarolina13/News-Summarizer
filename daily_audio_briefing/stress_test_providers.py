@@ -38,7 +38,7 @@ def _load_env():
 PROVIDERS = [
     {"id": "groq",        "key_env": "GROQ_API_KEY",       "model": "llama-3.3-70b-versatile",
      "base": "https://api.groq.com/openai/v1"},
-    {"id": "cerebras",    "key_env": "CEREBRAS_API_KEY",   "model": "llama-3.3-70b",
+    {"id": "cerebras",    "key_env": "CEREBRAS_API_KEY",   "model": "gpt-oss-120b",
      "base": "https://api.cerebras.ai/v1"},
     {"id": "sambanova",   "key_env": "SAMBANOVA_API_KEY",  "model": "Meta-Llama-3.3-70B-Instruct",
      "base": "https://api.sambanova.ai/v1"},
