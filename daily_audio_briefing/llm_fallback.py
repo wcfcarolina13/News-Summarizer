@@ -1,26 +1,25 @@
 """
-LLM Fallback Chain — Gemini (free tier) → Groq (free tier) → local Ollama.
+LLM Fallback Chain — Gemini → stacked free providers → local Ollama.
 
-Provides a single generate() function that tries providers in order.
-Each provider is only attempted if it is configured/reachable. The local
-Ollama tier (gpt-oss:20b-tuned by default) is a zero-cost, no-rate-limit
-safety net so a Groq throttle or outage never silently drops an item.
-Override via env: GROQ_MODEL, GROQ_MAX_RETRIES, ENABLE_LOCAL_FALLBACK,
-OLLAMA_HOST, LOCAL_LLM_MODEL, LOCAL_LLM_TIMEOUT.
+Provides a single generate_with_fallback() that tries providers in order, first
+success wins. Gemini is first (off by default under the zero-spend budget), then
+each configured free OpenAI-compatible provider in ``_HTTP_PROVIDERS`` (Cerebras,
+Cloudflare, Groq, SambaNova, Mistral, Ollama Cloud, OpenRouter — enable one by
+adding its key to .env), then local Ollama (gpt-oss:20b-tuned) as the always-
+available, no-rate-limit floor. Stacking independent free tiers stops the daily
+burst from 429-dropping videos on any single provider's tokens/min cap.
 
-If both providers fail, ``generate_with_fallback`` returns None so the caller
-can skip the item. The previous "extractive" fallback (first-25-sentences of
-the raw transcript) was removed because it silently emitted unsummarized,
-disfluency-laden transcript text into the audio brief.
+Override any provider model via the matching *_MODEL env var; local tier via
+ENABLE_LOCAL_FALLBACK, OLLAMA_HOST, LOCAL_LLM_MODEL, LOCAL_LLM_TIMEOUT.
 
-Set ALLOW_EXTRACTIVE=1 in the environment to opt back into the old behaviour
-if you really want a degraded-but-present output.
+If all providers fail, ``generate_with_fallback`` returns None so the caller can
+skip the item. The previous "extractive" fallback (first-25-sentences of the raw
+transcript) was removed because it silently emitted unsummarized, disfluency-
+laden transcript text into the audio brief. Set ALLOW_EXTRACTIVE=1 to opt back in.
 """
 
 import os
 import re
-import time
-import threading
 from typing import Optional
 
 # Default to ON — fall-through events are rare and important. Set
@@ -43,55 +42,48 @@ def _log(msg: str):
 
 
 # ---------------------------------------------------------------------------
-# Groq provider (free tier: 30 RPM, 14.4K tokens/min on Llama models)
+# Stacked free OpenAI-compatible providers.
+#
+# Each entry is an independent free tier; stacking them spreads the daily
+# briefing burst across separate rate-limit pools so no single provider's
+# tokens/minute cap silently drops a video. All are security-audited (2026-06-03)
+# as safe for this zero-spend automated use: they don't train on free-tier API
+# data (Groq, Cerebras, Cloudflare, SambaNova, Ollama Cloud), or training is
+# user-disabled (Mistral, OpenRouter). Add a key to .env to enable a provider;
+# providers without a key are skipped silently.
+#
+# Ordered by priority — highest sustained throughput first. `ceiling` is the
+# per-request token cap above which a provider would 429 on its per-minute
+# limit regardless of pacing, so we skip it for oversized requests.
+# Override any model via the matching *_MODEL env var.
 # ---------------------------------------------------------------------------
-_groq_client = None
-_groq_lock = threading.Lock()
+import json as _json
+import urllib.request as _urlreq
+import urllib.error as _urlerr
 
-
-def _get_groq_client():
-    global _groq_client
-    if _groq_client is not None:
-        return _groq_client
-
-    key = os.environ.get("GROQ_API_KEY") or ""
-    if not key:
-        # Also check .env file in the script directory
-        env_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), ".env")
-        if os.path.exists(env_path):
-            with open(env_path, "r") as f:
-                for line in f:
-                    line = line.strip()
-                    if line.startswith("GROQ_API_KEY="):
-                        key = line.split("=", 1)[1].strip().strip("'\"")
-                        break
-
-    if not key:
-        return None
-
-    with _groq_lock:
-        if _groq_client is not None:
-            return _groq_client
-        try:
-            from groq import Groq
-            _groq_client = Groq(api_key=key)
-            _log("Groq client initialized")
-            return _groq_client
-        except ImportError:
-            _log("groq SDK not installed — pip install groq")
-            return None
-        except Exception as e:
-            _log(f"Groq init error: {e}")
-            return None
-
-
-_GROQ_MODEL = os.environ.get("GROQ_MODEL", "llama-3.3-70b-versatile")
-_GROQ_MAX_RETRIES = int(os.environ.get("GROQ_MAX_RETRIES", "3"))
-# Groq free tier is ~12,000 tokens/minute. A request near/over that 429s no
-# matter how it's paced, so we route oversized requests to the local model
-# first and don't waste a doomed Groq attempt + retry on them. Default 10K
-# leaves headroom under the 12K TPM ceiling for prompt + output.
-_GROQ_TPM_SAFE_TOKENS = int(os.environ.get("GROQ_TPM_SAFE_TOKENS", "10000"))
+_HTTP_PROVIDERS = [
+    {"name": "cerebras",     "key_env": "CEREBRAS_API_KEY",   "ceiling": 60000,
+     "base": "https://api.cerebras.ai/v1",
+     "model_env": "CEREBRAS_MODEL",     "model": "llama-3.3-70b"},
+    {"name": "cloudflare",   "key_env": "CF_API_TOKEN",       "ceiling": 60000,
+     "base": "https://api.cloudflare.com/client/v4/accounts/{CF_ACCOUNT_ID}/ai/v1",
+     "model_env": "CF_MODEL",           "model": "@cf/meta/llama-3.3-70b-instruct-fp8-fast"},
+    {"name": "groq",         "key_env": "GROQ_API_KEY",       "ceiling": 10000,
+     "base": "https://api.groq.com/openai/v1",
+     "model_env": "GROQ_MODEL",         "model": "llama-3.3-70b-versatile"},
+    {"name": "sambanova",    "key_env": "SAMBANOVA_API_KEY",  "ceiling": 16000,
+     "base": "https://api.sambanova.ai/v1",
+     "model_env": "SAMBANOVA_MODEL",    "model": "Meta-Llama-3.3-70B-Instruct"},
+    {"name": "mistral",      "key_env": "MISTRAL_API_KEY",    "ceiling": 30000,
+     "base": "https://api.mistral.ai/v1",
+     "model_env": "MISTRAL_MODEL",      "model": "mistral-medium-latest"},
+    {"name": "ollama_cloud", "key_env": "OLLAMA_API_KEY",     "ceiling": 60000,
+     "base": "https://ollama.com/v1",
+     "model_env": "OLLAMA_CLOUD_MODEL", "model": "gpt-oss:120b"},
+    {"name": "openrouter",   "key_env": "OPENROUTER_API_KEY", "ceiling": 30000,
+     "base": "https://openrouter.ai/api/v1",
+     "model_env": "OPENROUTER_MODEL",   "model": "meta-llama/llama-3.3-70b-instruct:free"},
+]
 
 
 def _estimate_tokens(text: str) -> int:
@@ -99,58 +91,87 @@ def _estimate_tokens(text: str) -> int:
     return len(text) // 4
 
 
-def _is_rate_limit_error(e: Exception) -> bool:
-    """Detect a 429 / rate-limit error across groq SDK versions."""
-    if e.__class__.__name__ in ("RateLimitError", "TooManyRequests"):
-        return True
-    if getattr(e, "status_code", None) == 429 or getattr(e, "code", None) == 429:
-        return True
-    return "rate limit" in str(e).lower() or "429" in str(e)
-
-
-def _retry_after_seconds(e: Exception, attempt: int) -> float:
-    """Honour a Retry-After header if present; else exponential backoff (capped)."""
-    resp = getattr(e, "response", None)
-    if resp is not None:
+def _load_key(env_name: str) -> Optional[str]:
+    """Return a key from the environment, falling back to the script-dir .env."""
+    val = os.environ.get(env_name)
+    if val:
+        return val
+    env_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), ".env")
+    if os.path.exists(env_path):
         try:
-            ra = resp.headers.get("retry-after")
-            if ra:
-                return min(float(ra), 30.0)
+            with open(env_path, "r") as f:
+                for line in f:
+                    line = line.strip()
+                    if line.startswith(f"{env_name}="):
+                        return line.split("=", 1)[1].strip().strip("'\"")
         except Exception:
             pass
-    return min(2.0 * (2 ** attempt), 30.0)  # 2s, 4s, 8s … capped at 30s
-
-
-def _groq_generate(prompt: str, max_tokens: int = 4096) -> Optional[str]:
-    """Call Groq's free-tier Llama model, retrying on 429. None on hard failure.
-
-    The free tier throttles on tokens-per-minute, which is easy to hit on a burst
-    of long transcripts. Without retry a throttled video was silently dropped.
-    """
-    client = _get_groq_client()
-    if not client:
-        return None
-
-    for attempt in range(_GROQ_MAX_RETRIES):
-        try:
-            response = client.chat.completions.create(
-                model=_GROQ_MODEL,
-                messages=[{"role": "user", "content": prompt}],
-                max_tokens=max_tokens,
-                temperature=0.3,
-            )
-            text = response.choices[0].message.content
-            _log(f"Groq returned {len(text)} chars")
-            return text
-        except Exception as e:
-            if _is_rate_limit_error(e) and attempt < _GROQ_MAX_RETRIES - 1:
-                wait = _retry_after_seconds(e, attempt)
-                _log(f"Groq 429/rate-limited (attempt {attempt + 1}/{_GROQ_MAX_RETRIES}); retrying in {wait:.0f}s")
-                time.sleep(wait)
-                continue
-            _log(f"Groq error: {e}")
-            return None
     return None
+
+
+def _provider_base_url(p: dict) -> Optional[str]:
+    """Resolve URL placeholders (e.g. Cloudflare's account id). None if unresolved."""
+    base = p["base"]
+    if "{CF_ACCOUNT_ID}" in base:
+        acct = _load_key("CF_ACCOUNT_ID")
+        if not acct:
+            return None
+        base = base.replace("{CF_ACCOUNT_ID}", acct)
+    return base
+
+
+def _http_provider_generate(p: dict, prompt: str, max_tokens: int = 4096,
+                            timeout: int = 120) -> Optional[str]:
+    """Call one OpenAI-compatible provider. None on any failure (caller moves on).
+
+    A real User-Agent is required — several of these APIs are Cloudflare-fronted
+    and 403 (error 1010) a bare urllib UA. On 429 we return None immediately so
+    the chain falls through to the next provider's independent pool rather than
+    sleeping; local Ollama is the floor under all of them.
+    """
+    key = _load_key(p["key_env"])
+    if not key:
+        return None
+    base = _provider_base_url(p)
+    if not base:
+        _log(f"{p['name']} skipped: unresolved URL (missing CF_ACCOUNT_ID?)")
+        return None
+    model = os.environ.get(p.get("model_env", "")) or p["model"]
+    payload = _json.dumps({
+        "model": model,
+        "messages": [{"role": "user", "content": prompt}],
+        "max_tokens": max_tokens,
+        "temperature": 0.3,
+    }).encode("utf-8")
+    headers = {
+        "Content-Type": "application/json",
+        "User-Agent": "daily-audio-briefing/1.0",
+        "Authorization": f"Bearer {key}",
+    }
+    req = _urlreq.Request(base + "/chat/completions", data=payload, headers=headers)
+    try:
+        with _urlreq.urlopen(req, timeout=timeout) as resp:
+            data = _json.loads(resp.read())
+        msg = (data.get("choices") or [{}])[0].get("message", {})
+        # gpt-oss/reasoning models may leave content empty and use reasoning fields.
+        text = (msg.get("content") or msg.get("reasoning_content")
+                or msg.get("reasoning") or "").strip()
+        if text:
+            _log(f"{p['name']} ({model}) returned {len(text)} chars")
+            return text
+        _log(f"{p['name']} returned empty response")
+        return None
+    except _urlerr.HTTPError as e:
+        body = ""
+        try:
+            body = e.read().decode()[:120]
+        except Exception:
+            pass
+        _log(f"{p['name']} HTTP {e.code}: {body[:100]}")
+        return None
+    except Exception as e:
+        _log(f"{p['name']} error: {type(e).__name__}: {e}")
+        return None
 
 
 # ---------------------------------------------------------------------------
@@ -262,25 +283,25 @@ def generate_with_fallback(
     caller: str = "unknown",
     timeout: int = 120,
 ) -> Optional[str]:
-    """Try Gemini → (Groq/local, ordered by size) → skip, first success wins.
+    """Try Gemini → stacked free providers → local Ollama; first success wins.
 
-    Gemini is tried first when a model is provided and it's within budget.
-    The Groq/local order is token-aware: requests that fit Groq's free-tier
-    ~12K-tokens/min window try Groq first (fast) then local; oversized requests
-    that would 429 regardless go local-first (no limits) with Groq as a long
-    shot. This stops the daily burst from 429-dropping videos.
+    Gemini is tried first when a model is provided and within budget (it's off
+    by default under the zero-spend budget). Then each configured provider in
+    ``_HTTP_PROVIDERS`` is tried in priority order, skipping any whose per-
+    request token ceiling this request would blow. Local Ollama is the floor.
+    Stacking independent free tiers stops the daily burst from 429-dropping
+    videos on any single provider's tokens/min cap.
 
     Args:
         prompt: The full prompt including transcript.
         gemini_model: A google.generativeai model instance (or None to skip).
         caller: Caller identifier for tracking.
-        timeout: Timeout for Gemini calls.
+        timeout: Per-provider request timeout.
 
     Returns:
         Generated text, or None if all providers fail.
     """
     gemini_failed_reason: Optional[str] = None
-    groq_failed_reason: Optional[str] = None
 
     # --- Attempt 1: Gemini (free tier) ---
     if gemini_model is not None:
@@ -303,56 +324,43 @@ def generate_with_fallback(
     else:
         gemini_failed_reason = "no model provided"
 
-    # --- Attempts 2 & 3: Groq + local, ordered by request size ---
-    # Groq is fast but capped at ~12K tokens/min on the free tier. For requests
-    # that fit, try Groq first (speed) then local. For oversized requests that
-    # would 429 regardless of pacing, go local first (no limits) and only try
-    # Groq as a long shot — so the daily 40-video burst never drops a video and
-    # never wastes time on a doomed Groq call.
-    groq_failed_reason = None
-    local_failed_reason = None
+    # --- Attempts 2+: stacked free providers, then the local floor ---
+    # Each provider is an independent free rate-limit pool, so trying them in
+    # turn spreads the daily 40-video burst across separate token/min caps — no
+    # single provider's throttle drops a video. Skip any provider whose per-
+    # request token ceiling this request would blow (it'd 429 regardless), and
+    # move straight to the next pool on any failure. Local Ollama is the floor.
     est_tokens = _estimate_tokens(prompt)
+    provider_failures = []
 
-    def _try_groq():
-        nonlocal groq_failed_reason
-        result = _groq_generate(prompt)
+    for p in _HTTP_PROVIDERS:
+        if not _load_key(p["key_env"]):
+            continue  # not configured — skip silently
+        if est_tokens > p["ceiling"]:
+            _log(f"Skipping {p['name']} for {caller}: ~{est_tokens} tok > ceiling {p['ceiling']}")
+            continue
+        result = _http_provider_generate(p, prompt, timeout=timeout)
         if result:
-            _log(f"Groq succeeded for {caller}")
+            _log(f"{p['name']} succeeded for {caller}")
             return result
-        if _get_groq_client() is None:
-            groq_failed_reason = "GROQ_API_KEY not configured"
-        else:
-            groq_failed_reason = "groq returned nothing (rate-limited or error)"
-        return None
+        provider_failures.append(p["name"])
 
-    def _try_local():
-        nonlocal local_failed_reason
-        if not _LOCAL_ENABLED:
-            local_failed_reason = "disabled (ENABLE_LOCAL_FALLBACK=0)"
-            return None
+    # Local Ollama floor — always-available, no rate limit.
+    local_failed_reason = None
+    if _LOCAL_ENABLED:
         result = _ollama_generate(prompt)
         if result:
             _log(f"Local ({_LOCAL_MODEL}) succeeded for {caller}")
             return result
-        local_failed_reason = "local LLM unreachable/empty (is Ollama running?)"
-        return None
-
-    if est_tokens <= _GROQ_TPM_SAFE_TOKENS:
-        order = [_try_groq, _try_local]
+        local_failed_reason = "local unreachable/empty (is Ollama running?)"
     else:
-        _log(f"Request ~{est_tokens} tok > Groq TPM-safe {_GROQ_TPM_SAFE_TOKENS} "
-             f"for {caller}; routing to local first")
-        order = [_try_local, _try_groq]
-
-    for attempt in order:
-        result = attempt()
-        if result:
-            return result
+        local_failed_reason = "disabled (ENABLE_LOCAL_FALLBACK=0)"
 
     # --- All providers failed ---
     _log(
         f"ALL PROVIDERS FAILED for {caller} (~{est_tokens} tok) — "
-        f"gemini=({gemini_failed_reason}) groq=({groq_failed_reason}) "
+        f"gemini=({gemini_failed_reason}) "
+        f"http=({', '.join(provider_failures) or 'none configured'}) "
         f"local=({local_failed_reason}). "
         f"Skipping item (no raw-transcript fallback)."
     )
