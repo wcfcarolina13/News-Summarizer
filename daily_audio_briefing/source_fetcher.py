@@ -493,6 +493,13 @@ class SourceFetcher:
                     _debug_log(f"[YouTube] Skipping TA video by title: {title[:50]}...")
                     continue
 
+                # Skip channels that are 100% chart/technical-analysis trading.
+                # Their titles are often vague clickbait ("Bitcoin: Up or Down?")
+                # that the title filter can't catch, so block the whole channel.
+                if self._is_ta_channel(source.url, channel_name):
+                    _debug_log(f"[YouTube] Skipping TA-channel video: {title[:50]}...")
+                    continue
+
                 # Skip Sui-shilling videos from Raoul Pal / Real Vision (user preference)
                 if self._is_sui_from_promo_channel(title, source.url, channel_name):
                     _debug_log(f"[YouTube] Skipping Sui-from-RealVision/Raoul: {title[:50]}...")
@@ -523,10 +530,16 @@ class SourceFetcher:
 
                 _debug_log(f"[YouTube] Got summary ({len(summary)} chars)")
 
-                # Skip if AI flagged as technical analysis
+                # Skip if AI flagged as technical analysis, OR if the finished
+                # summary is chart-dense (safety net for when the free fallback
+                # models ignore the SKIP_TA instruction).
                 if summary.strip().startswith("SKIP_TA") or (summary.strip().startswith("Skipped") and "technical analysis" in summary.lower()):
                     _debug_log(f"[YouTube] AI skipped as TA: {title[:40]}...")
                     newly_processed.append(video_id)  # still cache it so we don't re-process
+                    continue
+                if self._looks_like_ta_summary(summary):
+                    _debug_log(f"[YouTube] Skipping TA-dense summary (post-filter): {title[:40]}...")
+                    newly_processed.append(video_id)  # cache so we don't re-process
                     continue
 
                 items.append(FetchedItem(
@@ -691,6 +704,60 @@ class SourceFetcher:
             return True
         title_lower = title.lower()
         return any(kw in title_lower for kw in self._TA_KEYWORDS)
+
+    # Channels whose output is essentially all chart / technical-analysis
+    # trading. Every video from these is hard-skipped before summarizing, since
+    # their titles are often vague clickbait the title regex can't catch.
+    # Use the FULL distinctive handle so the news channel @CoinBureau is NOT
+    # caught by the @CoinBureauTrading entry.
+    _TA_CHANNELS = (
+        'coinbureautrading',
+        'limitless-ft',
+        'damoncassidy',
+        'mooninpapa',
+    )
+
+    def _is_ta_channel(self, source_url: str, channel_name: str = "") -> bool:
+        """True if the source is a dedicated technical-analysis trading channel."""
+        haystack = f"{source_url} {channel_name}".lower().replace(" ", "")
+        return any(c in haystack for c in self._TA_CHANNELS)
+
+    # Distinctive chart/technical-analysis vocabulary. Deliberately excludes
+    # generic finance words (leverage, rally, all-time high) that show up in
+    # legitimate macro coverage. Used as a model-independent safety net: the
+    # free fallback models (Groq/local) under-trigger the prompt's SKIP_TA
+    # rule, so we also count TA terms in the FINISHED summary and drop it if
+    # it's chart-dense.
+    _TA_SUMMARY_TERMS = (
+        'bear flag', 'bull flag', 'falling wedge', 'rising wedge',
+        'head and shoulders', 'double bottom', 'double top',
+        'fibonacci', 'retracement', 'oversold', 'overbought',
+        'rsi', 'macd', 'bollinger', 'ichimoku', 'moving average',
+        'candlestick', 'inverted hammer', 'bullish engulfing',
+        'bearish engulfing', 'doji', 'order block',
+        'support and resistance', 'support level', 'resistance level',
+        'support trend', 'resistance trend', 'trend line', 'trendline',
+        'four-hour chart', 'hourly chart', 'daily chart', 'weekly chart',
+        'on the chart', 'price target', 'consolidation', 'fib',
+    )
+    # Match each term on word boundaries so short tokens like 'rsi' don't fire
+    # inside innocent words ('Persian', 'persist', 'university').
+    _TA_SUMMARY_RE = re.compile(
+        '|'.join(r'\b' + re.escape(t) + r'\b' for t in _TA_SUMMARY_TERMS)
+    )
+    # Flag a summary as TA when at least this many DISTINCT terms appear.
+    _TA_SUMMARY_THRESHOLD = 4
+
+    def _looks_like_ta_summary(self, summary: str) -> bool:
+        """True if a finished summary is dense with chart/TA vocabulary.
+
+        Normalizes unicode hyphens/dashes so 'four-hour chart' matches whether
+        the model emitted an ASCII hyphen, a non-breaking hyphen, or an en-dash.
+        """
+        text = summary.lower()
+        for dash in ('‐', '‑', '‒', '–', '—', '−'):
+            text = text.replace(dash, '-')
+        return len(set(self._TA_SUMMARY_RE.findall(text))) >= self._TA_SUMMARY_THRESHOLD
 
     # Channels operated by Raoul Pal / Real Vision, which relentlessly promote Sui.
     # Per user preference, Sui content from these sources is filtered out entirely.
