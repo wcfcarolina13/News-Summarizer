@@ -962,17 +962,49 @@ Your output goes directly to TTS. Any markdown, preambles, or raw transcript spe
             return None
 
     def _summarize_article(self, title: str, content: str, custom_instructions: str) -> str:
-        """Summarize article content using Gemini.
+        """Summarize article content for the audio briefing.
 
-        Only summarizes if the content is long enough to warrant it.
-        Short articles are returned as-is.
+        Short articles are returned as-is. Articles that fit in one pass are
+        summarized directly; longer bodies (for example long weekly roundup posts)
+        are map-reduced so the entire article is covered rather than clipped.
         """
-        # Don't summarize if content is already short (less than 1500 chars)
         if len(content) < 1500:
             _debug_log(f"[Article] Content short ({len(content)} chars), keeping as-is")
             return content
 
+        if len(content) <= _ARTICLE_CHUNK_CHARS:
+            return self._summarize_article_once(title, content, custom_instructions)
+
+        # Long body: summarize each section, then fold the section summaries into
+        # one briefing summary so nothing in the body is dropped.
+        chunks = _split_text(content, _ARTICLE_CHUNK_CHARS)
+        _debug_log(f"[Article] Long body ({len(content)} chars), map-reduce over {len(chunks)} sections")
+        partials = []
+        for idx, chunk in enumerate(chunks, 1):
+            part = self._summarize_article_once(
+                f"{title} (section {idx} of {len(chunks)})", chunk,
+                custom_instructions, comprehensive=True,
+            )
+            if part:
+                partials.append(part)
+        if not partials:
+            return None
+        # Reduce deterministically: each section summary is already clean TTS prose,
+        # so join them rather than risk a second LLM pass garbling the whole article
+        # (a weak fallback model can leak reasoning or loop on the combine step).
+        return "\n\n".join(partials)
+
+    def _summarize_article_once(self, title: str, content: str, custom_instructions: str,
+                                comprehensive: bool = False) -> str:
+        """Summarize one block of article text in a single pass (TTS-ready)."""
         try:
+            length_rule = (
+                "5. Be thorough: cover every distinct topic, development, argument, data "
+                "point, and named entity in this text. Let the length scale with the "
+                "material; do not omit substance to save space."
+                if comprehensive else
+                "5. Keep it concise (two to four paragraphs) but comprehensive and conversational."
+            )
             model = self._get_model()
 
             base_prompt = f"""Summarize this article for an audio news briefing.
@@ -1004,15 +1036,15 @@ CRITICAL FORMAT REQUIREMENTS - THIS WILL BE READ ALOUD BY TEXT-TO-SPEECH:
    - "January 17" becomes "January seventeenth"
    - "2026" becomes "twenty twenty-six"
 
-5. Keep it concise (two to four paragraphs) but comprehensive and conversational.
+{length_rule}
 
 Your output goes directly to TTS. Any markdown or preambles will sound wrong when read aloud.
 """
 
             if custom_instructions:
-                prompt = f"{base_prompt}\n\nAdditional preferences:\n{custom_instructions}\n\nArticle Content:\n{content[:15000]}"
+                prompt = f"{base_prompt}\n\nAdditional preferences:\n{custom_instructions}\n\nArticle Content:\n{content}"
             else:
-                prompt = f"{base_prompt}\n\nArticle Content:\n{content[:15000]}"
+                prompt = f"{base_prompt}\n\nArticle Content:\n{content}"
 
             from llm_fallback import generate_with_fallback
             result = generate_with_fallback(
@@ -1024,8 +1056,8 @@ Your output goes directly to TTS. Any markdown or preambles will sound wrong whe
 
         except Exception as e:
             _debug_log(f"[Article] Summarization error: {e}")
-            # Return first portion of content as fallback
-            return content[:2000] + "..." if len(content) > 2000 else content
+            # Return first portion of content as fallback (no ellipsis; reads poorly in TTS)
+            return content[:2000] if len(content) > 2000 else content
 
     def summarize_article_content(self, title: str, content: str, custom_instructions: str = "") -> str:
         """Public method to summarize article content.
@@ -1074,7 +1106,16 @@ Your output goes directly to TTS. Any markdown or preambles will sound wrong whe
                 try:
                     title_elem = entry.find('title')
                     link_elem = entry.find('link')
-                    desc_elem = entry.find('description') or entry.find('summary') or entry.find('content')
+                    # Prefer the full post body (<content:encoded>, used by Substack and
+                    # most blog feeds) over the short <description> subtitle, so long posts
+                    # get a real summary instead of a truncated teaser.
+                    desc_elem = (
+                        entry.find('content:encoded')
+                        or entry.find('encoded')
+                        or entry.find('description')
+                        or entry.find('summary')
+                        or entry.find('content')
+                    )
                     date_elem = entry.find('pubDate') or entry.find('published') or entry.find('updated')
 
                     # Get link URL
@@ -1098,11 +1139,22 @@ Your output goes directly to TTS. Any markdown or preambles will sound wrong whe
                     # Get description/content
                     content = ""
                     if desc_elem:
-                        # Clean HTML from description
+                        # desc_elem text is HTML (CDATA for content:encoded); strip to prose
                         desc_soup = BeautifulSoup(desc_elem.get_text(), 'html.parser')
                         content = desc_soup.get_text(strip=True)
 
                     title = title_elem.get_text(strip=True) if title_elem else ""
+
+                    # Summarize long posts (e.g. Substack) into clean TTS-ready prose.
+                    # _summarize_article returns short blurbs (< 1500 chars) unchanged and
+                    # caps very long bodies, so this is safe for any feed shape.
+                    summary = None
+                    if content:
+                        try:
+                            summary = self._summarize_article(title, content, custom_instructions)
+                        except Exception as e:
+                            _debug_log(f"[RSS] Summarization failed for {title[:40]}: {e}")
+                            summary = content[:500]
 
                     items.append(FetchedItem(
                         title=title,
@@ -1111,7 +1163,7 @@ Your output goes directly to TTS. Any markdown or preambles will sound wrong whe
                         source_name=source_name,
                         source_type=SourceType.RSS,
                         published_date=pub_date,
-                        summary=content[:500] if content else None  # Use description as summary
+                        summary=summary
                     ))
 
                 except Exception as e:
@@ -1541,9 +1593,13 @@ Your output goes directly to TTS. Any markdown or preambles will sound wrong whe
 
         This extracts article links from the page for later selection.
         """
-        # For article archives, we return empty here - the actual fetching
-        # happens through the GUI selector dialog
-        # This method just validates the source can be accessed
+        # Article-archive scraping only runs interactively through the GUI selector
+        # dialog; the automated daemon has no selection step, so this fetches nothing.
+        # Warn loudly so a source mistyped as article_archive is not silently dropped.
+        _debug_log(
+            f"[Archive] {source.url} is type article_archive (GUI-only); it contributes "
+            f"NOTHING to the automated brief. Use type youtube, rss, or newsletter instead."
+        )
         return []
 
     def extract_archive_links(
@@ -1741,6 +1797,34 @@ Your output goes directly to TTS. Any markdown or preambles will sound wrong whe
             return "", ""
 
 
+_ARTICLE_CHUNK_CHARS = 50000  # max chars summarized in one pass; longer bodies are map-reduced
+
+
+def _split_text(text: str, size: int) -> List[str]:
+    """Split text into chunks of at most `size` chars, preferring paragraph, then
+    line, then sentence boundaries so a chunk never starts mid-sentence."""
+    if len(text) <= size:
+        return [text]
+    chunks, start, n = [], 0, len(text)
+    while start < n:
+        if n - start <= size:
+            chunks.append(text[start:].strip())
+            break
+        window = text[start:start + size]
+        floor = int(size * 0.8)
+        cut = -1
+        for sep, keep in (("\n\n", 0), ("\n", 0), (". ", 1)):
+            pos = window.rfind(sep)
+            if pos >= floor:
+                cut = pos + keep
+                break
+        if cut < 0:
+            cut = size
+        chunks.append(text[start:start + cut].strip())
+        start += cut
+    return [c for c in chunks if c]
+
+
 def _clean_title_for_audio(title: str) -> str:
     """Clean a title for text-to-speech by removing/replacing problematic symbols."""
     import re
@@ -1789,9 +1873,10 @@ def format_items_for_audio(items: List[FetchedItem]) -> str:
         for item in youtube_items:
             date_str = item.published_date.strftime("%B %d, %Y") if item.published_date else "recent"
             clean_title = _clean_title_for_audio(item.title)
+            channel = _clean_title_for_audio(item.source_name) if item.source_name else "YouTube"
 
-            # Natural spoken intro instead of "Title (Date):"
-            output_parts.append(f"\nRegarding the video titled {clean_title}, published {date_str}.\n")
+            # Name the channel each segment is from (spoken, TTS-safe)
+            output_parts.append(f"\nFrom {channel}, the video titled {clean_title}, published {date_str}.\n")
 
             if item.summary:
                 output_parts.append(f"{item.summary}\n")
