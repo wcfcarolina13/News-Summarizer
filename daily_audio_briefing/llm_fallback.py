@@ -67,7 +67,7 @@ _HTTP_PROVIDERS = [
      "model_env": "CEREBRAS_MODEL",     "model": "gpt-oss-120b"},
     {"name": "cloudflare",   "key_env": "CF_API_TOKEN",       "ceiling": 60000,
      "base": "https://api.cloudflare.com/client/v4/accounts/{CF_ACCOUNT_ID}/ai/v1",
-     "model_env": "CF_MODEL",           "model": "@cf/nvidia/nemotron-3-120b-a12b"},
+     "model_env": "CF_MODEL",           "model": "@cf/openai/gpt-oss-120b"},  # matches Cerebras/Groq; nemotron-3-120b leaked reasoning + looped on long inputs
     {"name": "groq",         "key_env": "GROQ_API_KEY",       "ceiling": 10000,
      "base": "https://api.groq.com/openai/v1",
      "model_env": "GROQ_MODEL",         "model": "openai/gpt-oss-120b"},
