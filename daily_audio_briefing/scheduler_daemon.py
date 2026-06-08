@@ -48,15 +48,28 @@ def get_daemon_paths():
 
 
 def setup_logging(log_file: str):
-    """Configure logging for the daemon."""
+    """Configure logging for the daemon — exactly one writer to log_file.
+
+    The daemon's stdout/stderr are already redirected to log_file (launchd's
+    StandardOut/ErrorPath under `run`, daemonize()'s dup2 under `start`). The
+    old config ALSO attached a logging.FileHandler, a second independent file
+    description on the same path; its offset raced the stdout redirect, so
+    every record landed twice and the racing writes left NUL-filled gaps.
+
+    Fix: log through stdout only (no FileHandler), and fold stderr into stdout
+    so the daemon's logging, its print()s, and any child process (yt-dlp, TTS)
+    all share ONE file description — no duplicate lines, no NUL. Under `start`
+    the dup2 is a harmless no-op (daemonize already pointed both fds at it).
+    """
     logging.basicConfig(
         level=logging.INFO,
         format='%(asctime)s [%(levelname)s] %(message)s',
-        handlers=[
-            logging.FileHandler(log_file),
-            logging.StreamHandler()  # Also log to console if running in foreground
-        ]
+        handlers=[logging.StreamHandler(sys.stdout)],
     )
+    try:
+        os.dup2(sys.stdout.fileno(), sys.stderr.fileno())
+    except (OSError, ValueError, AttributeError):
+        pass  # stdout isn't a real fd (interactive run) — nothing to merge
     return logging.getLogger('scheduler_daemon')
 
 
