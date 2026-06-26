@@ -43,7 +43,7 @@ Extraction configs: `extraction_instructions/*.json` (execsum, rwa, cryptosum, _
 ## ⚠️ Where the daily briefing ACTUALLY runs (read before debugging output)
 
 The scheduled briefing the user listens to is **NOT** produced by the `.app` bundle and
-**NOT** by `/Users/roti/News-Summarizer/` (that is a stale clone — ignore it). It is produced by:
+**NOT** by `~/News-Summarizer/` (that is a stale clone — ignore it). It is produced by:
 
 - **This repo**, run live as a LaunchAgent: `~/Library/LaunchAgents/com.dailyaudiobriefing.scheduler.plist`
   (`Label=com.dailyaudiobriefing.scheduler`, `KeepAlive=true`) running
