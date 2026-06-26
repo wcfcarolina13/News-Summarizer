@@ -843,7 +843,7 @@ class Scheduler:
             6. Upload audio to Google Drive (if configured)
         """
         from source_fetcher import load_sources, SourceFetcher, format_items_for_audio
-        from vault_newsletters import load_vault_newsletter_items
+        from local_markdown_source import load_local_markdown_items
         from file_manager import FileManager
 
         fm = FileManager()
@@ -993,16 +993,17 @@ class Scheduler:
                 article_instructions=custom_instructions,
             )
 
-            # Reuse already-processed Pontus newsletter content (The Batch, Dan Go)
-            # instead of re-fetching/re-summarizing — each issue voiced once via cache.
+            # Reuse already-summarized local markdown notes (e.g. newsletters processed by
+            # another pipeline) instead of re-fetching/re-summarizing — each note voiced once
+            # via cache. Configured via local_sources.json; a no-op when absent. See
+            # local_markdown_source.py / local_sources.example.json.
             try:
-                vault_dir = os.environ.get("PONTUS_VAULT_DIR", os.path.expanduser("~/pontus/vault"))
-                vault_items = load_vault_newsletter_items(data_dir, vault_dir)
-                if vault_items:
-                    items.extend(vault_items)
-                    self._log(task.id, f"[Pipeline] Added {len(vault_items)} vault newsletter item(s)")
+                local_items = load_local_markdown_items(data_dir)
+                if local_items:
+                    items.extend(local_items)
+                    self._log(task.id, f"[Pipeline] Added {len(local_items)} local markdown item(s)")
             except Exception as _ve:
-                self._log(task.id, f"[Pipeline] vault newsletter inject skipped: {_ve}")
+                self._log(task.id, f"[Pipeline] local markdown inject skipped: {_ve}")
 
             if not items:
                 task.last_result = "No items found from sources"

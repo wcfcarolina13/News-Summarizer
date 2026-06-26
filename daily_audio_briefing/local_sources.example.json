@@ -1,0 +1,16 @@
+{
+  "_comment": "OPTIONAL. Reuse markdown you already summarize elsewhere as briefing segments, instead of re-fetching + re-summarizing (saves AI cost). Copy to local_sources.json (gitignored). Delete the file or set every folder enabled:false to disable. base_dir can also come from the LOCAL_MARKDOWN_DIR env var (or the legacy PONTUS_VAULT_DIR) — the env var overrides base_dir, but you still configure your folders here.",
+  "base_dir": "~/notes",
+  "lookback_days": 10,
+  "folders": [
+    {
+      "subdir": "newsletters/the-batch",
+      "source_name": "The Batch",
+      "enabled": true,
+      "date_keys": ["date_published", "date_added", "date"],
+      "date_from_filename": true,
+      "exclude_filename_contains": ["Log", "Index"],
+      "min_chars": 80
+    }
+  ]
+}

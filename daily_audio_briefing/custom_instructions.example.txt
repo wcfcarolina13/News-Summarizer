@@ -1,0 +1,18 @@
+# Copy this file to custom_instructions.txt and edit it for your interests.
+# These instructions are MANDATORY filters the summarizer obeys for every source —
+# they override "be comprehensive". Be concrete about what to KEEP and what to DROP.
+
+I'm interested in [your topics here — e.g. technology, science, business]. I want to learn
+what's new, what's being built, and the concrete details — not hype.
+
+Focus on:
+- What's actually new, shipped, or changing: tools, products, results — and how they work
+- Concrete facts, numbers, names, and specifics over vibes; name the people/companies/projects
+- The reasoning behind a claim, not just the claim
+
+Omit entirely:
+- Marketing, sales pitches, demos, promo/discount codes, advertisements, and sponsor reads
+- Invitations to join/subscribe to a community, Discord, Telegram, Patreon, newsletter, or paid platform
+- [Add your own no-go topics here]
+
+If the same material appears across several sources, condense and de-duplicate it.

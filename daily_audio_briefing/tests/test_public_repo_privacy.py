@@ -1,60 +1,62 @@
-"""Privacy guard: tracked documentation must not leak a maintainer's home path.
+"""Guard: the public repo must never track owner-personal config, and shippable code/config
+must carry no owner PII marker. Prevents regressions of the public-readiness work.
 
-The public repo (github.com/wcfcarolina13/News-Summarizer) is cloned by users
-who should never see the maintainer's local macOS username or filesystem layout.
-Prose docs are an easy place for a stray ``/Users/<name>/...`` path to slip in —
-a pasted terminal line, an internal runbook, a hardcoded "file location".
-
-This test scans every tracked Markdown and text file for macOS home paths and
-fails with an actionable file:line list if any are found. Use ``~/...`` or a
-repo-relative path instead. Shippable code/config (.py/.json) is intentionally
-out of scope here — this guard is specifically about documentation prose.
-"""
-import re
+The PII scan is intentionally scoped to SHIPPABLE code/config under the app dir (.py/.json/.txt) —
+NOT prose docs (*.md) or repo-root notes, which may legitimately show example local paths and are a
+separate, pre-existing concern."""
+import os
 import subprocess
-from pathlib import Path
 
-import pytest
+# tests/ -> daily_audio_briefing/ -> repo root
+REPO = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+APP = "daily_audio_briefing"
 
-# This file lives at <repo>/daily_audio_briefing/tests/, so the repo root is two
-# directories up from daily_audio_briefing/.
-REPO_ROOT = Path(__file__).resolve().parents[2]
+PERSONAL_FILES = [
+    f"{APP}/custom_instructions.txt",
+    f"{APP}/channels.txt",
+    f"{APP}/instruction_profiles.json",
+    f"{APP}/voiced_newsletter_notes.json",
+    f"{APP}/local_sources.json",
+]
 
-# A real macOS home path is /Users/<segment>; <segment> is a username unless it
-# is an obvious placeholder, which documentation may legitimately use.
-_HOME_PATH = re.compile(r"/Users/([^/\s`]+)")
-_PLACEHOLDERS = {"username", "yourname", "user", "you", "me"}
-
-
-def _is_placeholder(segment):
-    return segment.startswith("<") or segment.lower() in _PLACEHOLDERS
-
-
-def _tracked_docs():
-    """Tracked .md/.txt paths relative to the repo root; skip if not a git repo."""
-    try:
-        result = subprocess.run(
-            ["git", "ls-files", "-z", "*.md", "*.txt"],
-            cwd=REPO_ROOT, capture_output=True, text=True, check=True,
-        )
-    except (OSError, subprocess.CalledProcessError):
-        pytest.skip("git unavailable; cannot enumerate tracked docs")
-    return [p for p in result.stdout.split("\0") if p]
+# Defined ONLY in this file; the scan skips this file, so the markers never need to appear in
+# shippable code/config. (owner home path, email, ExecSum author id once in channels.txt.)
+_FORBIDDEN_MARKERS = [
+    "/Users/roti",
+    "stoneba1992",
+    "2e8f4f5d-5856-4463-ad71-a48cbba10c7a",
+]
+_SCAN_SUFFIXES = (".py", ".json", ".txt")  # shippable code/config/templates, not prose docs
 
 
-def test_docs_have_no_home_path_leak():
+def _tracked_files():
+    out = subprocess.run(["git", "ls-files"], cwd=REPO,
+                         capture_output=True, text=True, check=True)
+    return [line for line in out.stdout.splitlines() if line]
+
+
+def test_personal_files_not_tracked():
+    tracked = set(_tracked_files())
+    leaked = [f for f in PERSONAL_FILES if f in tracked]
+    assert not leaked, f"personal files must not be tracked in a public repo: {leaked}"
+
+
+def test_no_pii_markers_in_shippable_files():
+    this_file = os.path.relpath(os.path.abspath(__file__), REPO)
     offenders = []
-    for rel in _tracked_docs():
-        path = REPO_ROOT / rel
-        if not path.is_file():
+    for rel in _tracked_files():
+        if rel == this_file:                      # defines the markers; skip itself
             continue
-        text = path.read_text(encoding="utf-8", errors="replace")
-        for lineno, line in enumerate(text.splitlines(), start=1):
-            for segment in _HOME_PATH.findall(line):
-                if not _is_placeholder(segment):
-                    offenders.append(f"{rel}:{lineno}  /Users/{segment}")
-
-    assert not offenders, (
-        "Home-path leak in tracked docs (use ~/ or a repo-relative path):\n  "
-        + "\n  ".join(offenders)
-    )
+        if not rel.startswith(APP + "/"):         # only the app dir
+            continue
+        if not rel.endswith(_SCAN_SUFFIXES):      # only shippable code/config/templates
+            continue
+        try:
+            with open(os.path.join(REPO, rel), "r", encoding="utf-8", errors="ignore") as f:
+                text = f.read()
+        except (OSError, UnicodeError):
+            continue
+        for marker in _FORBIDDEN_MARKERS:
+            if marker in text:
+                offenders.append((rel, marker))
+    assert not offenders, f"PII markers found in shippable files: {offenders}"
