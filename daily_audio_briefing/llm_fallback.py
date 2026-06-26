@@ -120,6 +120,22 @@ def _provider_base_url(p: dict) -> Optional[str]:
     return base
 
 
+def _looks_degenerate(text: str) -> bool:
+    """True if output looks like a repetition loop — a known gpt-oss failure on
+    some inputs where it enumerates the same phrase until it hits the token cap
+    (e.g. 'Also avoid X thousand. Use X thousand.' forever). Cheap heuristics: a
+    collapsed vocabulary over a long output, or one short phrase dominating."""
+    words = text.split()
+    n = len(words)
+    if n < 200:
+        return False
+    if len(set(words)) / n < 0.18:
+        return True
+    from collections import Counter
+    bigrams = Counter((words[i], words[i + 1]) for i in range(n - 1))
+    return bool(bigrams) and bigrams.most_common(1)[0][1] >= max(15, n // 40)
+
+
 def _http_provider_generate(p: dict, prompt: str, max_tokens: int = 4096,
                             timeout: int = 120) -> Optional[str]:
     """Call one OpenAI-compatible provider. None on any failure (caller moves on).
@@ -152,15 +168,30 @@ def _http_provider_generate(p: dict, prompt: str, max_tokens: int = 4096,
     try:
         with _urlreq.urlopen(req, timeout=timeout) as resp:
             data = _json.loads(resp.read())
-        msg = (data.get("choices") or [{}])[0].get("message", {})
-        # gpt-oss/reasoning models may leave content empty and use reasoning fields.
-        text = (msg.get("content") or msg.get("reasoning_content")
-                or msg.get("reasoning") or "").strip()
-        if text:
-            _log(f"{p['name']} ({model}) returned {len(text)} chars")
-            return text
-        _log(f"{p['name']} returned empty response")
-        return None
+        choice = (data.get("choices") or [{}])[0]
+        msg = choice.get("message", {})
+        # Use ONLY the final answer channel. A reasoning model (gpt-oss) that
+        # loops or exhausts its budget leaves content empty and fills the
+        # reasoning channel with its chain-of-thought; returning THAT as the
+        # summary leaks the model's internal monologue into the briefing (it got
+        # read aloud once). Empty final content => this provider failed; fall
+        # through to the next one rather than handing back raw reasoning.
+        text = (msg.get("content") or "").strip()
+        if not text:
+            had_reasoning = bool(msg.get("reasoning") or msg.get("reasoning_content"))
+            why = "reasoning-only, no final answer" if had_reasoning else "empty response"
+            _log(f"{p['name']} ({model}) returned {why} — skipping provider")
+            return None
+        if choice.get("finish_reason") == "length":
+            # Truncated mid-thought at max_tokens — unreliable for TTS, and the
+            # tell-tale of a runaway reasoning loop. Let the next provider try.
+            _log(f"{p['name']} ({model}) truncated at max_tokens — skipping provider")
+            return None
+        if _looks_degenerate(text):
+            _log(f"{p['name']} ({model}) degenerate/looping output — skipping provider")
+            return None
+        _log(f"{p['name']} ({model}) returned {len(text)} chars")
+        return text
     except _urlerr.HTTPError as e:
         body = ""
         try:
@@ -180,6 +211,15 @@ def _http_provider_generate(p: dict, prompt: str, max_tokens: int = 4096,
 # a safety net so a Groq throttle/outage never silently drops a video.
 # ---------------------------------------------------------------------------
 _LOCAL_ENABLED = os.environ.get("ENABLE_LOCAL_FALLBACK", "1").lower() in ("1", "true", "yes")
+
+# Gemini is a PAID surface and is the only thing in this chain that can cost
+# money. It is OFF by default — the chain starts at the stacked free providers
+# and ends at the local Ollama floor, so the whole pipeline runs at zero spend.
+# Passing a gemini_model is no longer enough to trigger a paid call; you must
+# ALSO explicitly opt in with ENABLE_GEMINI=1. This makes zero-spend the default
+# regardless of any budget value in .env / api_usage.json.
+_GEMINI_ENABLED = os.environ.get("ENABLE_GEMINI", "0").lower() in ("1", "true", "yes")
+
 _OLLAMA_HOST = os.environ.get("OLLAMA_HOST", "http://localhost:11434").rstrip("/")
 _LOCAL_MODEL = os.environ.get("LOCAL_LLM_MODEL", "gpt-oss:20b-tuned")
 _LOCAL_TIMEOUT = int(os.environ.get("LOCAL_LLM_TIMEOUT", "300"))
@@ -303,8 +343,14 @@ def generate_with_fallback(
     """
     gemini_failed_reason: Optional[str] = None
 
-    # --- Attempt 1: Gemini (free tier) ---
-    if gemini_model is not None:
+    # --- Attempt 1: Gemini (PAID — opt-in only) ---
+    # Skipped entirely unless ENABLE_GEMINI=1. This is the zero-spend default:
+    # even when a gemini_model is handed in, we do not make a paid call. The
+    # free stacked providers + local floor below cover summarization at $0.
+    if gemini_model is not None and not _GEMINI_ENABLED:
+        gemini_failed_reason = "skipped: Gemini disabled (set ENABLE_GEMINI=1 to allow paid calls)"
+        _log(f"Gemini skipped for {caller}: ENABLE_GEMINI not set — going straight to free chain")
+    elif gemini_model is not None:
         try:
             from api_usage_tracker import get_tracker, FreeTierExceeded, BudgetExceeded, APILimitExceeded
             response = get_tracker().tracked_generate(

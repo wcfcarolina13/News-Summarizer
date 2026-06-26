@@ -121,6 +121,24 @@ def remove_pid_file(pid_file: str):
         pass
 
 
+def _notify(title: str, message: str):
+    """Best-effort macOS notification so a scheduled failure surfaces the same
+    day instead of silently skipping (e.g. the briefing never reaching Drive).
+    No-op off macOS or if osascript is unavailable."""
+    if sys.platform != 'darwin':
+        return
+    try:
+        safe_title = title.replace('"', "'")[:120]
+        safe_msg = message.replace('"', "'")[:240]
+        subprocess.run(
+            ['osascript', '-e',
+             f'display notification "{safe_msg}" with title "{safe_title}" sound name "Basso"'],
+            check=False, timeout=10,
+        )
+    except Exception:
+        pass
+
+
 def run_scheduler_loop(logger):
     """Main scheduler loop - runs tasks at their scheduled times."""
     from scheduler import get_scheduler
@@ -133,6 +151,7 @@ def run_scheduler_loop(logger):
             logger.info(f"Task '{task.name}' completed: {message}")
         else:
             logger.error(f"Task '{task.name}' failed: {message}")
+            _notify(f"Briefing task failed: {task.name}", message)
 
     scheduler = get_scheduler(on_task_complete=on_task_complete)
 
