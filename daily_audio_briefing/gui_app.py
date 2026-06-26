@@ -5203,7 +5203,7 @@ Transcript:
         type_to_value = {"YouTube": "youtube", "Newsletter": "newsletter", "RSS": "rss", "Archive": "article_archive"}
         value_to_type = {v: k for k, v in type_to_value.items()}
 
-        def add_source_row(idx, url="", enabled=True, source_type=None, config=None, name=None):
+        def add_source_row(idx, url="", enabled=True, source_type=None, config=None, name=None, verbatim=False):
             """Add a row for editing a source."""
             row_frame = ctk.CTkFrame(container, fg_color="transparent")
             row_frame.grid(row=idx, column=0, columnspan=4, sticky="ew", pady=2)
@@ -5234,6 +5234,14 @@ Transcript:
                 dynamic_resizing=False
             )
 
+            # Verbatim toggle (RSS feeds only) - initially hidden. When checked,
+            # this feed's posts are spoken near-verbatim (no LLM summarization).
+            var_verbatim = ctk.BooleanVar(value=verbatim)
+            verbatim_chk = ctk.CTkCheckBox(
+                row_frame, text="Verbatim", variable=var_verbatim,
+                font=ctk.CTkFont(size=11)
+            )
+
             # URL entry
             entry = ctk.CTkEntry(row_frame)
             entry.insert(0, url)
@@ -5241,27 +5249,52 @@ Transcript:
 
             # Store extra metadata on the entry widget
             entry._source_name = name
+            entry._verbatim_var = var_verbatim
 
-            # Show/hide config dropdown based on type
+            # Column 2 is shared: the newsletter config dropdown OR the RSS
+            # "Verbatim" toggle (a source is one or the other, never both).
             def on_type_change(choice):
+                config_dropdown.grid_forget()
+                verbatim_chk.grid_forget()
                 if choice == "Newsletter":
                     config_dropdown.grid(row=0, column=2, padx=(0, 5), pady=3)
                 else:
-                    config_dropdown.grid_forget()
                     config_var.set("(none)")
+                    if choice == "RSS":
+                        verbatim_chk.grid(row=0, column=2, padx=(0, 5), pady=3)
 
             type_dropdown.configure(command=on_type_change)
 
             # Initial visibility
             if current_type == "Newsletter":
                 config_dropdown.grid(row=0, column=2, padx=(0, 5), pady=3)
+            elif current_type == "RSS":
+                verbatim_chk.grid(row=0, column=2, padx=(0, 5), pady=3)
 
             # Enabled checkbox
             var_enabled = ctk.BooleanVar(value=enabled)
             chk = ctk.CTkCheckBox(row_frame, text="", variable=var_enabled, width=24)
             chk.grid(row=0, column=3, padx=(0, 5), pady=3)
 
-            widgets.append((entry, var_enabled, type_var, config_var))
+            row_tuple = (entry, var_enabled, type_var, config_var)
+
+            # Delete button - permanently removes this source row from the editor.
+            # Removing it from `widgets` means save_sources() won't write it back.
+            def delete_row():
+                try:
+                    widgets.remove(row_tuple)
+                except ValueError:
+                    pass
+                row_frame.destroy()
+
+            del_btn = ctk.CTkButton(
+                row_frame, text="✕", width=28, height=28,
+                fg_color="#8B0000", hover_color="#B22222",
+                font=ctk.CTkFont(size=12), command=delete_row
+            )
+            del_btn.grid(row=0, column=4, padx=(0, 5), pady=3)
+
+            widgets.append(row_tuple)
             return row_frame
 
         for idx, src in enumerate(sources):
@@ -5271,7 +5304,8 @@ Transcript:
                 src.get("enabled", True),
                 src.get("type"),
                 src.get("config"),
-                src.get("name")
+                src.get("name"),
+                src.get("verbatim", False)
             )
 
         def add_source():
@@ -5332,6 +5366,10 @@ Transcript:
                     # Preserve name if available
                     if hasattr(entry, '_source_name') and entry._source_name:
                         source_dict["name"] = entry._source_name
+
+                    # Verbatim passthrough flag (RSS feeds only)
+                    if source_type == "rss" and getattr(entry, "_verbatim_var", None) and entry._verbatim_var.get():
+                        source_dict["verbatim"] = True
 
                     new_sources.append(source_dict)
             try:

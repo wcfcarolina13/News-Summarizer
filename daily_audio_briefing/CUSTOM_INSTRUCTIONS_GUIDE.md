@@ -45,6 +45,6 @@ Your custom instructions are added to the AI prompt when generating summaries fr
 
 ## File Location
 
-`/Users/roti/pontus/News-Summarizer-new/daily_audio_briefing/custom_instructions.txt`
+`daily_audio_briefing/custom_instructions.txt`
 
 Leave the file empty or delete it to use default summarization behavior.

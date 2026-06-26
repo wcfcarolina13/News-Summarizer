@@ -48,15 +48,28 @@ def get_daemon_paths():
 
 
 def setup_logging(log_file: str):
-    """Configure logging for the daemon."""
+    """Configure logging for the daemon — exactly one writer to log_file.
+
+    The daemon's stdout/stderr are already redirected to log_file (launchd's
+    StandardOut/ErrorPath under `run`, daemonize()'s dup2 under `start`). The
+    old config ALSO attached a logging.FileHandler, a second independent file
+    description on the same path; its offset raced the stdout redirect, so
+    every record landed twice and the racing writes left NUL-filled gaps.
+
+    Fix: log through stdout only (no FileHandler), and fold stderr into stdout
+    so the daemon's logging, its print()s, and any child process (yt-dlp, TTS)
+    all share ONE file description — no duplicate lines, no NUL. Under `start`
+    the dup2 is a harmless no-op (daemonize already pointed both fds at it).
+    """
     logging.basicConfig(
         level=logging.INFO,
         format='%(asctime)s [%(levelname)s] %(message)s',
-        handlers=[
-            logging.FileHandler(log_file),
-            logging.StreamHandler()  # Also log to console if running in foreground
-        ]
+        handlers=[logging.StreamHandler(sys.stdout)],
     )
+    try:
+        os.dup2(sys.stdout.fileno(), sys.stderr.fileno())
+    except (OSError, ValueError, AttributeError):
+        pass  # stdout isn't a real fd (interactive run) — nothing to merge
     return logging.getLogger('scheduler_daemon')
 
 
@@ -108,6 +121,24 @@ def remove_pid_file(pid_file: str):
         pass
 
 
+def _notify(title: str, message: str):
+    """Best-effort macOS notification so a scheduled failure surfaces the same
+    day instead of silently skipping (e.g. the briefing never reaching Drive).
+    No-op off macOS or if osascript is unavailable."""
+    if sys.platform != 'darwin':
+        return
+    try:
+        safe_title = title.replace('"', "'")[:120]
+        safe_msg = message.replace('"', "'")[:240]
+        subprocess.run(
+            ['osascript', '-e',
+             f'display notification "{safe_msg}" with title "{safe_title}" sound name "Basso"'],
+            check=False, timeout=10,
+        )
+    except Exception:
+        pass
+
+
 def run_scheduler_loop(logger):
     """Main scheduler loop - runs tasks at their scheduled times."""
     from scheduler import get_scheduler
@@ -120,6 +151,7 @@ def run_scheduler_loop(logger):
             logger.info(f"Task '{task.name}' completed: {message}")
         else:
             logger.error(f"Task '{task.name}' failed: {message}")
+            _notify(f"Briefing task failed: {task.name}", message)
 
     scheduler = get_scheduler(on_task_complete=on_task_complete)
 

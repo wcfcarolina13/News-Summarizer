@@ -15,7 +15,7 @@ import os
 import sys
 import json
 import re
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from dataclasses import dataclass, field
 from enum import Enum
 from typing import List, Dict, Optional, Callable, Tuple
@@ -60,6 +60,38 @@ def _debug_log(msg: str):
             _DEBUG_LOG_FILE.flush()
         except:
             pass
+
+# --- Verbatim feed passthrough --------------------------------------------
+# Feeds whose posts are already tight, hand-written digests are spoken
+# near-verbatim (NO LLM summarization), cleaned only for TTS. Matched by
+# substring against the source URL. Added Jun 2026 for @alexwg's "The Innermost
+# Loop" per Brad's "near-verbatim, tacked onto the end of the briefing" request.
+# Add more feed domains here to make them verbatim too.
+VERBATIM_FEEDS = (
+    "theinnermostloop.substack.com",
+)
+
+def _is_verbatim_feed(url: str) -> bool:
+    u = (url or "").lower()
+    return any(tag in u for tag in VERBATIM_FEEDS)
+
+def _verbatim_clean_html(raw_html: str) -> str:
+    """HTML -> clean, paragraph-preserved prose for TTS (no summarization).
+
+    Drops non-spoken elements and preserves paragraph breaks (unlike
+    get_text(strip=True), which can run paragraphs together), then collapses
+    stray whitespace. Downstream TTS normalization still expands numbers/dates.
+    """
+    try:
+        soup = BeautifulSoup(raw_html or "", "html.parser")
+        for tag in soup(["script", "style", "img", "figure", "figcaption"]):
+            tag.decompose()
+        text = soup.get_text(separator="\n")
+    except Exception:
+        text = raw_html or ""
+    lines = [re.sub(r"[ \t]+", " ", ln).strip() for ln in text.split("\n")]
+    lines = [ln for ln in lines if ln]
+    return "\n\n".join(lines)
 
 # Optional imports with fallbacks
 try:
@@ -140,6 +172,23 @@ def parse_date(date_str: str) -> Optional[datetime]:
     return _parse_date_fallback(date_str)
 
 
+def _normalize_dt_for_compare(dt: Optional[datetime]) -> datetime:
+    """Coerce any datetime to a naive-UTC value so publish dates of mixed
+    tz-awareness can be sorted together.
+
+    YouTube items get tz-naive dates ('X days ago' -> datetime.now()), while
+    RSS items get tz-aware dates (dateparser on a feed pubDate with an offset).
+    Sorting the merged list raw raises 'can't compare offset-naive and
+    offset-aware datetimes' and aborts the whole briefing before audio + Drive
+    upload. Normalizing here makes every key comparable. None sorts oldest.
+    """
+    if dt is None:
+        return datetime.min
+    if dt.tzinfo is not None:
+        return dt.astimezone(timezone.utc).replace(tzinfo=None)
+    return dt
+
+
 class SourceType(Enum):
     """Enumeration of supported source types."""
     YOUTUBE = "youtube"
@@ -170,6 +219,7 @@ class SourceConfig:
     name: Optional[str] = None  # Display name
     selector: Optional[str] = None  # CSS selector for article archives
     config: Optional[str] = None  # Extraction config name for newsletters (e.g., "execsum")
+    verbatim: bool = False  # If True, RSS posts are spoken near-verbatim (no summarization)
 
     @classmethod
     def from_dict(cls, data: dict) -> "SourceConfig":
@@ -179,6 +229,7 @@ class SourceConfig:
         name = data.get("name")
         selector = data.get("selector")
         config = data.get("config")  # Extraction config name
+        verbatim = bool(data.get("verbatim", False))
 
         # Infer type if not specified
         type_str = data.get("type")
@@ -196,7 +247,8 @@ class SourceConfig:
             source_type=source_type,
             name=name,
             selector=selector,
-            config=config
+            config=config,
+            verbatim=verbatim
         )
 
     @staticmethod
@@ -229,6 +281,8 @@ class SourceConfig:
             result["selector"] = self.selector
         if self.config:
             result["config"] = self.config
+        if self.verbatim:
+            result["verbatim"] = True
         return result
 
 
@@ -308,6 +362,35 @@ class SourceFetcher:
         self.model_name = model_name
         self.data_dir = data_dir
         self._model = None
+        # When True, newly-processed video IDs are accumulated instead of saved
+        # during fetch; the orchestrator commits them only after the briefing is
+        # actually delivered (see commit_processed_cache). Prevents a crash or
+        # failed upload from marking videos 'processed' yet never delivering them.
+        self.defer_cache = False
+        self._pending_processed = []
+
+    def pending_cache_count(self) -> int:
+        """How many newly-processed videos are waiting for a delivery commit."""
+        return len(self._pending_processed)
+
+    def commit_processed_cache(self) -> int:
+        """Persist the videos accumulated while defer_cache was on.
+
+        Call ONLY after the briefing has been delivered. A run that crashes or
+        whose audio/upload fails must NOT reach here, so those videos stay
+        uncached and the next run re-fetches and delivers them. Returns count.
+        """
+        pending = self._pending_processed
+        self._pending_processed = []
+        if not (pending and self.data_dir):
+            return 0
+        cache = load_cache(self.data_dir)
+        today_str = datetime.now().strftime('%Y-%m-%d')
+        for vid_id in pending:
+            cache.setdefault('videos', {})[vid_id] = {'processed_date': today_str}
+        save_cache(self.data_dir, cache)
+        _debug_log(f"[SourceFetcher] Committed {len(pending)} videos to processed cache (delivered)")
+        return len(pending)
 
     def _get_model(self):
         """Lazy-load the Gemini model."""
@@ -396,8 +479,14 @@ class SourceFetcher:
                 if progress_callback:
                     progress_callback(f"Error: {source.url[:30]}... - {str(e)[:30]}", "red")
 
-        # Sort by date (newest first)
-        all_items.sort(key=lambda x: x.published_date or datetime.min, reverse=True)
+        # Sort by date (newest first). published_date mixes tz-naive (YouTube)
+        # and tz-aware (RSS) values, so normalize before comparing. Guarded so a
+        # date surprise degrades to an unsorted briefing instead of aborting the
+        # whole pipeline before audio + Drive upload.
+        try:
+            all_items.sort(key=lambda x: _normalize_dt_for_compare(x.published_date), reverse=True)
+        except Exception as e:
+            _debug_log(f"[SourceFetcher] sort skipped ({e}); returning {len(all_items)} items unsorted")
 
         # Final summary
         yt_items = sum(1 for i in all_items if i.source_type == SourceType.YOUTUBE)
@@ -530,6 +619,14 @@ class SourceFetcher:
 
                 _debug_log(f"[YouTube] Got summary ({len(summary)} chars)")
 
+                # Reasoning-leak guard: if the model handed back its own
+                # chain-of-thought instead of a summary (gpt-oss looping in
+                # cooldown), drop the item but do NOT cache it — the video is
+                # still wanted, so a later run with a healthy model retries it.
+                if self._looks_like_reasoning_leak(summary):
+                    _debug_log(f"[YouTube] Reasoning-leak summary — dropping, not caching (retry next run): {title[:40]}...")
+                    continue
+
                 # Skip if AI flagged as technical analysis, OR if the finished
                 # summary is chart-dense (safety net for when the free fallback
                 # models ignore the SKIP_TA instruction).
@@ -561,15 +658,23 @@ class SourceFetcher:
                 traceback.print_exc()
                 continue
 
-        # Batch write-back: add newly processed videos to cache
+        # Batch write-back: add newly processed videos to cache.
+        # When defer_cache is on (briefing pipeline), DON'T persist here —
+        # accumulate and let the orchestrator commit only after the briefing is
+        # delivered. Otherwise a crash/timeout/failed-upload after this point
+        # would mark these videos 'processed' yet never deliver them.
         if newly_processed and self.data_dir:
-            today_str = datetime.now().strftime('%Y-%m-%d')
-            for vid_id in newly_processed:
-                video_cache.setdefault('videos', {})[vid_id] = {
-                    'processed_date': today_str
-                }
-            save_cache(self.data_dir, video_cache)
-            _debug_log(f"[YouTube] Saved {len(newly_processed)} new entries to video cache")
+            if self.defer_cache:
+                self._pending_processed.extend(newly_processed)
+                _debug_log(f"[YouTube] Deferred {len(newly_processed)} cache entries (commit on delivery)")
+            else:
+                today_str = datetime.now().strftime('%Y-%m-%d')
+                for vid_id in newly_processed:
+                    video_cache.setdefault('videos', {})[vid_id] = {
+                        'processed_date': today_str
+                    }
+                save_cache(self.data_dir, video_cache)
+                _debug_log(f"[YouTube] Saved {len(newly_processed)} new entries to video cache")
 
         _debug_log(f"[YouTube] Summary for {source.url}:")
         _debug_log(f"[YouTube]   Videos checked: {videos_checked}")
@@ -758,6 +863,30 @@ class SourceFetcher:
         for dash in ('‐', '‑', '‒', '–', '—', '−'):
             text = text.replace(dash, '-')
         return len(set(self._TA_SUMMARY_RE.findall(text))) >= self._TA_SUMMARY_THRESHOLD
+
+    # Phrases a model emits when it leaks its chain-of-thought / instructions
+    # instead of answering (seen from gpt-oss reasoning models in cooldown).
+    # Kept specific so a genuine news summary won't trip them.
+    _REASONING_LEAK_MARKERS = (
+        "we need to summarize", "i need to summarize", "let me summarize the",
+        "must obey", "must not include", "must start directly", "must write numbers",
+        "the user wants", "the transcript includes", "the transcript is about",
+        "as an ai language model", "here is a summary of", "here's a summary of",
+    )
+
+    def _looks_like_reasoning_leak(self, summary: str) -> bool:
+        """True if a 'summary' is actually the model's leaked reasoning rather
+        than a news summary. A reasoning model (gpt-oss) that loops or runs out
+        of budget can emit its analysis channel as the answer; that monologue
+        must never reach the audio. Matches meta-reasoning phrasing in the head,
+        or a degenerate repetition loop."""
+        if not summary:
+            return False
+        head = summary[:800].lower()
+        if any(m in head for m in self._REASONING_LEAK_MARKERS):
+            return True
+        words = summary.split()
+        return len(words) >= 200 and len(set(words)) / len(words) < 0.2
 
     # Channels operated by Raoul Pal / Real Vision, which relentlessly promote Sui.
     # Per user preference, Sui content from these sources is filtered out entirely.
@@ -1050,6 +1179,9 @@ Your output goes directly to TTS. Any markdown or preambles will sound wrong whe
             result = generate_with_fallback(
                 prompt, gemini_model=model, caller="fetcher._summarize_article"
             )
+            if result and self._looks_like_reasoning_leak(result):
+                _debug_log(f"[Article] Reasoning-leak summary — discarding: {title[:50]}...")
+                return None
             if result:
                 _debug_log(f"[Article] Summarized {len(content)} chars to {len(result)} chars")
             return result
@@ -1138,18 +1270,28 @@ Your output goes directly to TTS. Any markdown or preambles will sound wrong whe
 
                     # Get description/content
                     content = ""
-                    if desc_elem:
+                    raw_html = desc_elem.get_text() if desc_elem else ""
+                    if raw_html:
                         # desc_elem text is HTML (CDATA for content:encoded); strip to prose
-                        desc_soup = BeautifulSoup(desc_elem.get_text(), 'html.parser')
+                        desc_soup = BeautifulSoup(raw_html, 'html.parser')
                         content = desc_soup.get_text(strip=True)
 
                     title = title_elem.get_text(strip=True) if title_elem else ""
 
-                    # Summarize long posts (e.g. Substack) into clean TTS-ready prose.
-                    # _summarize_article returns short blurbs (< 1500 chars) unchanged and
-                    # caps very long bodies, so this is safe for any feed shape.
+                    # Verbatim feeds (e.g. @alexwg's "The Innermost Loop") are spoken
+                    # near-verbatim: skip LLM summarization and pass the paragraph-
+                    # preserved body through. Leaving summary=None makes
+                    # format_combined_output emit item.content as-is, and RSS is the
+                    # last section, so the digest lands at the end of the briefing.
                     summary = None
-                    if content:
+                    if getattr(source, "verbatim", False) or _is_verbatim_feed(source.url):
+                        if raw_html:
+                            content = _verbatim_clean_html(raw_html)
+                        _debug_log(f"[RSS] VERBATIM passthrough (no summarization) for {source.url[:55]} - {len(content)} chars")
+                    elif content:
+                        # Summarize long posts (e.g. Substack) into clean TTS-ready prose.
+                        # _summarize_article returns short blurbs (< 1500 chars) unchanged and
+                        # caps very long bodies, so this is safe for any feed shape.
                         try:
                             summary = self._summarize_article(title, content, custom_instructions)
                         except Exception as e:

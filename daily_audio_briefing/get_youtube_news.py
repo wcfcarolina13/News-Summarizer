@@ -120,6 +120,12 @@ def get_transcript_text(video_id):
         "outtmpl": temp_prefix,
         "quiet": True,
         "no_warnings": True,
+        # Prevent a single stalled transcript download from hanging the whole
+        # run indefinitely (root-caused a [6/26] hang, 2026-06-18). socket_timeout
+        # bounds each network read; retries caps how long a flaky video is retried
+        # before get_transcript_text falls through to its except → returns None → skip.
+        "socket_timeout": 30,
+        "retries": 2,
     }
     try:
         with yt_dlp.YoutubeDL(ydl_opts) as ydl:

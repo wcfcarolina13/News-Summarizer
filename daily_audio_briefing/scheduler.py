@@ -843,6 +843,7 @@ class Scheduler:
             6. Upload audio to Google Drive (if configured)
         """
         from source_fetcher import load_sources, SourceFetcher, format_items_for_audio
+        from vault_newsletters import load_vault_newsletter_items
         from file_manager import FileManager
 
         fm = FileManager()
@@ -941,6 +942,7 @@ class Scheduler:
         # Partial checkpoint: summary text exists but audio is missing (e.g. previous
         # TTS run timed out). Resume from the TTS step using the saved text instead
         # of re-fetching from sources and re-summarizing (which would waste API quota).
+        fetcher = None
         resume_from_tts = False
         if os.path.exists(summary_path):
             try:
@@ -979,6 +981,10 @@ class Scheduler:
                 self._log(task.id, "[Pipeline] No custom instructions found — using built-in filters only")
 
             fetcher = SourceFetcher(api_key=api_key, model_name="gemini-2.5-flash", data_dir=data_dir)
+            # Defer the processed-videos cache commit until the briefing is
+            # delivered, so a crash/timeout/failed-upload can't mark videos
+            # 'processed' yet never deliver them.
+            fetcher.defer_cache = True
             cutoff_hours = task.custom_hours if task.custom_hours else 24
             cutoff = datetime.now() - timedelta(hours=cutoff_hours)
             items = fetcher.fetch_all_sources(
@@ -986,6 +992,17 @@ class Scheduler:
                 youtube_instructions=custom_instructions,
                 article_instructions=custom_instructions,
             )
+
+            # Reuse already-processed Pontus newsletter content (The Batch, Dan Go)
+            # instead of re-fetching/re-summarizing — each issue voiced once via cache.
+            try:
+                vault_dir = os.environ.get("PONTUS_VAULT_DIR", os.path.expanduser("~/pontus/vault"))
+                vault_items = load_vault_newsletter_items(data_dir, vault_dir)
+                if vault_items:
+                    items.extend(vault_items)
+                    self._log(task.id, f"[Pipeline] Added {len(vault_items)} vault newsletter item(s)")
+            except Exception as _ve:
+                self._log(task.id, f"[Pipeline] vault newsletter inject skipped: {_ve}")
 
             if not items:
                 task.last_result = "No items found from sources"
@@ -1149,7 +1166,18 @@ class Scheduler:
 
         # --- Step 6: Upload to Drive + update task result ---
         task.items_extracted = len(items)
-        self._pipeline_drive_upload(task, summary_path, audio_file, data_dir, len(items), cooldown=(0, _cooldown_active))
+        delivered = self._pipeline_drive_upload(task, summary_path, audio_file, data_dir, len(items), cooldown=(0, _cooldown_active))
+
+        # --- Step 7: Commit the processed-videos cache ONLY now that the briefing
+        # is delivered. If fetch happened but delivery failed, leave the videos
+        # uncached so the next run re-fetches them (duplication beats silent loss —
+        # the failure mode that produced empty briefings on Jun 12-13). ---
+        if fetcher is not None:
+            pending = fetcher.pending_cache_count()
+            if delivered:
+                fetcher.commit_processed_cache()
+            elif pending:
+                self._log(task.id, f"[Pipeline] Delivery incomplete — leaving {pending} videos uncached for retry next run")
 
     def _pipeline_drive_upload(self, task, summary_path, audio_file, data_dir, item_count, cooldown=(0, False)):
         """Upload pipeline output to Google Drive and update task result.
@@ -1157,6 +1185,8 @@ class Scheduler:
         Shared by both the normal pipeline flow and the checkpoint-resume path.
         """
         drive_uploaded = False
+        txt_ok = False
+        audio_ok = False
         drive_error_msg = ''
         if task.upload_to_drive and task.drive_folder_id:
             try:
@@ -1171,6 +1201,7 @@ class Scheduler:
                     # Upload summary text
                     txt_result = upload_file(summary_path, folder_id)
                     if txt_result.get('status') in ('uploaded', 'skipped'):
+                        txt_ok = True
                         uploaded_files.append(f"summary ({txt_result['status']})")
                     else:
                         drive_error_msg = f"txt: {txt_result.get('reason', 'unknown')}"
@@ -1180,6 +1211,7 @@ class Scheduler:
                     if audio_file:
                         audio_result = upload_file(audio_file, folder_id)
                         if audio_result.get('status') in ('uploaded', 'skipped'):
+                            audio_ok = True
                             uploaded_files.append(f"audio ({audio_result['status']})")
                         else:
                             drive_error_msg = f"audio: {audio_result.get('reason', 'unknown')}"
@@ -1214,6 +1246,17 @@ class Scheduler:
         if cooldown and cooldown[1]:
             task.last_result += ' [cooldown]'
         self._log(task.id, f'[Pipeline] Complete: {task.last_result}')
+
+        # Delivery verdict used to decide whether to commit the processed-videos
+        # cache. The briefing only counts as delivered if the user can get it:
+        #  - server mode: summary text reached Drive (no audio produced)
+        #  - Drive target set: BOTH the text and the audio reached Drive
+        #  - no Drive target: the audio was generated locally
+        if self.server_mode:
+            return txt_ok
+        if task.upload_to_drive and task.drive_folder_id:
+            return bool(audio_file) and txt_ok and audio_ok
+        return bool(audio_file)
 
     def backfill_task(self, task_id: str, stop_flag: Optional[Callable] = None,
                       since_date: Optional[str] = None) -> bool:
