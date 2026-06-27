@@ -21,11 +21,20 @@ from source_fetcher import FetchedItem, SourceType
 _WIKILINK = re.compile(r"\[\[([^\]|]+)(?:\|[^\]]+)?\]\]")   # [[a|b]] -> a
 _MDLINK = re.compile(r"\[([^\]]+)\]\([^)]+\)")               # [t](u)  -> t
 _DATE = re.compile(r"(\d{4}-\d{2}-\d{2})")
+# Raw links read terribly aloud: full URLs, and bare "domain.tld/path" forms (e.g. a DOI or
+# "biohub.ai/tools/fold"). Requires a path after the TLD so bare domains in prose survive.
+_URL = re.compile(r"https?://\S+|\b(?:[a-z0-9][a-z0-9-]*\.)+[a-z]{2,}/[^\s)]+", re.IGNORECASE)
 
 _DEFAULT_DATE_KEYS = ("date_published", "date_added", "date")
 _DEFAULT_EXCLUDES = ["Log"]
 _CACHE_NAME = "voiced_newsletter_notes.json"
 _CONFIG_NAME = "local_sources.json"
+
+# Read-only artifacts that ruin TTS — a heading whose text matches stops the body (everything
+# after is cross-reference navigation); meta/citation line prefixes are dropped outright.
+_STOP_HEADINGS = ("connection points", "connection point", "related notes", "see also")
+_META_MARKERS = ("items extracted from", "filtered for signal")
+_CITATION_PREFIXES = ("reference:", "references:", "source:")  # leading '*' is stripped before match
 
 
 def _int(value, default):
@@ -107,11 +116,24 @@ def _note_date(fm, filename, date_keys, use_filename=True):
 
 
 def _clean_body(body):
-    """Strip markdown/wikilinks/nav so the note reads cleanly as speech."""
+    """Strip markdown/wikilinks/nav + read-only artifacts so the note reads as speech.
+
+    Beyond inline markdown, this drops the things that ruin a TTS reading of a wiki note:
+    the trailing "Connection Points" cross-reference block (and everything after it),
+    pipeline meta-framing lines, academic citation/reference lines, and raw URLs/DOIs.
+    """
     out = []
     for line in body.splitlines():
         s = line.strip()
+        # Stop at a cross-reference / "see also" heading — the rest is read-only navigation.
+        if re.sub(r"^#{1,6}\s*", "", s).strip().lower() in _STOP_HEADINGS:
+            break
         if not s or s.startswith(("---", "←", "<!--", "![", "**Source:**", "|")):
+            continue
+        low = s.lower()
+        if any(m in low for m in _META_MARKERS):       # "Items extracted from … filtered for signal."
+            continue
+        if low.lstrip("*").startswith(_CITATION_PREFIXES):  # "*Reference:* … https://doi.org/…"
             continue
         s = re.sub(r"^>+\s*", "", s)        # blockquote -> keep its text (the summary)
         s = re.sub(r"^#{1,6}\s*", "", s)    # headings
@@ -119,10 +141,25 @@ def _clean_body(body):
         s = s.replace("**", "").replace("`", "")
         s = _WIKILINK.sub(r"\1", s)
         s = _MDLINK.sub(r"\1", s)
-        s = s.strip()
+        s = _URL.sub("", s)                 # raw URLs/DOIs read as gibberish aloud
+        s = re.sub(r"\s{2,}", " ", s).strip()
         if len(s) >= 2:
             out.append(s)
     return " ".join(out).strip()
+
+
+def _clean_title(title, source_name):
+    """Drop a leading 'SourceName —/:/-' prefix so audio doesn't name the source twice.
+
+    The audio format already says "From {source_name}, {title}"; vault titles usually start
+    with the source name too ("The Batch — 2026-06-26: Issue 359"), so strip that prefix.
+    """
+    t = (title or "").strip()
+    if source_name:
+        m = re.match(re.escape(source_name) + r"\s*[—:\-]+\s*", t, re.IGNORECASE)
+        if m:
+            t = t[m.end():].strip()
+    return t
 
 
 def load_local_markdown_items(data_dir, config=None):
@@ -183,7 +220,7 @@ def load_local_markdown_items(data_dir, config=None):
             if len(text) < min_chars:
                 continue
             items.append(FetchedItem(
-                title=(fm.get("title") or fn[:-3]).strip(),
+                title=_clean_title(fm.get("title") or fn[:-3], display),
                 url=fm.get("url", ""),
                 content=text,
                 source_name=display,

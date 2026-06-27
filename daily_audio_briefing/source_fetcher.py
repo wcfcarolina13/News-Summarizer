@@ -1090,19 +1090,24 @@ Your output goes directly to TTS. Any markdown, preambles, or raw transcript spe
             _debug_log(f"[YouTube] Summarization error: {e}")
             return None
 
-    def _summarize_article(self, title: str, content: str, custom_instructions: str) -> str:
+    def _summarize_article(self, title: str, content: str, custom_instructions: str,
+                           length_rule: str = None) -> str:
         """Summarize article content for the audio briefing.
 
         Short articles are returned as-is. Articles that fit in one pass are
         summarized directly; longer bodies (for example long weekly roundup posts)
         are map-reduced so the entire article is covered rather than clipped.
+
+        length_rule overrides the default length/coverage rule — the local-note audio rewrite
+        passes _AUDIO_REWRITE_RULE to keep the narrative while condensing dense statistic runs.
         """
         if len(content) < 1500:
             _debug_log(f"[Article] Content short ({len(content)} chars), keeping as-is")
             return content
 
         if len(content) <= _ARTICLE_CHUNK_CHARS:
-            return self._summarize_article_once(title, content, custom_instructions)
+            return self._summarize_article_once(title, content, custom_instructions,
+                                                length_rule=length_rule)
 
         # Long body: summarize each section, then fold the section summaries into
         # one briefing summary so nothing in the body is dropped.
@@ -1112,7 +1117,7 @@ Your output goes directly to TTS. Any markdown, preambles, or raw transcript spe
         for idx, chunk in enumerate(chunks, 1):
             part = self._summarize_article_once(
                 f"{title} (section {idx} of {len(chunks)})", chunk,
-                custom_instructions, comprehensive=True,
+                custom_instructions, comprehensive=True, length_rule=length_rule,
             )
             if part:
                 partials.append(part)
@@ -1123,17 +1128,39 @@ Your output goes directly to TTS. Any markdown, preambles, or raw transcript spe
         # (a weak fallback model can leak reasoning or loop on the combine step).
         return "\n\n".join(partials)
 
+    def rewrite_local_note_for_audio(self, title: str, content: str,
+                                     custom_instructions: str = "") -> str:
+        """Re-voice an already-summarized local note for audio.
+
+        The note is fine prose but reads poorly aloud when it hits a table of statistics or
+        benchmarks. This keeps the narrative and only condenses dense statistic/benchmark runs
+        (via _AUDIO_REWRITE_RULE), and applies the user's omit-filter. Falls back to the input
+        text on any failure or a reasoning leak (the summarizer returns None in that case)."""
+        if not content:
+            return content
+        result = self._summarize_article(title, content, custom_instructions,
+                                         length_rule=_AUDIO_REWRITE_RULE)
+        # _summarize_article's except path returns content[:2000] on an API error; never accept
+        # that silent truncation for a local note — fall back to the full cleaned text instead.
+        if result and result != content[:2000]:
+            return result
+        return content
+
     def _summarize_article_once(self, title: str, content: str, custom_instructions: str,
-                                comprehensive: bool = False) -> str:
-        """Summarize one block of article text in a single pass (TTS-ready)."""
+                                comprehensive: bool = False, length_rule: str = None) -> str:
+        """Summarize one block of article text in a single pass (TTS-ready).
+
+        length_rule overrides the default rule #5 (the local-note audio rewrite passes a rule
+        that keeps the narrative but condenses dense statistic/benchmark runs)."""
         try:
-            length_rule = (
-                "5. Be thorough: cover every distinct topic, development, argument, data "
-                "point, and named entity in this text. Let the length scale with the "
-                "material; do not omit substance to save space."
-                if comprehensive else
-                "5. Keep it concise (two to four paragraphs) but comprehensive and conversational."
-            )
+            if length_rule is None:
+                length_rule = (
+                    "5. Be thorough: cover every distinct topic, development, argument, data "
+                    "point, and named entity in this text. Let the length scale with the "
+                    "material; do not omit substance to save space."
+                    if comprehensive else
+                    "5. Keep it concise (two to four paragraphs) but comprehensive and conversational."
+                )
             model = self._get_model()
 
             base_prompt = f"""Summarize this article for an audio news briefing.
@@ -1941,6 +1968,25 @@ Your output goes directly to TTS. Any markdown or preambles will sound wrong whe
 
 _ARTICLE_CHUNK_CHARS = 50000  # max chars summarized in one pass; longer bodies are map-reduced
 
+# Rule #5 used when re-voicing an already-summarized local note for audio: keep the narrative,
+# but turn dense statistic/benchmark/pricing runs into a digestible spoken takeaway so the TTS
+# isn't reading a table of numbers aloud.
+_AUDIO_REWRITE_RULE = (
+    "5. This text is an already-written summary being prepared for a SPOKEN briefing. Keep the "
+    "narrative, the names, and the main facts, and let the length scale with the material — do NOT "
+    "over-compress the prose. BUT when you reach a run of statistics — three or more benchmark "
+    "scores, model parameters, prices, version numbers, or percentages close together — do NOT "
+    "read them out, not even spelled into words. Replace the whole run with ONE plain-language "
+    "takeaway: the upshot and why it matters. For example, rewrite 'scores fifty one on the index "
+    "behind Opus at fifty six and GPT at fifty five, thirty four point three percent on "
+    "PostTrainBench, one thousand five hundred ninety three Elo on WebDev' as 'it leads the "
+    "open-weight models across the major benchmarks and rivals the top proprietary models at a "
+    "fraction of their cost.' The listener should hear the conclusion, never a recited table of "
+    "numbers; keep at most one or two genuinely key figures per topic. This overrides the "
+    "write-out-every-number rule above for statistic runs. Also drop any leftover cross-references "
+    "to other notes, citations, or raw links."
+)
+
 
 def _split_text(text: str, size: int) -> List[str]:
     """Split text into chunks of at most `size` chars, preferring paragraph, then
@@ -1990,6 +2036,31 @@ def _clean_title_for_audio(title: str) -> str:
     return title
 
 
+# Newsletter/subscribe footers (Substack-style). Patterns are deliberately specific so they do
+# NOT eat editorial sentences like "developers can subscribe for free during the beta" or
+# "thanks for reading between the lines, the real message is …". The first alternative — the full
+# "Thanks for reading … support my work" block — is the actual leak; the rest catch partial footers.
+_SUBSCRIBE_FOOTER = re.compile(
+    r"Thanks for reading[^\n]{0,200}?support my work[.!?]*"
+    r"|Thanks for reading[^.!?\n]{0,60}!"
+    r"|Subscribe (?:for free|now|today) to (?:receive|read|get|keep|continue)[^.!?\n]{0,70}[.!?]"
+    r"|Subscribe to keep reading[^.!?\n]{0,40}[.!?]",
+    re.IGNORECASE,
+)
+
+
+def _strip_subscribe_boilerplate(text: str) -> str:
+    """Remove newsletter/subscribe footers (e.g. Substack's "Thanks for reading… Subscribe for
+    free… support my work") that the summarizer/filter occasionally lets through. These are
+    marketing, not news, and read as an ad in the middle of the briefing."""
+    if not text:
+        return text
+    cleaned = _SUBSCRIBE_FOOTER.sub("", text)
+    cleaned = re.sub(r"[ \t]{2,}", " ", cleaned)
+    cleaned = re.sub(r"\n{3,}", "\n\n", cleaned)
+    return cleaned.strip()
+
+
 def format_items_for_audio(items: List[FetchedItem]) -> str:
     """Format fetched items into text suitable for audio generation (TTS).
 
@@ -1998,6 +2069,14 @@ def format_items_for_audio(items: List[FetchedItem]) -> str:
     """
     if not items:
         return ""
+
+    # Final marketing backstop: strip subscribe/newsletter footers from every summary
+    # regardless of source (YouTube, RSS, or reused local notes) before it reaches TTS.
+    for _it in items:
+        if _it.summary:
+            _it.summary = _strip_subscribe_boilerplate(_it.summary)
+        if _it.content:
+            _it.content = _strip_subscribe_boilerplate(_it.content)
 
     output_parts = []
 
