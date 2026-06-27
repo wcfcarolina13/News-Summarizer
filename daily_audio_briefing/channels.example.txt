@@ -1,0 +1,5 @@
+# Legacy flat list of YouTube channel URLs (one per line). The preferred mechanism is
+# sources.json (copy sources.example.json) — this file is a fallback. Copy to channels.txt.
+https://www.youtube.com/@TED/videos
+https://www.youtube.com/@veritasium/videos
+https://www.youtube.com/@ColdFusion/videos

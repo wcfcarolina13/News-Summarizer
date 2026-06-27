@@ -1,0 +1,11 @@
+{
+  "active_profile": "Default",
+  "profiles": {
+    "Default": {
+      "name": "Default",
+      "description": "Generic starter profile — edit for your interests",
+      "instructions": "I'm interested in technology, science, and business.\n\nFocus on:\n- Main points, takeaways, and concrete details\n- Specific data points, names, and facts over vibes\n- How things actually work\n\nOmit:\n- Marketing, sales pitches, demos, promo codes, advertisements, sponsors\n- Invitations to join/subscribe to communities or paid platforms",
+      "article_instructions": "Summarize articles on their own terms: the key facts, names, numbers, and how things work. Omit ads, sponsor reads, and subscribe CTAs."
+    }
+  }
+}

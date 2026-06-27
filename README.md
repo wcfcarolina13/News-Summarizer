@@ -90,6 +90,24 @@ A desktop + web application that creates personalized audio news briefings from 
 
 ---
 
+## Customizing your briefing
+
+This app ships **example** config files. Copy each `*.example.*` to its real name and edit it —
+your real configs are gitignored, so they stay private.
+
+| Copy this | To this | What it controls |
+|-----------|---------|------------------|
+| `.env.example` | `.env` | API keys (you only need ONE free provider to start) |
+| `sources.example.json` | `sources.json` | YouTube channels / RSS feeds / newsletters to summarize |
+| `custom_instructions.example.txt` | `custom_instructions.txt` | What the summarizer keeps vs. drops |
+| `local_sources.example.json` | `local_sources.json` | (Optional) reuse markdown you already summarize elsewhere |
+
+- **New here?** Start with **[CUSTOMIZING.md](CUSTOMIZING.md)** — a step-by-step setup walkthrough.
+- **Want to bend the code?** See **[docs/POWER-USER-GUIDE.md](docs/POWER-USER-GUIDE.md)** — architecture,
+  the extension seams, and how to customize with an AI assistant.
+
+---
+
 ## Building from Source
 
 For developers who want to build the app themselves:

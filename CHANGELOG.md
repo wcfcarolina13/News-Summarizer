@@ -5,6 +5,44 @@ All notable changes to the Daily Audio Briefing, newest first. Format follows
 deployed from the working tree, so entries are dated rather than tied to release
 tags.
 
+## 2026-06-26
+
+Public-readiness & customization pass: make the app usable out-of-box and
+customizable by others without leaking the owner's personal config from this
+public repo.
+
+### Added
+- **Generic local-markdown reuse adapter** (`local_markdown_source.py`). The old
+  `vault_newsletters.py` hardcoded one vault path + newsletter list; it is now
+  config-driven via `local_sources.json` (copy `local_sources.example.json`):
+  reuse *any* local markdown folder, off by default, no-op when unconfigured.
+  `base_dir` resolves from env `LOCAL_MARKDOWN_DIR` → `PONTUS_VAULT_DIR`
+  (back-compat) → config. Tests in `tests/test_local_markdown_source.py`.
+- **Customization docs:** `CUSTOMIZING.md` (non-technical setup) and
+  `docs/POWER-USER-GUIDE.md` (architecture, the extension seams, AI-assisted
+  customization), linked from a new README "Customizing your briefing" section.
+- **`.example` templates** for every personal config:
+  `custom_instructions.example.txt`, `channels.example.txt`,
+  `instruction_profiles.example.json`, `local_sources.example.json`.
+- **Privacy-regression test** (`tests/test_public_repo_privacy.py`) — fails if
+  personal config becomes tracked or owner PII appears in shippable code/config.
+
+### Changed
+- **`.env.example` rewritten** for the free multi-provider fallback chain —
+  documents every provider key `llm_fallback.py` reads; you only need one; Gemini
+  is optional and off by default (`ENABLE_GEMINI=0`).
+- **Scheduler** no longer hardcodes `~/pontus/vault`; it calls the generic adapter.
+
+### Security
+- **Untracked personal config from the public repo** and gitignored it:
+  `custom_instructions.txt`, `channels.txt`, `instruction_profiles.json`, plus
+  runtime caches (`voiced_newsletter_notes.json`, `*.bak-*`) and internal planning
+  docs (`docs/superpowers/`). Working copies stay on disk so the live daemon is
+  unaffected. Going-forward removal — git history not rewritten.
+- **Scrubbed maintainer home paths from public prose docs** (`CLAUDE.md`,
+  `UX_FLOW_DIAGRAM.txt`, `CUSTOM_INSTRUCTIONS_GUIDE.md`) and removed the stale
+  internal `docs/RECOVERY-HANDOFF.md`.
+
 ## [Unreleased] — 2026-06-08
 
 ### Fixed
