@@ -5,6 +5,27 @@ All notable changes to the Daily Audio Briefing, newest first. Format follows
 deployed from the working tree, so entries are dated rather than tied to release
 tags.
 
+## 2026-06-27
+
+### Fixed
+- **Reused local notes now read cleanly as audio.** Auditing a live briefing showed the
+  local-markdown reuse path voiced notes verbatim, so the TTS read aloud "read-only" artifacts,
+  a marketing footer, and dense statistics tables.
+  - `local_markdown_source._clean_body` drops the trailing "Connection Points" cross-reference
+    block, pipeline meta lines, citation/reference lines, and raw URLs/DOIs; `_clean_title` removes
+    a duplicated leading source name (no more "From The Batch, The Batch —").
+  - `format_items_for_audio` strips newsletter/subscribe footers ("Thanks for reading… Subscribe
+    for free… support my work") from every summary before TTS — the Substack CTA that had leaked
+    from an RSS feed. Patterns are anchored to specific footer shapes so editorial "subscribe" /
+    "thanks for reading" sentences survive.
+  - The scheduler re-voices each local note via `SourceFetcher.rewrite_local_note_for_audio`, which
+    keeps the narrative but condenses dense statistic/benchmark/pricing runs into a spoken takeaway
+    (a `length_rule` override on `_summarize_article`, reusing the reasoning-leak guard; the free
+    fallback chain makes the extra pass ~free). Skipped in cooldown — deterministic cleaning still
+    applies, and a failed/leaked rewrite falls back to the cleaned text (never truncated/blank).
+  - Tests: artifact stripping + URL false-positive safety (`test_local_markdown_source.py`); footer
+    removal + editorial false-positive safety (`test_marketing_strip.py`). 44 pass.
+
 ## 2026-06-26
 
 Public-readiness & customization pass: make the app usable out-of-box and

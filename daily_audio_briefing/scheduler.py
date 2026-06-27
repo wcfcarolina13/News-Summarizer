@@ -999,6 +999,17 @@ class Scheduler:
             # local_markdown_source.py / local_sources.example.json.
             try:
                 local_items = load_local_markdown_items(data_dir)
+                # The notes are already summaries but read poorly aloud (stat tables, dense
+                # benchmarks). Re-voice each for audio: keep the narrative, condense statistic
+                # runs, apply the omit-filter. Skipped in cooldown (no AI) — the deterministic
+                # cleaning in load_local_markdown_items still applies on its own.
+                if local_items and fetcher is not None and not _cooldown_active:
+                    for _li in local_items:
+                        rewritten = fetcher.rewrite_local_note_for_audio(
+                            _li.title, _li.content, custom_instructions)
+                        if rewritten:
+                            _li.summary = rewritten
+                            _li.content = rewritten
                 if local_items:
                     items.extend(local_items)
                     self._log(task.id, f"[Pipeline] Added {len(local_items)} local markdown item(s)")

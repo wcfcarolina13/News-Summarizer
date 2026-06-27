@@ -24,6 +24,52 @@ def _cfg(base_dir, subdir, source_name, **extra):
     return {"base_dir": base_dir, "folders": [folder], "lookback_days": 10}
 
 
+def _write_raw(d, subdir, name, raw):
+    nd = os.path.join(d, subdir)
+    os.makedirs(nd, exist_ok=True)
+    with open(os.path.join(nd, name), "w", encoding="utf-8") as f:
+        f.write(raw)
+
+
+def test_strips_read_only_artifacts_for_tts():
+    """Connection Points block, meta preamble, citations, and raw URLs must not reach audio;
+    a leading source-name prefix is stripped from the title."""
+    with tempfile.TemporaryDirectory() as vault, tempfile.TemporaryDirectory() as data:
+        today = datetime.now().strftime("%Y-%m-%d")
+        _write_raw(vault, "12-Batch", f"Batch-{today}.md",
+            f'---\ntitle: "The Batch — {today}: Issue 1 — Loop Engineering"\ndate_published: {today}\n---\n'
+            "# The Batch\n\n"
+            "Items extracted from The Batch (Andrew Ng / deeplearning.ai), filtered for signal.\n\n"
+            "← [[Batch Log]]\n\n"
+            "> A real summary about loop engineering and shipping agents, long enough to keep.\n\n"
+            "## A Section\n\n"
+            "The model is freely accessible through biohub.ai/tools/fold and weights are public.\n\n"
+            "*Reference:* O'Toole C.K. et al. Nature (2026). https://doi.org/10.1038/s41586-026-10524-5\n\n"
+            "## Connection Points\n\n"
+            "- [[Some Other Note]] — vault navigation that must never be read aloud\n")
+        items = load_local_markdown_items(data, _cfg(vault, "12-Batch", "The Batch"))
+        assert len(items) == 1
+        s = items[0].summary
+        assert "Connection Points" not in s and "vault navigation" not in s   # truncated
+        assert "Items extracted from" not in s                                # meta dropped
+        assert "doi.org" not in s and "biohub.ai/tools/fold" not in s         # URLs stripped
+        assert "Reference:" not in s                                          # citation dropped
+        assert "loop engineering" in s.lower()                               # real content kept
+        # title de-dup: leading "The Batch —" removed, rest intact
+        assert not items[0].title.lower().startswith("the batch")
+        assert "Issue 1" in items[0].title
+
+
+def test_url_strip_does_not_eat_prose():
+    """Real URLs/DOIs are stripped, but slashed prose (and/or, 24/7, U.S./allies) survives."""
+    from local_markdown_source import _clean_body
+    body = ("See github.com/foo/bar and visit https://example.com/x now. "
+            "But keep and/or, TTS/audio, U.S./allies, and 24/7 running.")
+    out = _clean_body(body)
+    assert "github.com/foo/bar" not in out and "example.com/x" not in out   # real links gone
+    assert "and/or" in out and "TTS/audio" in out and "24/7" in out and "U.S./allies" in out
+
+
 def test_includes_recent_and_dedupes():
     with tempfile.TemporaryDirectory() as vault, tempfile.TemporaryDirectory() as data:
         today = datetime.now().strftime("%Y-%m-%d")
