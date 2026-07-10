@@ -843,7 +843,7 @@ class Scheduler:
             6. Upload audio to Google Drive (if configured)
         """
         from source_fetcher import load_sources, SourceFetcher, format_items_for_audio
-        from local_markdown_source import load_local_markdown_items
+        from local_markdown_source import load_local_markdown_items, commit_voiced_items
         from file_manager import FileManager
 
         fm = FileManager()
@@ -943,6 +943,7 @@ class Scheduler:
         # TTS run timed out). Resume from the TTS step using the saved text instead
         # of re-fetching from sources and re-summarizing (which would waste API quota).
         fetcher = None
+        local_items = []   # local-markdown notes voiced this run; cache-committed only on delivery
         resume_from_tts = False
         if os.path.exists(summary_path):
             try:
@@ -998,7 +999,9 @@ class Scheduler:
             # via cache. Configured via local_sources.json; a no-op when absent. See
             # local_markdown_source.py / local_sources.example.json.
             try:
-                local_items = load_local_markdown_items(data_dir)
+                # defer_commit: notes are marked voiced ONLY after the delivery verdict
+                # (step 7) — a crash in rewrite/TTS/upload leaves them unvoiced for retry.
+                local_items = load_local_markdown_items(data_dir, defer_commit=True)
                 # The notes are already summaries but read poorly aloud (stat tables, dense
                 # benchmarks). Re-voice each for audio: keep the narrative, condense statistic
                 # runs, apply the omit-filter. Skipped in cooldown (no AI) — the deterministic
@@ -1190,6 +1193,12 @@ class Scheduler:
                 fetcher.commit_processed_cache()
             elif pending:
                 self._log(task.id, f"[Pipeline] Delivery incomplete — leaving {pending} videos uncached for retry next run")
+        # Same deferred-commit rule for reused local-markdown notes (see local_markdown_source).
+        if local_items:
+            if delivered:
+                commit_voiced_items(data_dir, local_items)
+            else:
+                self._log(task.id, f"[Pipeline] Delivery incomplete — leaving {len(local_items)} local note(s) unvoiced for retry next run")
 
     def _pipeline_drive_upload(self, task, summary_path, audio_file, data_dir, item_count, cooldown=(0, False)):
         """Upload pipeline output to Google Drive and update task result.

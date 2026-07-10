@@ -6,9 +6,12 @@ those finished notes directly instead of re-fetching and re-summarizing them (sa
 cost). Configure it in `local_sources.json` (gitignored); see `local_sources.example.json`.
 Disabled by default — absent config, missing base_dir, or no enabled folders = no-op.
 
-Each note is voiced exactly once via a tiny cache (`voiced_newsletter_notes.json`). Marking
-a note voiced at build time is safe here (unlike ephemeral transcripts) because the markdown
-note is durable: a failed delivery misses one day's audio, never the content.
+Each note is voiced exactly once via a tiny cache (`voiced_newsletter_notes.json`). The
+pipeline loads with `defer_commit=True` and calls `commit_voiced_items()` ONLY after the
+briefing's delivery verdict — the same pattern as `SourceFetcher.defer_cache` (see
+"Failed runs silently dropped content" in CLAUDE.md). Marking at load time would mean any
+crash between load and delivery (AI rewrite, TTS, Drive upload) permanently skips that
+note's audio: the markdown survives, but the next run sees it "voiced" and never voices it.
 """
 import os
 import re
@@ -162,12 +165,16 @@ def _clean_title(title, source_name):
     return t
 
 
-def load_local_markdown_items(data_dir, config=None):
+def load_local_markdown_items(data_dir, config=None, defer_commit=False):
     """FetchedItems for not-yet-voiced local markdown notes within the lookback window.
 
     config: optional {base_dir, folders[], lookback_days} (used by tests). When None it is
     resolved from local_sources.json + env overrides. Returns [] when disabled (no base_dir,
     base_dir not a directory, or no enabled folders).
+
+    defer_commit: when True, the voiced-cache is NOT written here — the caller must invoke
+    commit_voiced_items(data_dir, items) after the briefing is actually delivered, so a
+    failed run leaves the notes unvoiced for retry (mirrors SourceFetcher.defer_cache).
     """
     if config is None:
         base_dir, folders, lookback_days = _resolve_config(data_dir)
@@ -231,11 +238,36 @@ def load_local_markdown_items(data_dir, config=None):
             ))
             newly.append(path)
 
-    if newly:
-        try:
-            voiced.update(newly)
-            with open(cache_path, "w", encoding="utf-8") as fh:
-                json.dump({"paths": sorted(voiced)}, fh, indent=2)
-        except Exception:
-            pass
+    if newly and not defer_commit:
+        _write_voiced(cache_path, voiced, newly)
     return items
+
+
+def _write_voiced(cache_path, already, newly):
+    try:
+        already.update(newly)
+        with open(cache_path, "w", encoding="utf-8") as fh:
+            json.dump({"paths": sorted(already)}, fh, indent=2)
+    except Exception:
+        pass
+
+
+def commit_voiced_items(data_dir, items):
+    """Mark delivered local-markdown items as voiced. Call ONLY after delivery succeeds.
+
+    Filters to items this module produced (metadata.origin == 'local_markdown'), so the
+    whole delivered item list can be passed. Returns the number committed.
+    """
+    paths = [i.metadata.get("path") for i in items
+             if getattr(i, "metadata", None) and i.metadata.get("origin") == "local_markdown"
+             and i.metadata.get("path")]
+    if not paths:
+        return 0
+    cache_path = os.path.join(data_dir, _CACHE_NAME)
+    try:
+        with open(cache_path, encoding="utf-8") as fh:
+            voiced = set(json.load(fh).get("paths", []))
+    except Exception:
+        voiced = set()
+    _write_voiced(cache_path, voiced, paths)
+    return len(paths)

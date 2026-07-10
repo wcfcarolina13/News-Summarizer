@@ -7,7 +7,7 @@ from datetime import datetime, timedelta
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from source_fetcher import SourceType
-from local_markdown_source import load_local_markdown_items
+from local_markdown_source import load_local_markdown_items, commit_voiced_items
 
 
 def _make_note(d, subdir, name, date_str, title, body):
@@ -86,6 +86,31 @@ def test_includes_recent_and_dedupes():
         assert os.path.exists(os.path.join(data, "voiced_newsletter_notes.json"))
         # second run: deduped -> 0
         assert load_local_markdown_items(data, cfg) == []
+
+
+def test_defer_commit_survives_crash_before_delivery():
+    """The cache-before-delivery guard (same class as the Jun 12-13 video bug).
+
+    With defer_commit=True a load does NOT mark notes voiced: if the run dies before
+    delivery (AI rewrite, TTS, Drive), the next run re-offers the same note instead of
+    silently skipping its audio forever. Only commit_voiced_items() persists the cache.
+    """
+    with tempfile.TemporaryDirectory() as vault, tempfile.TemporaryDirectory() as data:
+        today = datetime.now().strftime("%Y-%m-%d")
+        _make_note(vault, "12-Batch", f"Batch-{today}.md", today, "Batch issue",
+                   "Andrew Ng on loop engineering and shipping products with agents.")
+        cfg = _cfg(vault, "12-Batch", "The Batch")
+        # load with defer: nothing persisted (simulates a crash after load)
+        items = load_local_markdown_items(data, cfg, defer_commit=True)
+        assert len(items) == 1
+        assert not os.path.exists(os.path.join(data, "voiced_newsletter_notes.json"))
+        # "next run" retries the same note — not lost
+        retry = load_local_markdown_items(data, cfg, defer_commit=True)
+        assert len(retry) == 1
+        # delivery verdict arrives -> commit (mixed list: only local_markdown items count)
+        assert commit_voiced_items(data, retry) == 1
+        # now it's voiced-once: no more re-offers
+        assert load_local_markdown_items(data, cfg, defer_commit=True) == []
 
 
 def test_excludes_stale_issues():
