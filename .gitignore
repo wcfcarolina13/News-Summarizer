@@ -81,6 +81,7 @@ build_*.log
 # USER DATA (additional)
 # =============================================================================
 daily_audio_briefing/processed_videos.json
+daily_audio_briefing/pending_render.json
 
 # =============================================================================
 # PUBLIC-READINESS: personal config (ship the .example siblings instead)
@@ -90,6 +91,7 @@ daily_audio_briefing/channels.txt
 daily_audio_briefing/instruction_profiles.json
 daily_audio_briefing/voiced_newsletter_notes.json
 daily_audio_briefing/local_sources.json
+daily_audio_briefing/briefing_gate.json
 daily_audio_briefing/*.bak-*
 
 # Internal planning artifacts (specs/plans) stay local — same as the existing plan.md / .claude/ ignores.

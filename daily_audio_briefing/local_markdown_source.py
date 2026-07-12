@@ -261,6 +261,26 @@ def commit_voiced_items(data_dir, items):
     paths = [i.metadata.get("path") for i in items
              if getattr(i, "metadata", None) and i.metadata.get("origin") == "local_markdown"
              and i.metadata.get("path")]
+    return commit_voiced_paths(data_dir, paths)
+
+
+def voiced_paths_for_items(items):
+    """Extract the voiced-cache keys (note paths) for local-markdown items.
+
+    Used to persist which notes a deferred render will voice, so a later run that
+    finishes delivery can commit them via commit_voiced_paths()."""
+    return [i.metadata.get("path") for i in items
+            if getattr(i, "metadata", None) and i.metadata.get("origin") == "local_markdown"
+            and i.metadata.get("path")]
+
+
+def commit_voiced_paths(data_dir, paths):
+    """Mark explicit note paths as voiced. Call ONLY after delivery succeeds.
+
+    Underlies commit_voiced_items(); also used by the cross-run deferred-render path
+    where the original item objects are gone and only the paths survive in a sidecar.
+    """
+    paths = [p for p in (paths or []) if p]
     if not paths:
         return 0
     cache_path = os.path.join(data_dir, _CACHE_NAME)

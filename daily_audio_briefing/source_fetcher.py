@@ -382,15 +382,34 @@ class SourceFetcher:
         """
         pending = self._pending_processed
         self._pending_processed = []
-        if not (pending and self.data_dir):
+        return SourceFetcher.commit_video_ids(self.data_dir, pending)
+
+    def stash_pending_cache(self) -> list:
+        """Return a copy of the deferred video IDs so the caller can persist them.
+
+        Used when a briefing's audio render is deferred (e.g. GPU busy) and will be
+        finished by a *later* run: the original fetcher is gone by then, so the IDs
+        must be carried in a sidecar and committed via commit_video_ids() once that
+        later run actually delivers.
+        """
+        return list(self._pending_processed)
+
+    @staticmethod
+    def commit_video_ids(data_dir, video_ids) -> int:
+        """Persist an explicit list of processed video IDs to the cache.
+
+        Shared by commit_processed_cache() (same-run delivery) and the cross-run
+        deferred-render path (delivery in a later run). Call ONLY after delivery.
+        """
+        if not (video_ids and data_dir):
             return 0
-        cache = load_cache(self.data_dir)
+        cache = load_cache(data_dir)
         today_str = datetime.now().strftime('%Y-%m-%d')
-        for vid_id in pending:
+        for vid_id in video_ids:
             cache.setdefault('videos', {})[vid_id] = {'processed_date': today_str}
-        save_cache(self.data_dir, cache)
-        _debug_log(f"[SourceFetcher] Committed {len(pending)} videos to processed cache (delivered)")
-        return len(pending)
+        save_cache(data_dir, cache)
+        _debug_log(f"[SourceFetcher] Committed {len(video_ids)} videos to processed cache (delivered)")
+        return len(video_ids)
 
     def _get_model(self):
         """Lazy-load the Gemini model."""

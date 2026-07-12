@@ -267,6 +267,25 @@ class Scheduler:
         now = datetime.now()
         for task in self.tasks:
             if task.enabled:
+                # A briefing whose GPU-heavy render was deferred (waiting for the GPU
+                # to free up) keeps a SHORT retry cadence — don't reset it to the daily
+                # schedule. load_tasks() runs every 60s, so without this the +15min
+                # retry set by the readiness gate would be clobbered within a minute
+                # (the same class of bug as the catch-up race). The pending-render
+                # sidecar manifest is the durable signal.
+                if self._has_pending_render(task):
+                    valid_future = False
+                    if task.next_run:
+                        try:
+                            nr = datetime.fromisoformat(task.next_run)
+                            valid_future = now < nr <= now + timedelta(hours=1)
+                        except (ValueError, TypeError):
+                            valid_future = False
+                    if not valid_future:
+                        # Overdue / missing (e.g. woke from sleep) → fire promptly.
+                        task.next_run = (now + timedelta(seconds=10)).isoformat()
+                    continue
+
                 # Check if task was never run OR was last run on a previous day
                 # and its scheduled time already passed today — run it soon to catch up
                 task_missed = False
@@ -441,6 +460,16 @@ class Scheduler:
             if task.id == task_id:
                 return task
         return None
+
+    def _calculate_retry_run(self, minutes: int) -> str:
+        """A short retry time `minutes` from now, for a briefing whose GPU-heavy
+        render was deferred (machine busy). Distinct from the daily _calculate_next_run
+        so the deferral re-fires soon instead of waiting until tomorrow."""
+        try:
+            minutes = max(1, int(minutes))
+        except (TypeError, ValueError):
+            minutes = 15
+        return (datetime.now() + timedelta(minutes=minutes)).isoformat()
 
     def _calculate_next_run(self, task: ScheduledTask) -> str:
         """Calculate the next run time for a task."""
@@ -664,7 +693,16 @@ class Scheduler:
         try:
             # Route to pipeline executor for briefing tasks
             if task.task_type == "briefing_pipeline":
-                self._execute_pipeline_task(task)
+                pipeline_result = self._execute_pipeline_task(task)
+
+                if pipeline_result == "__DEFER__":
+                    # The render was held back (GPU busy). _execute_pipeline_task
+                    # already set a short retry next_run; DON'T overwrite it with the
+                    # daily schedule, and don't fire the completion callback — the
+                    # briefing is still pending, not done.
+                    self._sync_task_state(task)
+                    self.save_tasks()
+                    return
 
                 # Calculate next run and save
                 task.next_run = self._calculate_next_run(task)
@@ -936,8 +974,17 @@ class Scheduler:
         if os.path.exists(summary_path) and (self.server_mode or os.path.exists(audio_path)):
             self._log(task.id, f"[Pipeline] Checkpoint: summary+audio already exist, skipping to Drive upload")
             audio_file = audio_path if os.path.exists(audio_path) else None
-            self._pipeline_drive_upload(task, summary_path, audio_file, data_dir, 0)
-            return
+            delivered = self._pipeline_drive_upload(task, summary_path, audio_file, data_dir, 0)
+            # If a previously-deferred render finally reaches Drive here, commit the
+            # caches its (now-gone) fetcher was holding, so today's videos aren't
+            # re-fetched tomorrow.
+            if delivered:
+                self._pipeline_commit_render_manifest(data_dir, today, task.id)
+                return
+            # Upload failed again (e.g. Drive timeout) — retry soon rather than waiting
+            # for the next daily run. fetcher is None on this checkpoint path.
+            retry = self._maybe_defer_upload_retry(task, data_dir, today, None, [])
+            return retry if retry else None
 
         # Partial checkpoint: summary text exists but audio is missing (e.g. previous
         # TTS run timed out). Resume from the TTS step using the saved text instead
@@ -1042,6 +1089,48 @@ class Scheduler:
             self._log(task.id, f"[Pipeline] Saved summary ({len(text)} chars) to {week_folder}")
         else:
             os.makedirs(week_folder, exist_ok=True)
+
+        # --- Readiness gate: hold back the GPU-heavy Kokoro render when the machine
+        # is busy (OpenMW/Dreamsleeve, a game, or sustained GPU load). Fetch +
+        # summarize already ran above (cloud free-chain, no local GPU) so today's
+        # text is durably saved; the retry resumes at the TTS step. Only the
+        # 'quality' (Kokoro/Metal) path is gated — 'fast' gTTS is CPU/network. The
+        # processed-videos cache is NOT committed on defer, so undelivered content
+        # rolls into the next run and is never silently lost. ---
+        if not self.server_mode and task.audio_quality == "quality":
+            try:
+                from briefing_gate import render_blocked, load_gate_config
+                _gate_cfg = load_gate_config(data_dir)
+                if _gate_cfg.get("enabled", True):
+                    _blocked, _reason = render_blocked(config=_gate_cfg)
+                    if _blocked:
+                        _giveup_hour = int(_gate_cfg.get("giveup_hour", 22))
+                        if datetime.now().hour >= _giveup_hour:
+                            # Past cutoff: give up for today, skip to tomorrow. Discard
+                            # the manifest and leave the cache uncommitted so today's
+                            # content rolls into the next run.
+                            self._pipeline_discard_render_manifest(data_dir)
+                            task.last_result = f"Skipped: {_reason}; past {_giveup_hour}:00 cutoff — rolled to tomorrow"
+                            self._log(task.id, f"[Pipeline] Audio render blocked ({_reason}); past {_giveup_hour}:00 cutoff — skipping today, content rolls forward.")
+                            return
+                        # Persist what THIS render will deliver so a later run (whose
+                        # fetcher is gone) can still commit the caches on delivery, AND
+                        # so load_tasks() knows a render is pending and keeps the short
+                        # retry cadence. A fresh fetch writes the authoritative manifest;
+                        # a resume-defer (fetcher None) just ensures one exists without
+                        # clobbering the real video/note IDs.
+                        if fetcher is not None:
+                            self._pipeline_write_render_manifest(data_dir, today, fetcher, local_items, task.id)
+                        elif not os.path.exists(self._render_manifest_path(data_dir)):
+                            self._pipeline_write_render_manifest(data_dir, today, None, [], task.id)
+                        _retry_min = int(_gate_cfg.get("retry_interval_min", 15))
+                        task.next_run = self._calculate_retry_run(_retry_min)
+                        task.last_result = f"Deferred: {_reason} (audio pending, retry ~{_retry_min}min)"
+                        self._log(task.id, f"[Pipeline] Audio render deferred — {_reason}. Text saved; retry at {task.next_run}.")
+                        return "__DEFER__"
+            except Exception as _ge:
+                # Fail-open: a gate failure must never block the briefing.
+                self._log(task.id, f"[Pipeline] Readiness gate error (proceeding with render): {_ge}")
 
         # --- Step 5: Generate audio (skip in server mode) ---
         audio_file = None
@@ -1199,6 +1288,153 @@ class Scheduler:
                 commit_voiced_items(data_dir, local_items)
             else:
                 self._log(task.id, f"[Pipeline] Delivery incomplete — leaving {len(local_items)} local note(s) unvoiced for retry next run")
+
+        # If THIS run delivered a render that a PRIOR run deferred (fetcher is None
+        # on the resume tick), commit the caches carried in the sidecar manifest so
+        # today's videos/notes aren't re-fetched tomorrow. Date-guarded + always
+        # cleans up a stale manifest.
+        if delivered:
+            self._pipeline_commit_render_manifest(data_dir, today, task.id)
+        elif audio_file:
+            # Audio was generated but didn't reach Drive (e.g. read timeout). Retry the
+            # upload on the short cadence instead of waiting for the next daily run.
+            retry = self._maybe_defer_upload_retry(task, data_dir, today, fetcher, local_items)
+            if retry:
+                return retry
+
+    def _render_manifest_path(self, data_dir) -> str:
+        return os.path.join(data_dir, "pending_render.json")
+
+    def _effective_data_dir(self):
+        """The dir the pipeline reads/writes its files in — matches the data_dir that
+        _execute_pipeline_task computes (FileManager().base_dir). In dev mode
+        self.data_dir is None, so we can't rely on it here."""
+        try:
+            from file_manager import FileManager
+            base = FileManager().base_dir
+            if base:
+                return base
+        except Exception:
+            pass
+        return self.data_dir
+
+    def _has_pending_render(self, task) -> bool:
+        """True if this pipeline task has a render deferred *today* (sidecar manifest
+        exists for today's date). Used by load_tasks() to keep the short retry cadence
+        instead of resetting next_run to the daily schedule."""
+        if getattr(task, "task_type", None) != "briefing_pipeline":
+            return False
+        data_dir = self._effective_data_dir()
+        if not data_dir:
+            return False
+        path = self._render_manifest_path(data_dir)
+        if not os.path.exists(path):
+            return False
+        try:
+            with open(path, encoding="utf-8") as f:
+                m = json.load(f)
+            return isinstance(m, dict) and m.get("date") == datetime.now().date().isoformat()
+        except Exception:
+            return False
+
+    def _pipeline_write_render_manifest(self, data_dir, today, fetcher, local_items, task_id=""):
+        """Persist which videos/notes a deferred render will deliver.
+
+        On a GPU-deferred render the original fetcher is gone by the time a later
+        run finishes delivery, so the deferred-commit IDs must survive in a sidecar.
+        """
+        try:
+            from local_markdown_source import voiced_paths_for_items
+            manifest = {
+                "date": today.isoformat(),
+                "video_ids": fetcher.stash_pending_cache() if fetcher is not None else [],
+                "note_paths": voiced_paths_for_items(local_items or []),
+            }
+            with open(self._render_manifest_path(data_dir), "w", encoding="utf-8") as f:
+                json.dump(manifest, f)
+        except Exception as e:
+            self._log(task_id, f"[Pipeline] Could not write render manifest ({e})")
+
+    def _pipeline_commit_render_manifest(self, data_dir, today, task_id=""):
+        """Commit the caches a deferred render carried, once it has been delivered.
+
+        Only honors a manifest for *today's* briefing; a stale one (different date)
+        is discarded without committing, so it can't wrongly stamp a new day's
+        content as processed. Always removes the file. Returns (videos, notes)."""
+        path = self._render_manifest_path(data_dir)
+        if not os.path.exists(path):
+            return (0, 0)
+        v = n = 0
+        try:
+            with open(path, encoding="utf-8") as f:
+                m = json.load(f)
+            if isinstance(m, dict) and m.get("date") == today.isoformat():
+                from source_fetcher import SourceFetcher
+                from local_markdown_source import commit_voiced_paths
+                v = SourceFetcher.commit_video_ids(data_dir, m.get("video_ids") or [])
+                n = commit_voiced_paths(data_dir, m.get("note_paths") or [])
+        except Exception as e:
+            self._log(task_id, f"[Pipeline] Could not commit render manifest ({e})")
+        try:
+            os.remove(path)
+        except Exception:
+            pass
+        if v or n:
+            self._log(task_id, f"[Pipeline] Committed deferred caches on delivery: {v} video(s), {n} note(s)")
+        return (v, n)
+
+    def _pipeline_discard_render_manifest(self, data_dir):
+        """Drop a pending-render manifest (giveup-at-cutoff / roll to tomorrow)."""
+        try:
+            path = self._render_manifest_path(data_dir)
+            if os.path.exists(path):
+                os.remove(path)
+        except Exception:
+            pass
+
+    def _upload_retry_is_worthwhile(self, task) -> bool:
+        """True if a just-failed Drive upload is worth retrying soon (transient, e.g.
+        a read timeout) rather than waiting for the next daily run. False for
+        permanent/unactionable cases (Drive not configured, not signed in, token
+        expired) — those need the user, so retrying every 15min would just spam."""
+        if not (task.upload_to_drive and task.drive_folder_id):
+            return False
+        try:
+            from drive_manager import is_reauth_needed, is_signed_in
+            if is_reauth_needed() or not is_signed_in():
+                return False
+        except Exception:
+            return False
+        return True
+
+    def _maybe_defer_upload_retry(self, task, data_dir, today, fetcher, local_items):
+        """After a failed Drive upload of a briefing whose audio EXISTS, schedule a
+        short retry (return the defer sentinel) instead of waiting for the next daily
+        run — bounded by the same giveup_hour as the GPU gate. Returns None to fall
+        through to the daily schedule (permanent error, or past cutoff).
+
+        Ensures a pending-render manifest exists so load_tasks() keeps the short retry
+        cadence and the eventual successful upload commits the deferred caches."""
+        if not self._upload_retry_is_worthwhile(task):
+            return None
+        from briefing_gate import load_gate_config
+        cfg = load_gate_config(data_dir)
+        giveup_hour = int(cfg.get("giveup_hour", 22))
+        if datetime.now().hour >= giveup_hour:
+            # Give up for today; content rolls forward via the uncommitted cache.
+            self._pipeline_discard_render_manifest(data_dir)
+            return None
+        # A fresh fetch writes the authoritative manifest (carries its video IDs); a
+        # resume/checkpoint run (fetcher None) just ensures one exists as the signal.
+        if fetcher is not None:
+            self._pipeline_write_render_manifest(data_dir, today, fetcher, local_items, task.id)
+        elif not os.path.exists(self._render_manifest_path(data_dir)):
+            self._pipeline_write_render_manifest(data_dir, today, None, local_items or [], task.id)
+        retry_min = int(cfg.get("retry_interval_min", 15))
+        task.next_run = self._calculate_retry_run(retry_min)
+        task.last_result = f"{task.last_result} — retrying upload ~{retry_min}min"
+        self._log(task.id, f"[Pipeline] Drive upload failed; retry at {task.next_run} (before {giveup_hour}:00 cutoff).")
+        return "__DEFER__"
 
     def _pipeline_drive_upload(self, task, summary_path, audio_file, data_dir, item_count, cooldown=(0, False)):
         """Upload pipeline output to Google Drive and update task result.

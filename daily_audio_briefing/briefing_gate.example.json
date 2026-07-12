@@ -1,0 +1,12 @@
+{
+  "_comment": "Readiness gate for the GPU-heavy Kokoro TTS render. Copy to briefing_gate.json to override. ALL fields optional — built-in defaults apply for anything omitted, and a missing file means 'use defaults', never 'disabled'. Only the 'quality' audio path is gated; 'fast' gTTS is never blocked.",
+  "enabled": true,
+  "_blocking_processes": "Substring, case-insensitive process names. Any match defers the render. 'openmw' already covers Dreamsleeve. Add your game/launcher process names here.",
+  "blocking_processes": ["openmw"],
+  "_gpu_busy_threshold_pct": "Defer if sustained GPU Device Utilization %% exceeds this (catches games not in the list above). 40 = fairly permissive.",
+  "gpu_busy_threshold_pct": 40,
+  "_retry_interval_min": "When deferred, re-check this many minutes later.",
+  "retry_interval_min": 15,
+  "_giveup_hour": "After this local hour, stop retrying for the day and skip to tomorrow (undelivered content rolls into the next run).",
+  "giveup_hour": 22
+}
