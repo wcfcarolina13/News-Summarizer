@@ -20,7 +20,7 @@ from dataclasses import dataclass, field
 from enum import Enum
 from typing import List, Dict, Optional, Callable, Tuple
 from urllib.parse import urlparse
-from video_cache import load_cache, save_cache
+from video_cache import load_cache, save_cache, article_key
 
 # Debug logging to file
 _DEBUG_LOG_FILE = None
@@ -368,21 +368,61 @@ class SourceFetcher:
         # failed upload from marking videos 'processed' yet never delivering them.
         self.defer_cache = False
         self._pending_processed = []
+        # Same discipline for RSS/article URLs. Added 2026-08-03: articles had
+        # no dedup at all, so any item inside the (date-truncated, up to 48h)
+        # window was re-read and re-spoken the next day.
+        self._pending_articles = []
 
     def pending_cache_count(self) -> int:
         """How many newly-processed videos are waiting for a delivery commit."""
         return len(self._pending_processed)
 
+    def pending_article_count(self) -> int:
+        """How many newly-delivered articles are waiting for a delivery commit."""
+        return len(self._pending_articles)
+
     def commit_processed_cache(self) -> int:
-        """Persist the videos accumulated while defer_cache was on.
+        """Persist the videos and articles accumulated while defer_cache was on.
 
         Call ONLY after the briefing has been delivered. A run that crashes or
-        whose audio/upload fails must NOT reach here, so those videos stay
-        uncached and the next run re-fetches and delivers them. Returns count.
+        whose audio/upload fails must NOT reach here, so those items stay
+        uncached and the next run re-fetches and delivers them. Returns the
+        video count (articles are reported separately in the log).
         """
         pending = self._pending_processed
+        pending_articles = self._pending_articles
         self._pending_processed = []
+        self._pending_articles = []
+        SourceFetcher.commit_article_urls(self.data_dir, pending_articles)
         return SourceFetcher.commit_video_ids(self.data_dir, pending)
+
+    def stash_pending_articles(self) -> list:
+        """Return a copy of the deferred article URLs so the caller can persist them.
+
+        Counterpart to stash_pending_cache() for the deferred-render path: the
+        fetcher is gone by the time a later run delivers, so these ride along in
+        pending_render.json and commit via commit_article_urls().
+        """
+        return list(self._pending_articles)
+
+    @staticmethod
+    def commit_article_urls(data_dir, urls) -> int:
+        """Persist an explicit list of delivered article URLs to the cache.
+
+        Shared by commit_processed_cache() (same-run delivery) and the cross-run
+        deferred-render path. Call ONLY after delivery.
+        """
+        if not (urls and data_dir):
+            return 0
+        cache = load_cache(data_dir)
+        today_str = datetime.now().strftime('%Y-%m-%d')
+        for url in urls:
+            key = article_key(url)
+            if key:
+                cache.setdefault('articles', {})[key] = {'processed_date': today_str}
+        save_cache(data_dir, cache)
+        _debug_log(f"[SourceFetcher] Committed {len(urls)} articles to processed cache (delivered)")
+        return len(urls)
 
     def stash_pending_cache(self) -> list:
         """Return a copy of the deferred video IDs so the caller can persist them.
@@ -1261,6 +1301,8 @@ Your output goes directly to TTS. Any markdown or preambles will sound wrong whe
             return []
 
         items = []
+        delivered_articles = load_cache(self.data_dir).get('articles', {})
+        skipped_already_delivered = 0
 
         try:
             response = requests.get(source.url, timeout=30, headers={
@@ -1300,6 +1342,17 @@ Your output goes directly to TTS. Any markdown or preambles will sound wrong whe
                     if link_elem:
                         link_url = link_elem.get('href') or link_elem.get_text(strip=True)
                     else:
+                        continue
+
+                    # Skip anything already spoken in an earlier briefing. The
+                    # date filter alone can't do this: it truncates to date
+                    # granularity, so a 24h window covers up to 48h and any
+                    # article published before the previous run's clock time
+                    # falls inside it twice. Checked before summarization so a
+                    # repeat costs no LLM call, same as the video path.
+                    if article_key(link_url) in delivered_articles:
+                        _debug_log(f"[RSS] Skipping (already delivered): {link_url[:70]}")
+                        skipped_already_delivered += 1
                         continue
 
                     # Parse date
@@ -1353,6 +1406,11 @@ Your output goes directly to TTS. Any markdown or preambles will sound wrong whe
                         published_date=pub_date,
                         summary=summary
                     ))
+                    # Mark delivered only once the briefing actually ships —
+                    # the same defer-until-delivery rule the video cache uses,
+                    # so a crash or failed upload leaves this article eligible
+                    # for the next run instead of silently swallowing it.
+                    self._pending_articles.append(link_url)
 
                 except Exception as e:
                     _debug_log(f"[RSS] Error parsing entry: {e}")
@@ -1360,6 +1418,17 @@ Your output goes directly to TTS. Any markdown or preambles will sound wrong whe
 
         except Exception as e:
             _debug_log(f"[RSS] Error fetching {source.url}: {e}")
+
+        if skipped_already_delivered:
+            _debug_log(f"[RSS] {source.url[:55]}: skipped {skipped_already_delivered} "
+                       f"already-delivered article(s)")
+
+        if not self.defer_cache and self._pending_articles:
+            # Non-deferred callers (GUI one-offs) have no delivery verdict to
+            # wait for, so commit immediately rather than losing the record.
+            pending = self._pending_articles
+            self._pending_articles = []
+            SourceFetcher.commit_article_urls(self.data_dir, pending)
 
         return items
 

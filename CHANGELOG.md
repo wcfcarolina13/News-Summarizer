@@ -5,6 +5,45 @@ All notable changes to the Daily Audio Briefing, newest first. Format follows
 deployed from the working tree, so entries are dated rather than tied to release
 tags.
 
+## 2026-08-03 (evening)
+
+### Fixed
+- **Briefings re-spoke RSS/article content already delivered.** The Aug 3 briefing was **54%
+  verbatim-identical to Aug 2**: of its 4 items, 2 were repeats — and both were RSS items dated
+  Aug 2. The YouTube items were correctly deduped (`Skipped by cache: 6` for `@UnchainedCrypto`
+  in that run's log), which is what isolated the cause.
+  - **Two things compounded.** `scheduler.py` computes `cutoff = datetime.now() - timedelta(hours=24)`,
+    but the RSS filter compares `pub_date.date() < cutoff_date.date()` — truncated to **date**
+    granularity, so a 24h window covers up to 48h and everything dated "yesterday" is in scope
+    regardless of clock time. And RSS items had **no dedup cache at all**: videos had
+    `processed_videos.json`, local notes had `voiced_newsletter_notes.json`, articles had nothing.
+  - **Intermittent, which is why it went unnoticed.** Across the last 8 briefings only Jul 28 and
+    Aug 3 show repeats, both RSS-only — and both follow an unusually *late* run the previous day
+    (Jul 27 ran 08:37; Aug 2 was the 18:45 outage recovery). A late run sweeps up same-day items,
+    which the next morning's run then re-reads. The Aug 2 recovery maximised the overlap, and with
+    only 2 new videos available that morning the repeats went from background noise to half the
+    briefing.
+  - **Fix:** articles now get exactly the treatment videos already had. `video_cache.py` gains an
+    `articles` bucket (same file, same 30-day TTL) keyed by a normalised URL — trailing slash and
+    fragment stripped, query kept, since feeds vary those between runs. `_fetch_rss` checks it
+    *before* summarizing, so a repeat costs no LLM call. Commit is deferred until the delivery
+    verdict via `_pending_articles` / `commit_article_urls`, so a crashed or failed-upload run
+    leaves articles eligible for retry — the June lesson, applied to the one source type still
+    missing it.
+  - **Deferred renders carry articles too.** `pending_render.json` now records `article_urls`
+    alongside `video_ids`; without it a GPU-deferred render would deliver its articles and leave
+    them uncached, reintroducing the same bug in the resume path.
+  - **Hardened the manifest write.** It builds the sidecar inside a `try/except`, so an
+    `AttributeError` on any one field silently discarded the *entire* manifest — video IDs
+    included. Fields are now read via `getattr`, so a partial fetcher degrades one field instead of
+    losing the lot. This surfaced when four existing `test_render_gate_wiring` tests failed against
+    a stub fetcher; they pass unmodified against the hardened version.
+  - Backward compatible: caches and manifests written by the previous build load fine (verified
+    against the live 234-video cache). Verified end-to-end against the real Substack feeds —
+    cold run returned 4 items including both articles that duplicated; the same window after a
+    delivery commit returned 0.
+  - Tests: `tests/test_rss_dedup.py`, `tests/test_render_manifest_articles.py`. 122 pass.
+
 ## 2026-08-03 (later)
 
 ### Fixed

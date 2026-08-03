@@ -22,8 +22,10 @@ def cache_dir():
 
 class TestEmptyCache:
     def test_structure(self):
+        # 'articles' joined 'videos' on 2026-08-03 — RSS items now get the same
+        # delivered-content dedup videos always had. See test_rss_dedup.py.
         cache = _empty_cache()
-        assert cache == {'version': 1, 'videos': {}}
+        assert cache == {'version': 1, 'videos': {}, 'articles': {}}
 
     def test_returns_new_dict_each_call(self):
         a = _empty_cache()

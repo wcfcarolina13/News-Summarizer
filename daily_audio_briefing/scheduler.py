@@ -1372,16 +1372,30 @@ class Scheduler:
             return False
 
     def _pipeline_write_render_manifest(self, data_dir, today, fetcher, local_items, task_id=""):
-        """Persist which videos/notes a deferred render will deliver.
+        """Persist which videos/articles/notes a deferred render will deliver.
 
         On a GPU-deferred render the original fetcher is gone by the time a later
         run finishes delivery, so the deferred-commit IDs must survive in a sidecar.
+        Articles ride along too — without them a deferred render delivers its RSS
+        items and leaves them uncached, so the next run speaks them again.
         """
         try:
             from local_markdown_source import voiced_paths_for_items
+
+            def _stash(name):
+                # getattr, not a direct call: this whole block is wrapped in a
+                # try/except, so one missing attribute would discard the ENTIRE
+                # manifest — including the video IDs — and silently reintroduce
+                # the duplication the manifest exists to prevent.
+                if fetcher is None:
+                    return []
+                fn = getattr(fetcher, name, None)
+                return list(fn()) if callable(fn) else []
+
             manifest = {
                 "date": today.isoformat(),
-                "video_ids": fetcher.stash_pending_cache() if fetcher is not None else [],
+                "video_ids": _stash("stash_pending_cache"),
+                "article_urls": _stash("stash_pending_articles"),
                 "note_paths": voiced_paths_for_items(local_items or []),
             }
             with open(self._render_manifest_path(data_dir), "w", encoding="utf-8") as f:
@@ -1394,11 +1408,14 @@ class Scheduler:
 
         Only honors a manifest for *today's* briefing; a stale one (different date)
         is discarded without committing, so it can't wrongly stamp a new day's
-        content as processed. Always removes the file. Returns (videos, notes)."""
+        content as processed. Always removes the file. Returns (videos, notes).
+
+        Tolerates a manifest written by an older build (no "article_urls" key) —
+        one can be live on disk across an upgrade."""
         path = self._render_manifest_path(data_dir)
         if not os.path.exists(path):
             return (0, 0)
-        v = n = 0
+        v = n = a = 0
         try:
             with open(path, encoding="utf-8") as f:
                 m = json.load(f)
@@ -1406,6 +1423,7 @@ class Scheduler:
                 from source_fetcher import SourceFetcher
                 from local_markdown_source import commit_voiced_paths
                 v = SourceFetcher.commit_video_ids(data_dir, m.get("video_ids") or [])
+                a = SourceFetcher.commit_article_urls(data_dir, m.get("article_urls") or [])
                 n = commit_voiced_paths(data_dir, m.get("note_paths") or [])
         except Exception as e:
             self._log(task_id, f"[Pipeline] Could not commit render manifest ({e})")
@@ -1413,8 +1431,9 @@ class Scheduler:
             os.remove(path)
         except Exception:
             pass
-        if v or n:
-            self._log(task_id, f"[Pipeline] Committed deferred caches on delivery: {v} video(s), {n} note(s)")
+        if v or n or a:
+            self._log(task_id, f"[Pipeline] Committed deferred caches on delivery: "
+                               f"{v} video(s), {a} article(s), {n} note(s)")
         return (v, n)
 
     def _pipeline_discard_render_manifest(self, data_dir):
