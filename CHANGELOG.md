@@ -5,6 +5,42 @@ All notable changes to the Daily Audio Briefing, newest first. Format follows
 deployed from the working tree, so entries are dated rather than tied to release
 tags.
 
+## 2026-08-02
+
+### Fixed
+- **Daemon wedged for ~33h on a timeout-less YouTube read; three days of briefings lost
+  (Jul 31 – Aug 2, last delivery `2026-07-30_News.txt`).** `youtube_rss.fetch_channel_videos_with_fallback`
+  called `list(scrapetube.get_channel(...))` with no bound. scrapetube passes no `timeout=` to its
+  requests session and nothing sets a global socket timeout, so a YouTube-side stall blocked in
+  `recv()` **forever** — never returning, never raising, which made the surrounding `try/except`
+  and the healthy RSS fallback beneath it both unreachable. Confirmed by stack sample: 2622/2622
+  samples in `read()` under `SSL_read_ex` ← `_buffered_readline` ← `gen_iternext`/`list_extend`
+  (scrapetube's paginating generator), process at 0% CPU holding an ESTABLISHED socket to a Google IP.
+  - **Blast radius was everything, not just the briefing.** `_run_loop` executes tasks *inline*
+    (`scheduler.py:606`), so the blocked read stopped the loop reaching its next iteration —
+    CryptoSum and RWA died too. On-disk `last_run` froze at Jul 30 because `save_tasks()` is only
+    called on completion paths. The separate 60s reload thread stayed alive, re-arming
+    `next_run = now+10s` every minute with nothing left to consume it: ~3,600 lines of
+    "missed today's run" spam and a 7.9 MB log.
+  - **Fix 1 — bounded scrapetube.** It now runs on a throwaway daemon thread with a hard
+    `SCRAPETUBE_TIMEOUT` (25s), then falls through to RSS. A blocked thread can't be killed from
+    Python, so it is abandoned rather than joined. Plus a per-process circuit breaker
+    (`SCRAPETUBE_FAILURE_LIMIT`, 2): when scrapetube breaks it breaks for every channel, and
+    12 channels × 25s would add 5 minutes of dead wall-clock to every run.
+  - **Fix 2 — task watchdog.** `Scheduler._running_since` records each task's start;
+    `overdue_tasks()` reports overruns; `scheduler_daemon._start_task_watchdog` polls every 60s and,
+    past `TASK_WATCHDOG_SECONDS` (3h, env-overridable), notifies and `os._exit(1)` so the
+    LaunchAgent's `KeepAlive=true` restarts clean and catch-up resumes. `_mark_running`/`_unmark_running`
+    keep the mutex and the start-time map from drifting.
+  - **Fix 3 — the silence.** `_notify()` fires only from `on_task_complete`, which a hang never
+    reaches (it neither returns nor raises). The watchdog is now the path that alerts. This was the
+    second multi-day outage in two months found via an empty Drive folder rather than an alert.
+  - Not a regression: no code changed since Jul 12 (before the daemon started), clean working tree,
+    no dependency changes since December. scrapetube 2.6.0 broke YouTube-side — verified live, it
+    hangs on `@WesRoth` and `@UnchainedCrypto` and returns empty for a third channel, while RSS
+    returns 15 videos/channel in <1s.
+  - Tests: `tests/test_youtube_fetch_timeout.py`, `tests/test_task_watchdog.py`. 85 pass.
+
 ## 2026-06-27
 
 ### Fixed

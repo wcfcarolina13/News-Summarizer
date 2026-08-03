@@ -18,6 +18,7 @@ Usage:
 import os
 import sys
 import time
+import threading
 import signal
 import json
 import logging
@@ -139,6 +140,58 @@ def _notify(title: str, message: str):
         pass
 
 
+# How long a single task may run before the watchdog treats it as hung.
+# Generous: a full briefing (fetch + summarize + Kokoro TTS, itself capped at
+# 1800s) finishes well inside this. Override with DAB_TASK_WATCHDOG_SECONDS.
+TASK_WATCHDOG_SECONDS = int(os.environ.get('DAB_TASK_WATCHDOG_SECONDS', 3 * 3600))
+TASK_WATCHDOG_POLL_SECONDS = 60
+
+
+def _start_task_watchdog(scheduler, logger):
+    """Restart the daemon if a task overruns TASK_WATCHDOG_SECONDS.
+
+    _notify() only fires from the on_task_complete callback, which a hung task
+    never reaches — it neither returns nor raises. And because _run_loop
+    executes tasks inline, one blocked task freezes every task. In 2026-08 a
+    timeout-less scrapetube read held the daemon for ~33h and three days of
+    briefings vanished with no alert.
+
+    A thread blocked in recv() cannot be killed from Python, so the only
+    reliable recovery is to exit and let the LaunchAgent (KeepAlive=true)
+    restart us; the catch-up logic then picks the missed task back up.
+    """
+    def _watch():
+        while True:
+            time.sleep(TASK_WATCHDOG_POLL_SECONDS)
+            try:
+                overdue = scheduler.overdue_tasks(TASK_WATCHDOG_SECONDS)
+            except Exception as e:  # never let the watchdog itself die
+                logger.warning(f"[Watchdog] check failed: {e}")
+                continue
+            if not overdue:
+                continue
+
+            _task_id, name, elapsed = overdue[0]
+            msg = (f"'{name}' stuck for {elapsed / 3600:.1f}h "
+                   f"(limit {TASK_WATCHDOG_SECONDS / 3600:.1f}h) — restarting daemon")
+            logger.error(f"[Watchdog] {msg}")
+            _notify("Briefing task hung", msg)
+            # Flush before os._exit — it skips atexit handlers and buffers.
+            for stream in (sys.stdout, sys.stderr):
+                try:
+                    stream.flush()
+                except Exception:
+                    pass
+            os._exit(1)
+
+    thread = threading.Thread(target=_watch, daemon=True, name='task-watchdog')
+    thread.start()
+    logger.info(
+        f"Task watchdog armed ({TASK_WATCHDOG_SECONDS / 3600:.1f}h limit)"
+    )
+    return thread
+
+
 def run_scheduler_loop(logger):
     """Main scheduler loop - runs tasks at their scheduled times."""
     from scheduler import get_scheduler
@@ -158,6 +211,8 @@ def run_scheduler_loop(logger):
     # Start the scheduler
     scheduler.start()
     logger.info(f"Scheduler started with {len(scheduler.tasks)} tasks")
+
+    _start_task_watchdog(scheduler, logger)
 
     # Keep running until terminated
     try:

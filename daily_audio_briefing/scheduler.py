@@ -189,6 +189,9 @@ class Scheduler:
         self._on_progress = on_progress
         self._lock = threading.Lock()
         self._running_tasks: set = set()  # Per-task mutex: track running task IDs
+        # task_id -> (start_epoch, task_name). Feeds overdue_tasks() so the
+        # daemon's watchdog can spot a task that hung and will never return.
+        self._running_since: Dict[str, tuple] = {}
         self._tasks_loaded = False
 
         # In server mode, defer load_tasks() to the background thread so
@@ -625,13 +628,44 @@ class Scheduler:
             except Exception:
                 pass
 
+    def _mark_running(self, task_id: str, task_name: str = ""):
+        """Register a task as running.
+
+        Keeps the per-task mutex and the watchdog's start-time map in lockstep;
+        they must never drift, or the watchdog either misses a hang or reports
+        a phantom one.
+        """
+        self._running_tasks.add(task_id)
+        self._running_since[task_id] = (time.time(), task_name)
+
+    def _unmark_running(self, task_id: str):
+        """Clear a task's running state. Safe for a task that never started."""
+        self._running_tasks.discard(task_id)
+        self._running_since.pop(task_id, None)
+
+    def overdue_tasks(self, max_seconds: float) -> List[tuple]:
+        """Return (task_id, name, elapsed_seconds) for tasks running too long.
+
+        A hung task never returns and never raises, so it reaches no completion
+        callback and nothing in the normal path can report it (2026-08: a
+        timeout-less socket read held the daemon for ~33h in silence). The
+        daemon polls this instead. See tests/test_task_watchdog.py.
+        """
+        now = time.time()
+        overdue = []
+        for task_id, (started, name) in list(self._running_since.items()):
+            elapsed = now - started
+            if elapsed > max_seconds:
+                overdue.append((task_id, name, elapsed))
+        return overdue
+
     def _execute_task(self, task: ScheduledTask):
         """Execute a scheduled task. Guarded by mutex to prevent concurrent runs."""
         # Per-task mutex: skip if THIS task is already running
         if task.id in self._running_tasks:
             print(f"[Scheduler] Skipping '{task.name}' — already running")
             return
-        self._running_tasks.add(task.id)
+        self._mark_running(task.id, task.name)
 
         # Notify listeners that task is starting
         if self._on_task_start:
@@ -659,7 +693,7 @@ class Scheduler:
                 task.last_result = msg
                 task.next_run = self._calculate_next_run(task)
                 self.save_tasks()
-                self._running_tasks.discard(task.id)
+                self._unmark_running(task.id)
                 if self._on_task_complete:
                     self._on_task_complete(task, False, msg)
                 return
@@ -679,7 +713,7 @@ class Scheduler:
             task.last_result = msg
             task.next_run = self._calculate_next_run(task)
             self.save_tasks()
-            self._running_tasks.discard(task.id)
+            self._unmark_running(task.id)
             if self._on_task_complete:
                 self._on_task_complete(task, False, msg)
             return
@@ -848,7 +882,7 @@ class Scheduler:
 
         finally:
             clear_current_task()
-            self._running_tasks.discard(task.id)
+            self._unmark_running(task.id)
             # Force garbage collection after task to reclaim memory (512MB limit)
             gc.collect()
 
