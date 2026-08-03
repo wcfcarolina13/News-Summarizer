@@ -1575,7 +1575,7 @@ class Scheduler:
             if task.id in self._running_tasks:
                 self._log(task.id, "[Backfill] Skipping — this task is already running")
                 return
-            self._running_tasks.add(task.id)
+            self._mark_running(task.id, task.name)
 
             from api_usage_tracker import set_current_task, clear_current_task
             set_current_task(task.id, task.name)
@@ -1795,7 +1795,7 @@ class Scheduler:
                     self._on_task_complete(task, False, task.last_result)
             finally:
                 clear_current_task()
-                self._running_tasks.discard(task.id)
+                self._unmark_running(task.id)
                 gc.collect()
 
         threading.Thread(target=_run_backfill, daemon=True).start()
@@ -1826,7 +1826,7 @@ class Scheduler:
             self._log(task.id, "[Re-enrich] No spreadsheet configured")
             return False
 
-        self._running_tasks.add(task.id)
+        self._mark_running(task.id, task.name)
 
         def _run_reenrich():
             from api_usage_tracker import set_current_task, clear_current_task
@@ -2016,7 +2016,7 @@ class Scheduler:
                     self._on_task_complete(task, False, task.last_result)
             finally:
                 clear_current_task()
-                self._running_tasks.discard(task.id)
+                self._unmark_running(task.id)
                 gc.collect()
 
         threading.Thread(target=_run_reenrich, daemon=True).start()
@@ -2047,7 +2047,7 @@ class Scheduler:
             self._log(task.id, "[Re-title] No spreadsheet configured")
             return False
 
-        self._running_tasks.add(task.id)
+        self._mark_running(task.id, task.name)
 
         def _run_retitle():
             from api_usage_tracker import set_current_task, clear_current_task
@@ -2256,7 +2256,7 @@ class Scheduler:
                     self._on_task_complete(task, False, task.last_result)
             finally:
                 clear_current_task()
-                self._running_tasks.discard(task.id)
+                self._unmark_running(task.id)
                 gc.collect()
 
         threading.Thread(target=_run_retitle, daemon=True).start()

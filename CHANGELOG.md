@@ -7,6 +7,15 @@ tags.
 
 ## 2026-08-03 (later)
 
+### Fixed
+- **Watchdog was blind to the GUI's run-now paths.** When the task watchdog landed, only the
+  daemon's `_execute_task` was converted to `_mark_running`/`_unmark_running`; `backfill_task`,
+  `reenrich_task` and `retitle_task` still mutated `_running_tasks` directly, so `_running_since`
+  never got an entry and `overdue_tasks()` couldn't see a hang started from the desktop app. All six
+  sites now go through the helpers. Guarded by `tests/test_running_state_invariant.py`, which
+  asserts structurally that the helpers are the *only* mutators — the behavioural tests can't cover
+  it, because those methods do real network work and aren't callable from a unit test.
+
 ### Added
 - **yt-dlp channel-listing backend** (`fetch_channel_videos_ytdlp`), slotted between RSS and
   scrapetube. The chain is now `DEFAULT_BACKENDS = ("rss", "ytdlp", "scrapetube")` — RSS leads
