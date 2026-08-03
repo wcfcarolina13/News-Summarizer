@@ -16,7 +16,7 @@ from __future__ import annotations
 import re
 import threading
 import time
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from typing import List, Optional
 from xml.etree import ElementTree as ET
 
@@ -67,14 +67,6 @@ SCRAPETUBE_TIMEOUT = 25.0
 # minutes of dead wall-clock added to every run.
 SCRAPETUBE_FAILURE_LIMIT = 2
 
-# RSS leads as of 2026-08-03. scrapetube broke YouTube-side — it hangs on some
-# channels and returns empty on others — while the RSS feed answered in <1s for
-# every channel tested. Leading with RSS turns the ~50s of dead wait (two hangs
-# before the circuit opens) into a sub-second path; scrapetube stays as the
-# fallback for channels RSS can't resolve. Flip to False if scrapetube recovers
-# and the 15-video RSS ceiling starts to bite.
-PREFER_RSS = True
-
 # The feed endpoint flaps. On 2026-08-03 it returned HTTP 500 and HTTP 404 for a
 # *valid* channel id (resolution verified against canonical/og:url/browseId)
 # minutes after serving 15 videos for that same channel. Now that RSS leads, a
@@ -82,6 +74,25 @@ PREFER_RSS = True
 # 404 is retried too — during that incident it was not authoritative.
 RSS_ATTEMPTS = 3
 RSS_RETRY_BACKOFF = 1.5  # seconds, multiplied by attempt number
+
+# --- yt-dlp backend ----------------------------------------------------------
+# Added 2026-08-03, when scrapetube (hanging) and the RSS feed (~5% success,
+# failure runs of 5-10) were both failing at once and yt-dlp was the only
+# YouTube path still working.
+#
+# yt-dlp's flat channel listing is cheap (~0.4s/15 videos) but carries NO dates:
+# timestamp, upload_date and release_timestamp are all None. A real date costs a
+# per-video extract (~1s). We pay for those deliberately, because
+# source_fetcher._fetch_youtube filters with
+#     if pub_date and pub_date.date() < cutoff_date.date(): skip
+# — guarded on pub_date being truthy, so an undated video is NOT filtered and
+# would be summarized however old it is. Undated entries are therefore dropped.
+YTDLP_MAX_DATE_LOOKUPS = 8   # hard cost ceiling: ~8s worst case per channel
+YTDLP_MAX_AGE_DAYS = 21      # comfortably past any daily cutoff
+YTDLP_STOP_AFTER_OLD = 2     # consecutive old entries before giving up (pinned-video tolerance)
+YTDLP_SOCKET_TIMEOUT = 15    # never leave a socket unbounded again
+
+DEFAULT_BACKENDS = ("rss", "ytdlp", "scrapetube")
 
 _scrapetube_timeouts = 0
 
@@ -255,6 +266,129 @@ def fetch_channel_videos_rss(channel_url: str, limit: int = 20, timeout: int = 1
     return videos
 
 
+def _ytdlp_published_iso(meta: dict) -> Optional[str]:
+    """Pull a real publication timestamp out of a yt-dlp video info dict."""
+    ts = meta.get("timestamp") or meta.get("release_timestamp")
+    if ts:
+        try:
+            return datetime.fromtimestamp(int(ts), timezone.utc).isoformat()
+        except (ValueError, OSError, OverflowError):
+            pass
+    upload_date = meta.get("upload_date")  # 'YYYYMMDD'
+    if upload_date:
+        try:
+            return datetime.strptime(str(upload_date), "%Y%m%d").replace(
+                tzinfo=timezone.utc).isoformat()
+        except ValueError:
+            pass
+    return None
+
+
+def fetch_channel_videos_ytdlp(
+    channel_url: str,
+    limit: int = 20,
+    max_date_lookups: int = YTDLP_MAX_DATE_LOOKUPS,
+    max_age_days: int = YTDLP_MAX_AGE_DAYS,
+) -> Optional[List[dict]]:
+    """List a channel's recent videos via yt-dlp.
+
+    Returns videos in the same dict shape scrapetube and RSS emit, or None if
+    the channel couldn't be listed at all (so the caller falls through).
+
+    Only videos with a genuine date are returned — see the module constants for
+    why an undated entry is dangerous. Date resolution costs ~1s per video, so
+    it is bounded twice: at most ``max_date_lookups`` lookups, and it stops
+    early once ``YTDLP_STOP_AFTER_OLD`` consecutive entries are older than
+    ``max_age_days`` (listings are newest-first, but channels pin videos, so a
+    single old entry must not end the scan).
+    """
+    try:
+        import yt_dlp  # type: ignore
+    except Exception:
+        return None
+
+    base_opts = {
+        "quiet": True,
+        "no_warnings": True,
+        "skip_download": True,
+        "socket_timeout": YTDLP_SOCKET_TIMEOUT,
+    }
+
+    try:
+        with yt_dlp.YoutubeDL({**base_opts, "extract_flat": "in_playlist",
+                               "playlistend": limit}) as ydl:
+            listing = ydl.extract_info(channel_url, download=False)
+    except Exception:
+        return None
+
+    entries = [e for e in ((listing or {}).get("entries") or []) if e]
+    if not entries:
+        return None
+
+    channel_name = (listing or {}).get("channel") or (listing or {}).get("uploader") or ""
+    cutoff = datetime.now(timezone.utc) - timedelta(days=max_age_days)
+
+    videos: List[dict] = []
+    consecutive_old = 0
+    lookups = 0
+
+    for entry in entries:
+        if lookups >= max_date_lookups or consecutive_old >= YTDLP_STOP_AFTER_OLD:
+            break
+        vid = entry.get("id")
+        if not vid:
+            continue
+
+        lookups += 1
+        try:
+            with yt_dlp.YoutubeDL(base_opts) as ydl:
+                meta = ydl.extract_info(
+                    f"https://www.youtube.com/watch?v={vid}", download=False)
+        except Exception:
+            # Deleted/private/geo-blocked video — skip it, keep the batch.
+            continue
+
+        meta = meta or {}
+        published = _ytdlp_published_iso(meta)
+        if not published:
+            # No date means the pipeline's filter can't exclude it, so drop it.
+            continue
+
+        try:
+            published_dt = datetime.fromisoformat(published)
+        except ValueError:
+            continue
+
+        if published_dt < cutoff:
+            consecutive_old += 1
+            continue
+        consecutive_old = 0
+
+        videos.append({
+            "videoId": vid,
+            "title": {"runs": [{"text": meta.get("title") or entry.get("title") or ""}]},
+            "publishedTimeText": {"simpleText": _humanize_age(published)},
+            "ownerText": {"runs": [{"text": meta.get("channel") or channel_name}]},
+            "_publishedIso": published,
+        })
+
+    return videos or None
+
+
+def _attempt_ytdlp(channel_url: str, limit: int, _log) -> Optional[List[dict]]:
+    """yt-dlp backend. Returns videos, or None if it produced nothing usable."""
+    try:
+        videos = fetch_channel_videos_ytdlp(channel_url, limit=limit)
+    except Exception as exc:  # defensive: this path must never raise
+        _log(f"[YouTube/RSS] yt-dlp failed for {channel_url}: {exc}")
+        return None
+    if not videos:
+        _log(f"[YouTube/RSS] yt-dlp returned no dated videos for {channel_url}")
+        return None
+    _log(f"[YouTube/RSS] yt-dlp returned {len(videos)} videos for {channel_url}")
+    return videos
+
+
 def _attempt_rss(channel_url: str, limit: int, _log) -> Optional[List[dict]]:
     """RSS backend. Returns videos, or None if it produced nothing usable."""
     videos = fetch_channel_videos_rss(channel_url, limit=limit)
@@ -308,21 +442,24 @@ def fetch_channel_videos_with_fallback(
     limit: int = 20,
     debug_log=None,
     scrapetube_timeout: Optional[float] = None,
-    prefer_rss: bool = PREFER_RSS,
+    backends: tuple = DEFAULT_BACKENDS,
 ) -> List[dict]:
-    """Fetch a channel's recent videos, trying both backends in order.
+    """Fetch a channel's recent videos, trying each backend in order.
 
-    Default order is RSS then scrapetube (see ``PREFER_RSS``). Whichever runs
-    second only runs if the first produced no usable videos.
+    Default order is ``DEFAULT_BACKENDS`` — RSS, then yt-dlp, then scrapetube.
+    RSS leads because it is by far the cheapest when healthy (<1s). yt-dlp sits
+    ahead of scrapetube because scrapetube is the one that hangs. Each backend
+    runs only if the previous produced no usable videos.
 
     ``debug_log`` is an optional callable (str) -> None for logging.
     ``scrapetube_timeout`` bounds the scrapetube attempt (default
     ``SCRAPETUBE_TIMEOUT``); without it a stalled read blocks forever.
     Always returns a list (possibly empty); never raises.
 
-    Note: the RSS feed only ever exposes the ~15 most recent videos, whatever
-    ``limit`` says. That covers any daily run comfortably, but a long backfill
-    wanting more depth needs scrapetube — which is exactly what is broken.
+    Depth limits worth knowing for backfills: RSS only ever exposes the ~15 most
+    recent videos whatever ``limit`` says, and the yt-dlp backend resolves at
+    most ``YTDLP_MAX_DATE_LOOKUPS`` dates per channel. Both cover a daily run
+    comfortably; deep history needs scrapetube, which is what is broken.
     """
     def _log(msg: str):
         if debug_log:
@@ -332,15 +469,18 @@ def fetch_channel_videos_with_fallback(
                 pass
 
     timeout = SCRAPETUBE_TIMEOUT if scrapetube_timeout is None else scrapetube_timeout
-    order = ("rss", "scrapetube") if prefer_rss else ("scrapetube", "rss")
 
-    for backend in order:
+    for backend in backends:
         if backend == "rss":
             videos = _attempt_rss(channel_url, limit, _log)
-        else:
+        elif backend == "ytdlp":
+            videos = _attempt_ytdlp(channel_url, limit, _log)
+        elif backend == "scrapetube":
             videos = _attempt_scrapetube(channel_url, limit, timeout, _log)
+        else:
+            continue
         if videos:
             return videos
 
-    _log(f"[YouTube/RSS] both backends failed for {channel_url}")
+    _log(f"[YouTube/RSS] all backends failed for {channel_url}")
     return []

@@ -5,6 +5,34 @@ All notable changes to the Daily Audio Briefing, newest first. Format follows
 deployed from the working tree, so entries are dated rather than tied to release
 tags.
 
+## 2026-08-03 (later)
+
+### Added
+- **yt-dlp channel-listing backend** (`fetch_channel_videos_ytdlp`), slotted between RSS and
+  scrapetube. The chain is now `DEFAULT_BACKENDS = ("rss", "ytdlp", "scrapetube")` — RSS leads
+  because it's cheapest when healthy (<1s), yt-dlp sits ahead of scrapetube because scrapetube is
+  the one that hangs. Built because both existing backends failed simultaneously: scrapetube hangs
+  YouTube-side, and the RSS feed dropped to ~5% success (failure runs of 5–10 consecutive requests)
+  while yt-dlp kept working throughout.
+  - **Dates are the whole difficulty.** yt-dlp's flat listing is cheap (~0.4s/15 videos) but carries
+    no dates at all — `timestamp`, `upload_date` and `release_timestamp` are all None. A real date
+    costs a per-video extract (~1s, measured). That expense is unavoidable, because
+    `source_fetcher._fetch_youtube` filters with `if pub_date and pub_date.date() < cutoff_date...`
+    — **guarded on `pub_date` being truthy, so an undated video is not filtered** and would be
+    summarized however old it is. The backend therefore returns *only* dated videos and drops the
+    rest.
+  - Cost is bounded twice: `YTDLP_MAX_DATE_LOOKUPS` (8) caps lookups per channel, and the scan stops
+    after `YTDLP_STOP_AFTER_OLD` (2) *consecutive* entries older than `YTDLP_MAX_AGE_DAYS` (21).
+    Two consecutive rather than one, because channels pin videos — a pinned old video sits at
+    position 0 and would otherwise end the scan immediately and return nothing for that channel.
+  - `socket_timeout` is set explicitly. The whole incident began with an unbounded socket read.
+  - Verified live: 8 dated videos per channel in ~9s across three channels, correct relative-date
+    strings. Forced-outage end-to-end: RSS down → yt-dlp covers in ~9s; all three down → returns in
+    exactly 25.0s (the scrapetube bound) with no hang.
+- `PREFER_RSS` (added earlier the same day) is superseded by `DEFAULT_BACKENDS` and removed — one
+  ordering knob rather than two, now that there are three backends. `fetch_channel_videos_with_fallback`
+  takes a `backends` tuple; both production callers use the default.
+
 ## 2026-08-03
 
 ### Changed

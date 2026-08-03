@@ -98,7 +98,8 @@ def test_scrapetube_used_when_rss_cannot_resolve(monkeypatch):
     youtube_rss.reset_scrapetube_circuit()
 
     out = youtube_rss.fetch_channel_videos_with_fallback(
-        "https://www.youtube.com/@NoFeed/videos", limit=5, scrapetube_timeout=5.0
+        "https://www.youtube.com/@NoFeed/videos", limit=5, scrapetube_timeout=5.0,
+        backends=("rss", "scrapetube"),
     )
 
     assert out == videos
@@ -113,7 +114,8 @@ def test_scrapetube_used_when_rss_returns_nothing(monkeypatch):
     youtube_rss.reset_scrapetube_circuit()
 
     out = youtube_rss.fetch_channel_videos_with_fallback(
-        "https://www.youtube.com/@EmptyFeed/videos", limit=5, scrapetube_timeout=5.0
+        "https://www.youtube.com/@EmptyFeed/videos", limit=5, scrapetube_timeout=5.0,
+        backends=("rss", "scrapetube"),
     )
 
     assert out == videos
@@ -130,7 +132,8 @@ def test_both_backends_failing_returns_empty_without_hanging(monkeypatch):
     started = time.time()
     try:
         out = youtube_rss.fetch_channel_videos_with_fallback(
-            "https://www.youtube.com/@Doomed/videos", limit=5, scrapetube_timeout=1.0
+            "https://www.youtube.com/@Doomed/videos", limit=5, scrapetube_timeout=1.0,
+            backends=("rss", "scrapetube"),
         )
         elapsed = time.time() - started
     finally:
@@ -138,6 +141,50 @@ def test_both_backends_failing_returns_empty_without_hanging(monkeypatch):
 
     assert out == []
     assert elapsed < 10, f"call took {elapsed:.1f}s — the timeout did not bound it"
+
+
+# --- three-backend chain: RSS -> yt-dlp -> scrapetube ------------------------
+
+def test_default_order_is_rss_then_ytdlp_then_scrapetube():
+    # yt-dlp sits ahead of scrapetube because scrapetube is the one that hangs.
+    assert youtube_rss.DEFAULT_BACKENDS == ("rss", "ytdlp", "scrapetube")
+
+
+def test_ytdlp_covers_for_a_failing_rss_without_touching_scrapetube(monkeypatch):
+    stop = threading.Event()
+    fake = _fake_scrapetube(_hanging_gen(stop))
+    monkeypatch.setitem(sys.modules, "scrapetube", fake)
+    monkeypatch.setattr(youtube_rss, "fetch_channel_videos_rss", _rss_unavailable)
+    ytdlp_videos = [{"videoId": "yt-1"}]
+    monkeypatch.setattr(youtube_rss, "fetch_channel_videos_ytdlp",
+                        lambda *a, **k: list(ytdlp_videos))
+    youtube_rss.reset_scrapetube_circuit()
+
+    try:
+        out = youtube_rss.fetch_channel_videos_with_fallback(
+            "https://www.youtube.com/@RssDown/videos", limit=5
+        )
+    finally:
+        stop.set()
+
+    assert out == ytdlp_videos
+    assert fake.calls == 0, "scrapetube should never be reached when yt-dlp answers"
+
+
+def test_scrapetube_is_last_resort_when_rss_and_ytdlp_both_fail(monkeypatch):
+    videos = [{"videoId": "st-1"}]
+    fake = _fake_scrapetube(lambda: iter(videos))
+    monkeypatch.setitem(sys.modules, "scrapetube", fake)
+    monkeypatch.setattr(youtube_rss, "fetch_channel_videos_rss", _rss_unavailable)
+    monkeypatch.setattr(youtube_rss, "fetch_channel_videos_ytdlp", lambda *a, **k: None)
+    youtube_rss.reset_scrapetube_circuit()
+
+    out = youtube_rss.fetch_channel_videos_with_fallback(
+        "https://www.youtube.com/@AllDown/videos", limit=5, scrapetube_timeout=5.0
+    )
+
+    assert out == videos
+    assert fake.calls == 1
 
 
 # --- scrapetube path: still hang-proof in the fallback position --------------
@@ -153,7 +200,7 @@ def test_hanging_scrapetube_falls_back_to_rss_within_timeout(monkeypatch):
     try:
         out = youtube_rss.fetch_channel_videos_with_fallback(
             "https://www.youtube.com/@Hangs/videos", limit=5,
-            scrapetube_timeout=1.0, prefer_rss=False,
+            scrapetube_timeout=1.0, backends=("scrapetube", "rss"),
         )
         elapsed = time.time() - started
     finally:
@@ -174,7 +221,7 @@ def test_repeated_hangs_trip_circuit_breaker(monkeypatch):
         for _ in range(4):
             youtube_rss.fetch_channel_videos_with_fallback(
                 "https://www.youtube.com/@Hangs/videos", limit=5,
-                scrapetube_timeout=0.5, prefer_rss=False,
+                scrapetube_timeout=0.5, backends=("scrapetube", "rss"),
             )
     finally:
         stop.set()
@@ -195,7 +242,7 @@ def test_working_scrapetube_is_used_when_it_leads(monkeypatch):
 
     out = youtube_rss.fetch_channel_videos_with_fallback(
         "https://www.youtube.com/@Works/videos", limit=5,
-        scrapetube_timeout=5.0, prefer_rss=False,
+        scrapetube_timeout=5.0, backends=("scrapetube", "rss"),
     )
 
     assert out == videos
@@ -212,7 +259,7 @@ def test_raising_scrapetube_still_falls_back(monkeypatch):
 
     out = youtube_rss.fetch_channel_videos_with_fallback(
         "https://www.youtube.com/@Raises/videos", limit=5,
-        scrapetube_timeout=5.0, prefer_rss=False,
+        scrapetube_timeout=5.0, backends=("scrapetube", "rss"),
     )
 
     assert out == RSS_VIDEOS
