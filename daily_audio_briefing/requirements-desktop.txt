@@ -22,7 +22,11 @@ dateparser>=1.1.0
 # YouTube & Media
 youtube-transcript-api>=0.6.0
 scrapetube>=2.5.0
-yt-dlp>=2023.1.0
+# 2026-08-03: floor raised from 2023.1.0. The old pin resolved to 2025.11.12,
+# which 403'd on every subtitle download (72 in one run) — videos without a
+# transcript get dropped, silently shrinking the briefing. 2026.7.4 fetches
+# them cleanly. YouTube moves fast; keep this current.
+yt-dlp>=2026.7.4
 
 # Google APIs
 google-generativeai>=0.3.0

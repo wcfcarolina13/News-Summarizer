@@ -5,6 +5,39 @@ All notable changes to the Daily Audio Briefing, newest first. Format follows
 deployed from the working tree, so entries are dated rather than tied to release
 tags.
 
+## 2026-08-03
+
+### Changed
+- **RSS is now the primary YouTube backend; scrapetube is the fallback** (`PREFER_RSS`).
+  scrapetube broke YouTube-side — it hangs on some channels and returns empty on others — so
+  leading with it cost ~50s of dead wait per run (two 25s hangs before the circuit breaker opens)
+  before reaching the path that actually worked. RSS answered in <1s for every channel tested.
+  scrapetube stays as the fallback for channels RSS can't resolve, still timeout-bounded, so the
+  hang guard protects it in either position. Flip `PREFER_RSS` to False if scrapetube recovers and
+  the ~15-video RSS ceiling starts to bite (it only matters for deep backfills; a daily run is
+  nowhere near it).
+- **yt-dlp 2025.11.12 → 2026.7.4**, floor in `requirements-desktop.txt` raised from `>=2023.1.0`.
+  The stale version 403'd on every subtitle download — 72 in the Aug 2 run alone. Videos without a
+  transcript are dropped, so this had been silently shrinking the briefing. Verified after upgrade:
+  5/5 subtitle downloads succeeded in ~1s each, zero 403s.
+
+### Fixed
+- **RSS feed fetch now retries transient failures** (`RSS_ATTEMPTS`, `RSS_RETRY_BACKOFF`). Promoting
+  RSS to primary made its single-shot fetch the weak link. Confirmed non-authoritative failures:
+  the *same valid* channel id returned HTTP 404 and then HTTP 200 with 15 entries seconds apart,
+  with ids independently verified against yt-dlp's `channel_id` (so this is not the resolver
+  picking a wrong id — it isn't). 404 is retried alongside 5xx for that reason.
+
+### Known issue
+- **YouTube's feed endpoint was severely degraded when this shipped** (2026-08-03 ~00:40 CST):
+  measured 1/10 and 0/10 successful fetches across two channels, with failure runs of 5 and 10
+  consecutive requests, identical across four User-Agents and stable over 60s+ — server-side, not
+  rate-limiting (no 429) and not client-specific. The same endpoint was 100% reliable earlier the
+  same day. `RSS_ATTEMPTS=3` covers brief flaps, not runs that long, so while this persists the
+  YouTube portion of a briefing may come up empty (other sources are unaffected; the pipeline
+  already tolerates 0-item sources). yt-dlp is currently the only YouTube path that works reliably
+  — a yt-dlp-based channel-listing backend is the obvious next move if this doesn't recover.
+
 ## 2026-08-02
 
 ### Fixed

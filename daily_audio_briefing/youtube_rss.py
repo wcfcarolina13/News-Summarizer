@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import re
 import threading
+import time
 from datetime import datetime, timezone
 from typing import List, Optional
 from xml.etree import ElementTree as ET
@@ -65,6 +66,22 @@ SCRAPETUBE_TIMEOUT = 25.0
 # it breaks it tends to break for every channel, and 12 channels x 25s is 5
 # minutes of dead wall-clock added to every run.
 SCRAPETUBE_FAILURE_LIMIT = 2
+
+# RSS leads as of 2026-08-03. scrapetube broke YouTube-side — it hangs on some
+# channels and returns empty on others — while the RSS feed answered in <1s for
+# every channel tested. Leading with RSS turns the ~50s of dead wait (two hangs
+# before the circuit opens) into a sub-second path; scrapetube stays as the
+# fallback for channels RSS can't resolve. Flip to False if scrapetube recovers
+# and the 15-video RSS ceiling starts to bite.
+PREFER_RSS = True
+
+# The feed endpoint flaps. On 2026-08-03 it returned HTTP 500 and HTTP 404 for a
+# *valid* channel id (resolution verified against canonical/og:url/browseId)
+# minutes after serving 15 videos for that same channel. Now that RSS leads, a
+# single bad moment would empty a briefing section, so retry briefly first.
+# 404 is retried too — during that incident it was not authoritative.
+RSS_ATTEMPTS = 3
+RSS_RETRY_BACKOFF = 1.5  # seconds, multiplied by attempt number
 
 _scrapetube_timeouts = 0
 
@@ -196,10 +213,17 @@ def fetch_channel_videos_rss(channel_url: str, limit: int = 20, timeout: int = 1
         return None
 
     feed_url = f"https://www.youtube.com/feeds/videos.xml?channel_id={channel_id}"
-    try:
-        resp = requests.get(feed_url, headers=_DEFAULT_HEADERS, timeout=timeout)
-        resp.raise_for_status()
-    except Exception:
+    resp = None
+    for attempt in range(1, RSS_ATTEMPTS + 1):
+        try:
+            resp = requests.get(feed_url, headers=_DEFAULT_HEADERS, timeout=timeout)
+            resp.raise_for_status()
+            break
+        except Exception:
+            resp = None
+            if attempt < RSS_ATTEMPTS:
+                time.sleep(RSS_RETRY_BACKOFF * attempt)
+    if resp is None:
         return None
 
     try:
@@ -231,21 +255,75 @@ def fetch_channel_videos_rss(channel_url: str, limit: int = 20, timeout: int = 1
     return videos
 
 
+def _attempt_rss(channel_url: str, limit: int, _log) -> Optional[List[dict]]:
+    """RSS backend. Returns videos, or None if it produced nothing usable."""
+    videos = fetch_channel_videos_rss(channel_url, limit=limit)
+    if videos is None:
+        # Either the channel id wouldn't resolve or the feed errored after all
+        # RSS_ATTEMPTS. Don't claim the former — during the 2026-08-03 outage
+        # ids resolved fine and the feed was what failed.
+        _log(f"[YouTube/RSS] RSS returned no data for {channel_url} "
+             f"(unresolved channel or feed error after {RSS_ATTEMPTS} attempts)")
+        return None
+    if not videos:
+        _log(f"[YouTube/RSS] RSS returned 0 videos for {channel_url}")
+        return None
+    _log(f"[YouTube/RSS] RSS returned {len(videos)} videos for {channel_url}")
+    return videos
+
+
+def _attempt_scrapetube(channel_url: str, limit: int, timeout: float, _log) -> Optional[List[dict]]:
+    """scrapetube backend, hard-bounded so it can never wedge the caller.
+
+    Returns videos, or None if it hung, errored, or produced nothing.
+    """
+    global _scrapetube_timeouts
+
+    if _scrapetube_circuit_open():
+        _log(f"[YouTube/RSS] scrapetube circuit open ({_scrapetube_timeouts} hangs); skipping for {channel_url}")
+        return None
+
+    outcome = _fetch_via_scrapetube(channel_url, limit, timeout)
+    if outcome.get("timeout"):
+        _scrapetube_timeouts += 1
+        _log(
+            f"[YouTube/RSS] scrapetube timed out after {timeout:.0f}s for {channel_url} "
+            f"(hang {_scrapetube_timeouts}/{SCRAPETUBE_FAILURE_LIMIT})"
+        )
+        return None
+    if "error" in outcome:
+        _log(f"[YouTube/RSS] scrapetube failed for {channel_url}: {outcome['error']}")
+        return None
+
+    videos = outcome.get("videos") or []
+    if not videos:
+        _log(f"[YouTube/RSS] scrapetube returned 0 videos for {channel_url}")
+        return None
+    _log(f"[YouTube/RSS] scrapetube returned {len(videos)} videos for {channel_url}")
+    return videos
+
+
 def fetch_channel_videos_with_fallback(
     channel_url: str,
     limit: int = 20,
     debug_log=None,
     scrapetube_timeout: Optional[float] = None,
+    prefer_rss: bool = PREFER_RSS,
 ) -> List[dict]:
-    """Try scrapetube first; if it hangs, returns 0 videos, or errors, fall back to RSS.
+    """Fetch a channel's recent videos, trying both backends in order.
+
+    Default order is RSS then scrapetube (see ``PREFER_RSS``). Whichever runs
+    second only runs if the first produced no usable videos.
 
     ``debug_log`` is an optional callable (str) -> None for logging.
     ``scrapetube_timeout`` bounds the scrapetube attempt (default
     ``SCRAPETUBE_TIMEOUT``); without it a stalled read blocks forever.
     Always returns a list (possibly empty); never raises.
-    """
-    global _scrapetube_timeouts
 
+    Note: the RSS feed only ever exposes the ~15 most recent videos, whatever
+    ``limit`` says. That covers any daily run comfortably, but a long backfill
+    wanting more depth needs scrapetube — which is exactly what is broken.
+    """
     def _log(msg: str):
         if debug_log:
             try:
@@ -254,30 +332,15 @@ def fetch_channel_videos_with_fallback(
                 pass
 
     timeout = SCRAPETUBE_TIMEOUT if scrapetube_timeout is None else scrapetube_timeout
+    order = ("rss", "scrapetube") if prefer_rss else ("scrapetube", "rss")
 
-    # Attempt 1: scrapetube, hard-bounded so it can never wedge the caller.
-    if _scrapetube_circuit_open():
-        _log(f"[YouTube/RSS] scrapetube circuit open ({_scrapetube_timeouts} hangs); using RSS for {channel_url}")
-    else:
-        outcome = _fetch_via_scrapetube(channel_url, limit, timeout)
-        if outcome.get("timeout"):
-            _scrapetube_timeouts += 1
-            _log(
-                f"[YouTube/RSS] scrapetube timed out after {timeout:.0f}s for {channel_url} "
-                f"(hang {_scrapetube_timeouts}/{SCRAPETUBE_FAILURE_LIMIT}); falling back to RSS"
-            )
-        elif "error" in outcome:
-            _log(f"[YouTube/RSS] scrapetube failed for {channel_url}: {outcome['error']}; falling back to RSS")
+    for backend in order:
+        if backend == "rss":
+            videos = _attempt_rss(channel_url, limit, _log)
         else:
-            videos = outcome.get("videos") or []
-            if videos:
-                return videos
-            _log(f"[YouTube/RSS] scrapetube returned 0 videos for {channel_url}; falling back to RSS")
+            videos = _attempt_scrapetube(channel_url, limit, timeout, _log)
+        if videos:
+            return videos
 
-    # Attempt 2: RSS
-    rss_videos = fetch_channel_videos_rss(channel_url, limit=limit)
-    if rss_videos is None:
-        _log(f"[YouTube/RSS] RSS fallback also failed for {channel_url}")
-        return []
-    _log(f"[YouTube/RSS] RSS fallback returned {len(rss_videos)} videos for {channel_url}")
-    return rss_videos
+    _log(f"[YouTube/RSS] both backends failed for {channel_url}")
+    return []
