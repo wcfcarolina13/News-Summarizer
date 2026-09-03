@@ -257,3 +257,18 @@ def test_urls_to_audio_nothing_fetched_raises(tmp_path, monkeypatch):
     import pytest
     with pytest.raises(RuntimeError, match="No article content"):
         audio_jobs.urls_to_audio(["https://x.y/short"], api_key="", output_dir=str(tmp_path))
+
+
+def test_urls_to_audio_passes_model_name(tmp_path, monkeypatch):
+    _stub_tts(monkeypatch)
+    monkeypatch.setattr(audio_jobs.requests, "get", lambda url, **kw: _Resp(GOOD_HTML))
+    seen = {}
+
+    def fake_clean(text, *, api_key, instructions="", model_name="?", progress=None):
+        seen["model"] = model_name
+        return text
+
+    monkeypatch.setattr(audio_jobs, "clean_text", fake_clean)
+    audio_jobs.urls_to_audio(["https://x.y/1"], api_key="k", output_dir=str(tmp_path),
+                             model_name="gemini-2.0-flash")
+    assert seen["model"] == "gemini-2.0-flash"

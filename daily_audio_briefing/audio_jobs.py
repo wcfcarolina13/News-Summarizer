@@ -379,7 +379,8 @@ def text_to_audio(text, *, title=None, voice=DEFAULT_VOICE, quality="quality",
 
 
 def urls_to_audio(urls, *, title=None, voice=DEFAULT_VOICE, quality="quality",
-                  api_key="", instructions="", output_dir, progress=None, cancel=None):
+                  api_key="", instructions="", model_name=DEFAULT_CLEAN_MODEL,
+                  output_dir, progress=None, cancel=None):
     """fetch → clean → combine → text_to_audio. Returns dict(output_path, text_path, articles, skipped)."""
     _validate("x", voice, quality)
     articles = fetch_articles(urls, progress=progress, cancel=cancel)
@@ -390,7 +391,8 @@ def urls_to_audio(urls, *, title=None, voice=DEFAULT_VOICE, quality="quality",
     for i, a in enumerate(good):
         _check_cancel(cancel)
         _say(progress, f"[2/5] Cleaning article {i + 1}/{len(good)}...")
-        a["cleaned"] = clean_text(a["content"], api_key=api_key, instructions=instructions, progress=progress)
+        a["cleaned"] = clean_text(a["content"], api_key=api_key, instructions=instructions,
+                                  model_name=model_name, progress=progress)
     _say(progress, "[3/5] Combining articles...")
     combined = combine_articles(good)
     _check_cancel(cancel)

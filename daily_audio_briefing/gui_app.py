@@ -7026,264 +7026,57 @@ Transcript:
                                      btn_process, btn_cancel, cancel_event,
                                      _cancelled, _update):
         """Inner implementation — separated so top-level guard catches everything."""
-        import time
-        import importlib
-        import re as _mod_re
+        import audio_jobs
+        from file_manager import get_data_directory
 
         data_dir = get_data_directory()
-        reading_list_dir = os.path.join(data_dir, "Reading List")
-        os.makedirs(reading_list_dir, exist_ok=True)
+        reading_list_dir = os.path.join(data_dir, audio_jobs.READING_LIST_SUBDIR)
 
-        log_path = os.path.join(data_dir, "gui_log.txt")
-
-        # ------ Step 1: Fetch articles (direct HTTP, no SourceFetcher needed) ------
-        from source_fetcher import _clean_title_for_audio
-        import requests as _requests
-        from bs4 import BeautifulSoup as _BS4
-        articles = []
-
-        for i, url in enumerate(urls):
-            if _cancelled():
-                _update("Cancelled.", "red")
-                self._reset_reading_list_buttons(dialog, btn_process, btn_cancel)
-                return
-            _update(f"[1/5] Fetching article {i+1}/{len(urls)}...")
-            try:
-                resp = _requests.get(url, timeout=30, headers={
-                    'User-Agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) '
-                                  'AppleWebKit/537.36 (KHTML, like Gecko) '
-                                  'Chrome/120.0.0.0 Safari/537.36'
-                })
-                resp.raise_for_status()
-                soup = _BS4(resp.text, 'html.parser')
-
-                title = ""
-                title_elem = soup.find('title') or soup.find('h1')
-                if title_elem:
-                    title = title_elem.get_text(strip=True)
-
-                for elem in soup.find_all(['script', 'style', 'nav', 'header',
-                                           'footer', 'aside', 'iframe']):
-                    elem.decompose()
-
-                main_elem = (
-                    soup.find('article') or soup.find('main') or
-                    soup.find(class_=_mod_re.compile(r'content|article|post', _mod_re.I)) or
-                    soup.find('body')
-                )
-                content = ""
-                if main_elem:
-                    paragraphs = main_elem.find_all('p')
-                    content = '\n\n'.join(
-                        p.get_text(strip=True) for p in paragraphs
-                        if len(p.get_text(strip=True)) > 50
-                    )
-
-                if content and len(content.strip()) > 100:
-                    articles.append({"title": title or url, "content": content, "url": url})
-                    print(f"[ReadingList] Fetched: {title} ({len(content)} chars)")
-                else:
-                    print(f"[ReadingList] Skipped (too short or empty): {url}")
-            except Exception as e:
-                print(f"[ReadingList] Failed to fetch {url}: {e}")
-
-        if not articles:
-            _update("No article content could be fetched. Check URLs.", "red")
-            self._reset_reading_list_buttons(dialog, btn_process, btn_cancel)
-            return
-
-        if _cancelled():
-            _update("Cancelled.", "red")
-            self._reset_reading_list_buttons(dialog, btn_process, btn_cancel)
-            return
-
-        # ------ Step 2: Clean each article via Gemini ------
         api_key = ""
         try:
             api_key = self.gemini_key_entry.get().strip()
         except Exception:
             pass
+        model_map = {
+            "Fast (FREE)": "gemini-2.0-flash",
+            "Balanced (FREE)": "gemini-2.5-flash",
+            "Best (FREE, 50/day)": "gemini-2.5-pro",
+        }
+        model_name = model_map.get(self.model_var.get(), audio_jobs.DEFAULT_CLEAN_MODEL)
+        instructions = self._get_active_article_instructions()
+        voice = self.voice_var.get()
 
-        if api_key:
-            try:
-                import google.generativeai as genai
-                genai.configure(api_key=api_key)
-                model_display = self.model_var.get()
-                model_map = {
-                    "Fast (FREE)": "gemini-2.0-flash",
-                    "Balanced (FREE)": "gemini-2.5-flash",
-                    "Best (FREE, 50/day)": "gemini-2.5-pro",
-                }
-                model_name = model_map.get(model_display, "gemini-2.5-flash")
-                model = genai.GenerativeModel(model_name)
+        def _progress(msg):
+            _update(msg)
 
-                for i, article in enumerate(articles):
-                    if _cancelled():
-                        _update("Cancelled.", "red")
-                        self._reset_reading_list_buttons(dialog, btn_process, btn_cancel)
-                        return
-                    _update(f"[2/5] Cleaning article {i+1}/{len(articles)} via {model_name}...")
-                    try:
-                        cleaned = self._clean_single_article(model, article["content"])
-                        article["cleaned"] = cleaned if cleaned else article["content"]
-                        print(f"[ReadingList] Cleaned: {article['title']} ({len(article['cleaned'])} chars)")
-                    except TimeoutError as e:
-                        print(f"[ReadingList] Cleaning timed out for {article['title']}: {e}")
-                        _update(f"[2/5] Cleaning timed out for article {i+1}, using raw text...")
-                        article["cleaned"] = article["content"]
-                    except Exception as e:
-                        print(f"[ReadingList] Cleaning failed for {article['title']}: {e}")
-                        article["cleaned"] = article["content"]
-            except Exception as e:
-                print(f"[ReadingList] Gemini setup failed: {e}. Using raw content.")
-                for article in articles:
-                    article["cleaned"] = article["content"]
-        else:
-            print("[ReadingList] No API key — skipping Gemini cleaning.")
-            for article in articles:
-                article["cleaned"] = article["content"]
-
-        if _cancelled():
+        try:
+            result = audio_jobs.urls_to_audio(
+                urls, voice=voice, quality="quality", api_key=api_key,
+                instructions=instructions, model_name=model_name,
+                output_dir=reading_list_dir,
+                progress=_progress, cancel=_cancelled)
+        except audio_jobs.CancelledError:
             _update("Cancelled.", "red")
             self._reset_reading_list_buttons(dialog, btn_process, btn_cancel)
             return
-
-        # ------ Step 3: Combine with spoken separators ------
-        _update("[3/5] Combining articles...")
-
-        combined_parts = []
-        for i, article in enumerate(articles):
-            clean_title = _clean_title_for_audio(article["title"])
-            if i > 0:
-                combined_parts.append("\n\nNext article.\n\n")
-            combined_parts.append(f"{clean_title}.\n\n")
-            combined_parts.append(article["cleaned"])
-
-        combined_text = "".join(combined_parts)
-
-        # ------ Step 4: Generate filename and save text ------
-        date_str = datetime.datetime.now().strftime("%Y-%m-%d")
-        title_slugs = []
-        for article in articles[:3]:
-            slug = _mod_re.sub(r'[^a-z0-9]+', '-', article["title"].lower().strip())[:30]
-            slug = slug.strip('-')
-            if slug:
-                title_slugs.append(slug)
-        slug_part = "_".join(title_slugs) if title_slugs else "reading-list"
-        if len(slug_part) > 80:
-            slug_part = slug_part[:80].rsplit('-', 1)[0]
-        output_basename = f"{date_str}_reading-list_{slug_part}"
-
-        text_path = os.path.join(reading_list_dir, f"{output_basename}.txt")
-        with open(text_path, "w", encoding="utf-8") as f:
-            f.write(combined_text)
-        print(f"[ReadingList] Saved text: {text_path} ({len(combined_text)} chars)")
-
-        if _cancelled():
-            _update("Cancelled (text saved, audio skipped).", "red")
-            self._reset_reading_list_buttons(dialog, btn_process, btn_cancel)
+        except RuntimeError as e:
+            msg = str(e)
+            if msg.startswith("No article content"):
+                _update("No article content could be fetched. Check URLs.", "red")
+                self._reset_reading_list_buttons(dialog, btn_process, btn_cancel)
+                return
+            print(f"[ReadingList] {msg}")
+            self._on_reading_list_complete(dialog, progress_label, btn_process, btn_cancel,
+                                           False, "", "", 0)
             return
 
-        # ------ Step 5: Generate Kokoro audio ------
-        voice = self.voice_var.get()
-        wav_output = os.path.join(reading_list_dir, f"{output_basename}.wav")
-        use_mp3 = check_ffmpeg()
-
-        sentences_est = len(combined_text.split('. '))
-        _update(f"[5/5] Generating audio (~{sentences_est} sentences, may take a few minutes)...")
-
-        with open(log_path, "a", encoding="utf-8") as log:
-            log.write(f"\n{'='*60}\n")
-            log.write(f"[{time.strftime('%Y-%m-%d %H:%M:%S')}] Reading List to Audio\n")
-            log.write(f"URLs: {len(urls)}, Articles fetched: {len(articles)}\n")
-            log.write(f"Text: {text_path}\n")
-            log.write(f"Output: {wav_output}\n")
-            log.write(f"Voice: {voice}, Estimated sentences: {sentences_est}\n")
-
-        try:
-            if getattr(sys, "frozen", False):
-                # FROZEN MODE: run in-process
-                import io
-                from contextlib import redirect_stdout, redirect_stderr
-
-                old_argv = sys.argv
-                old_cwd = os.getcwd()
-                stdout_capture = io.StringIO()
-                stderr_capture = io.StringIO()
-
-                sys.argv = [
-                    "make_audio_quality.py",
-                    "--input", text_path,
-                    "--voice", voice,
-                    "--output", wav_output,
-                    "--format", "mp3" if use_mp3 else "wav",
-                    "--bitrate", "128k",
-                ]
-                os.chdir(data_dir)
-
-                try:
-                    import make_audio_quality
-                    importlib.reload(make_audio_quality)
-                    with redirect_stdout(stdout_capture), redirect_stderr(stderr_capture):
-                        make_audio_quality.main()
-                    return_code = 0
-                except SystemExit as e:
-                    return_code = e.code if e.code else 0
-                except Exception as e:
-                    return_code = 1
-                    import traceback
-                    print(f"[ReadingList] TTS error: {e}\n{traceback.format_exc()}")
-                finally:
-                    sys.argv = old_argv
-                    os.chdir(old_cwd)
-
-                with open(log_path, "a", encoding="utf-8") as log:
-                    log.write(f"TTS stdout:\n{stdout_capture.getvalue()}\n")
-                    log.write(f"TTS stderr:\n{stderr_capture.getvalue()}\n")
-                    log.write(f"Return code: {return_code}\n")
-            else:
-                # DEV MODE: subprocess
-                script_dir = os.path.dirname(__file__) or os.path.dirname(os.path.abspath(__file__))
-                python_exe = sys.executable
-                cmd = [
-                    python_exe,
-                    os.path.join(script_dir, "make_audio_quality.py"),
-                    "--input", text_path,
-                    "--voice", voice,
-                    "--output", wav_output,
-                    "--format", "mp3" if use_mp3 else "wav",
-                    "--bitrate", "128k",
-                ]
-                result = subprocess.run(cmd, capture_output=True, text=True, cwd=script_dir, timeout=3600)
-                return_code = result.returncode
-
-                with open(log_path, "a", encoding="utf-8") as log:
-                    log.write(f"TTS stdout:\n{result.stdout}\n")
-                    log.write(f"TTS stderr:\n{result.stderr}\n")
-                    log.write(f"Return code: {return_code}\n")
-
-            # Determine final output path
-            final_ext = "mp3" if use_mp3 else "wav"
-            final_path = os.path.join(reading_list_dir, f"{output_basename}.{final_ext}")
-
-            if return_code == 0 and (os.path.exists(final_path) or os.path.exists(wav_output)):
-                actual_path = final_path if os.path.exists(final_path) else wav_output
-                size_mb = os.path.getsize(actual_path) / (1024 * 1024)
-                self._on_reading_list_complete(dialog, progress_label, btn_process, btn_cancel,
-                                               True, output_basename, final_ext, size_mb,
-                                               file_path=actual_path)
-            else:
-                self._on_reading_list_complete(dialog, progress_label, btn_process, btn_cancel,
-                                               False, output_basename, final_ext, 0)
-
-        except subprocess.TimeoutExpired:
-            print("[ReadingList] TTS timed out after 1 hour")
-            self._on_reading_list_complete(dialog, progress_label, btn_process, btn_cancel,
-                                           False, output_basename, "wav", 0)
-        except Exception as e:
-            print(f"[ReadingList] TTS exception: {e}")
-            self._on_reading_list_complete(dialog, progress_label, btn_process, btn_cancel,
-                                           False, output_basename, "wav", 0)
+        out = result["output_path"]
+        output_basename, final_ext = os.path.splitext(os.path.basename(out))
+        size_mb = os.path.getsize(out) / (1024 * 1024)
+        print(f"[ReadingList] Saved text: {result['text_path']}; audio: {out}")
+        self._on_reading_list_complete(dialog, progress_label, btn_process, btn_cancel,
+                                       True, output_basename, final_ext.lstrip('.'), size_mb,
+                                       file_path=out)
 
     def _reset_reading_list_buttons(self, dialog, btn_process, btn_cancel):
         """Re-enable dialog buttons after processing ends (success, failure, or cancel)."""
