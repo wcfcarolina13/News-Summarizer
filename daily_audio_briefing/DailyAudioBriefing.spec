@@ -171,6 +171,40 @@ a = Analysis(
 
 pyz = PYZ(a.pure, a.zipped_data, cipher=block_cipher)
 
+# ---------------------------------------------------------------------------
+# Second entry point: the MCP server (`dab-mcp`), a console executable that
+# ships alongside the GUI so any MCP client can drive audio jobs headlessly.
+# Platform-independent analysis; each platform branch below builds its own EXE.
+# ---------------------------------------------------------------------------
+a_mcp = Analysis(
+    ['mcp_server.py'],
+    pathex=[spec_dir],
+    binaries=binaries,
+    datas=datas,
+    hiddenimports=hiddenimports + [
+        'mcp',
+        'mcp.server.fastmcp',
+        'audio_jobs',
+        'job_store',
+        'mcp_config',
+    ],
+    hookspath=[],
+    hooksconfig={},
+    runtime_hooks=[],
+    excludes=[
+        'faster_whisper',
+        'torch',
+        'tensorflow',
+        'matplotlib',
+    ],
+    win_no_prefer_redirects=False,
+    win_private_assemblies=False,
+    cipher=block_cipher,
+    noarchive=False,
+)
+
+pyz_mcp = PYZ(a_mcp.pure, a_mcp.zipped_data, cipher=block_cipher)
+
 # Platform-specific settings
 if sys.platform == 'darwin':
     # macOS: Create .app bundle
@@ -192,8 +226,27 @@ if sys.platform == 'darwin':
         entitlements_file=None,
     )
 
+    exe_mcp = EXE(
+        pyz_mcp,
+        a_mcp.scripts,
+        [],
+        exclude_binaries=True,
+        name='dab-mcp',
+        debug=False,
+        bootloader_ignore_signals=False,
+        strip=False,
+        upx=True,
+        console=True,  # stdio MCP server
+        disable_windowed_traceback=False,
+        argv_emulation=False,
+        target_arch=None,
+        codesign_identity=None,
+        entitlements_file=None,
+    )
+
     coll = COLLECT(
         exe,
+        exe_mcp,
         a.binaries,
         a.zipfiles,
         a.datas,
@@ -253,6 +306,28 @@ elif sys.platform == 'win32':
         icon='AppIcon.ico',
     )
 
+    exe_mcp = EXE(
+        pyz_mcp,
+        a_mcp.scripts,
+        a_mcp.binaries,
+        a_mcp.zipfiles,
+        a_mcp.datas,
+        [],
+        name='dab-mcp',
+        debug=False,
+        bootloader_ignore_signals=False,
+        strip=False,
+        upx=True,
+        upx_exclude=[],
+        runtime_tmpdir=None,
+        console=True,  # stdio MCP server
+        disable_windowed_traceback=False,
+        argv_emulation=False,
+        target_arch=None,
+        codesign_identity=None,
+        entitlements_file=None,
+    )
+
 else:
     # Linux: Create executable
     exe = EXE(
@@ -270,6 +345,28 @@ else:
         upx_exclude=[],
         runtime_tmpdir=None,
         console=False,
+        disable_windowed_traceback=False,
+        argv_emulation=False,
+        target_arch=None,
+        codesign_identity=None,
+        entitlements_file=None,
+    )
+
+    exe_mcp = EXE(
+        pyz_mcp,
+        a_mcp.scripts,
+        a_mcp.binaries,
+        a_mcp.zipfiles,
+        a_mcp.datas,
+        [],
+        name='dab-mcp',
+        debug=False,
+        bootloader_ignore_signals=False,
+        strip=False,
+        upx=True,
+        upx_exclude=[],
+        runtime_tmpdir=None,
+        console=True,  # stdio MCP server
         disable_windowed_traceback=False,
         argv_emulation=False,
         target_arch=None,

@@ -8,7 +8,7 @@ All source files are in `daily_audio_briefing/`.
 
 | File | Lines | Purpose |
 |------|-------|---------|
-| `gui_app.py` | ~8800 | **Main GUI — NEVER read in full.** Sidebar nav + 7 pages (Home, Summarize, Extract, Audio, Scheduler, Settings, Guide). Use grep for targeted searches. |
+| `gui_app.py` | ~11900 | **Main GUI — NEVER read in full.** Sidebar nav + 7 pages (Home, Summarize, Extract, Audio, Scheduler, Settings, Guide). Use grep for targeted searches. |
 | `cloud_scheduler_client.py` | ~175 | REST API client for remote scheduler (Render server) |
 | `data_csv_processor.py` | ~2100 | Data extraction and Grid enrichment |
 | `source_fetcher.py` | ~1600 | Unified content fetching (YouTube, RSS, article archives) |
@@ -24,11 +24,17 @@ All source files are in `daily_audio_briefing/`.
 | `api_usage_tracker.py` | ~420 | Gemini API call tracking, daily/monthly limits, dollar budget cap, cooldown mode, cost estimation |
 | `web_app.py` | ~2850 | Flask web dashboard (scheduler, extraction, audio) — **NEVER read in full.** Use grep. |
 | `server_scheduler.py` | ~80 | Flask-integrated scheduler for cloud deployment |
+| `audio_jobs.py` | ~406 | Tk-free audio pipeline core (fetch → clean → combine → TTS); used by GUI dialogs and MCP server |
+| `mcp_server.py` | ~233 | stdio MCP server (`dab-mcp`): text/urls → audio jobs, status, voices; `--install` writes client config |
+| `job_store.py` | ~90 | JSON job records under `<data_dir>/jobs/` |
+| `mcp_config.py` | ~87 | Builds/merges the MCP client config for Claude Code + Claude Desktop |
 
 Config files: `sources.json` (gitignored, copy from `sources.example.json`), `instruction_profiles.json`, `scheduled_tasks.json`, `settings.json`
 Extraction configs: `extraction_instructions/*.json` (execsum, rwa, cryptosum, _template)
 
 ## Dual-Mode Architecture
+
+**Second entry point:** `dab-mcp` (`mcp_server.py`) is a headless stdio MCP server shipped alongside the GUI; it shares the same data dir and Reading List output folder, so GUI and agent-driven jobs land in the same place.
 
 **Frozen (PyInstaller) mode:**
 - Config files READ from bundle (`sys._MEIPASS`), WRITTEN to data dir
@@ -132,7 +138,7 @@ The desktop app uses a **sidebar + page container** layout matching the web app:
 - Break the working development mode (`Launch Audio Briefing.command`)
 - Change the output folder structure (`Week_N_YYYY` format)
 - Remove any existing functionality
-- Read `gui_app.py` in full (~8800 lines) — always use grep/targeted reads
+- Read `gui_app.py` in full (~11900 lines) — always use grep/targeted reads
 - Commit `.env`, `google_credentials.json`, or API keys
 
 ## Server Deployment (Render.com)

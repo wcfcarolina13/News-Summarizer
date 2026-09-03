@@ -45,3 +45,8 @@ gTTS>=2.3.0
 
 # Build tools (for packaging)
 # pyinstaller>=5.0  # Install separately for building
+
+# Agent interface (MCP)
+# Powers `dab-mcp` / mcp_server.py — the stdio MCP server that lets Claude Code,
+# Claude Desktop, Cowork, Cursor etc. start audio jobs with the GUI closed.
+mcp>=1.0

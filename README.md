@@ -48,6 +48,18 @@ A desktop + web application that creates personalized audio news briefings from 
 - **AI Text Cleaning**: Gemini cleans text for listening (removes URLs, CTAs, formatting, etc.)
 - **Smart Filenames**: Audio files named by date and topic (e.g., `2025-12-28_bitcoin-etf-approval.wav`)
 
+### Use it from Claude (or any MCP client)
+
+The app ships an [MCP](https://modelcontextprotocol.io) server so an AI agent on your machine can turn text or article URLs into audio for you — no GUI open required.
+
+1. Install the app (or clone this repo).
+2. Register the server once:
+   - Installed app (macOS): `"/Applications/Daily Audio Briefing.app/Contents/MacOS/dab-mcp" --install`
+   - From source: `python3 daily_audio_briefing/mcp_server.py --install`
+3. Restart Claude Code / Claude Desktop. Ask: *"Read this article to me"* with a URL, or paste text and ask for audio. Files land in the app's **Reading List** folder.
+
+`--print-config` shows the JSON for other MCP clients; `--uninstall` removes it; `--check` verifies the install. Tools: `text_to_audio`, `urls_to_audio`, `get_job`, `list_jobs`, `list_voices`.
+
 ### Data Extraction
 - **Newsletter Extraction**: Extract article links from newsletters (Beehiiv, Substack, etc.)
 - **Grid Integration**: Match extracted entities to The Grid database

@@ -178,6 +178,10 @@ This feature is off by default — the file simply doesn't exist until you copy 
 
 ---
 
+## Step 6 — Let your AI agent drive it (optional)
+
+Run `--install` once (see README → "Use it from Claude") and any MCP client can start audio jobs. Jobs are asynchronous: the agent gets a `job_id` and polls `get_job` until `state` is `done`. Long texts (a 4-hour read) are fine — one job runs at a time so Kokoro never competes with itself. Job records live in `<data dir>/jobs/`, the server log in `<data dir>/mcp_server.log`.
+
 ## Troubleshooting
 
 See the **Troubleshooting** section in [README.md](README.md) for common issues (missing

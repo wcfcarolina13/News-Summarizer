@@ -5,6 +5,20 @@ All notable changes to the Daily Audio Briefing, newest first. Format follows
 deployed from the working tree, so entries are dated rather than tied to release
 tags.
 
+## 2026-09-03
+
+### Added
+- **MCP server (`dab-mcp` / `mcp_server.py`)** — any MCP client (Claude Code, Claude Desktop, Cowork, Cursor) can call `text_to_audio` / `urls_to_audio`, poll `get_job`, and list voices, with the GUI closed. One-line setup via `--install`; `--print-config`, `--uninstall`, `--check` also provided. Jobs run on a single worker thread and persist as JSON under `<data dir>/jobs/`, so a restarted server still reports finished work.
+- **`audio_jobs.py`** — the Reading List → Audio and Direct Audio pipeline (fetch → Gemini/fallback clean → combine → Kokoro/gTTS) as Tk-free functions with progress and cancel callbacks. Both GUI dialogs now call it; 364 net lines deleted from `gui_app.py` (450 removed, 86 added) across the two GUI rewires (`_clean_single_article`, `generate_audio_filename`, the inline frozen/dev TTS branch, `get_data_directory` moved to `file_manager`).
+- Second PyInstaller executable `dab-mcp` inside the .app / beside the .exe (build not yet cut — lands with the next release).
+
+### Fixed
+- Reading List → Audio: a TTS timeout now reports a proper failure instead of a raw error; frozen builds run TTS from the data dir so Kokoro model downloads don't land in `Reading List/`.
+
+### Notes
+- Direct Audio cleaning previously passed the combo-box label prefix ("Fast"/"Balanced") as the Gemini model id, so it always fell through to the free-provider chain; it now resolves the real model id like the Reading List path does.
+- Follow-up filed in the vault: re-evaluate whether Gemini is still the right cleaning/summarizing model given the free-provider chain.
+
 ## 2026-08-03 (evening)
 
 ### Fixed
