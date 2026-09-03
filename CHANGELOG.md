@@ -10,7 +10,7 @@ tags.
 ### Added
 - **MCP server (`dab-mcp` / `mcp_server.py`)** — any MCP client (Claude Code, Claude Desktop, Cowork, Cursor) can call `text_to_audio` / `urls_to_audio`, poll `get_job`, and list voices, with the GUI closed. One-line setup via `--install`; `--print-config`, `--uninstall`, `--check` also provided. Jobs run on a single worker thread and persist as JSON under `<data dir>/jobs/`, so a restarted server still reports finished work.
 - **`audio_jobs.py`** — the Reading List → Audio and Direct Audio pipeline (fetch → Gemini/fallback clean → combine → Kokoro/gTTS) as Tk-free functions with progress and cancel callbacks. Both GUI dialogs now call it; 364 net lines deleted from `gui_app.py` (450 removed, 86 added) across the two GUI rewires (`_clean_single_article`, `generate_audio_filename`, the inline frozen/dev TTS branch, `get_data_directory` moved to `file_manager`).
-- Second PyInstaller executable `dab-mcp` inside the .app / beside the .exe (build not yet cut — lands with the next release).
+- Second PyInstaller executable `dab-mcp` inside the .app / beside the .exe (built 2026-09-03 and installed to /Applications; `dab-mcp --check` verified from inside the bundle).
 
 ### Security
 - **SSRF guard on `urls_to_audio`.** URLs supplied by an agent are now resolved and rejected when any resulting address is loopback, private, link-local, reserved or multicast (and the literal host `localhost`), so the MCP server cannot be steered at cloud metadata endpoints or localhost-only services; redirects are no longer auto-followed — each `Location` hop (max 3) is re-validated against the same rule. Set `DAB_MCP_ALLOW_PRIVATE_URLS=1` to opt out when pointing it at a local dev server. The GUI path is unchanged (the user typed those URLs).
