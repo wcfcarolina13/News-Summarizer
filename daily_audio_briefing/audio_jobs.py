@@ -10,6 +10,10 @@ import os
 import re
 import sys
 
+import requests
+from bs4 import BeautifulSoup
+from urllib.parse import urlsplit, urlunsplit, parse_qsl, urlencode
+
 KOKORO_VOICES = [
     "af_heart", "af_sarah", "af_nova", "af_sky", "af_bella",
     "am_adam", "am_michael", "am_echo",
@@ -84,3 +88,85 @@ def reading_list_basename(titles, now=None):
     if len(slug_part) > 80:
         slug_part = slug_part[:80].rsplit('-', 1)[0]
     return f"{_date_str(now)}_reading-list_{slug_part}"
+
+
+_UA = ('Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) '
+       'AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36')
+FETCH_TIMEOUT = 30
+MIN_PARAGRAPH_CHARS = 50
+MIN_ARTICLE_CHARS = 100
+
+
+class CancelledError(Exception):
+    """Raised by pipeline steps when cancel() returns True."""
+
+
+def _check_cancel(cancel):
+    if cancel and cancel():
+        raise CancelledError()
+
+
+def _say(progress, msg):
+    if progress:
+        progress(msg)
+
+
+def strip_utm(url):
+    parts = urlsplit(url)
+    kept = [(k, v) for k, v in parse_qsl(parts.query, keep_blank_values=True)
+            if not k.lower().startswith("utm_")]
+    return urlunsplit((parts.scheme, parts.netloc, parts.path, urlencode(kept), parts.fragment))
+
+
+def _extract_article(html):
+    """(title, content) using the reading-list dialog's rules."""
+    soup = BeautifulSoup(html, 'html.parser')
+    title = ""
+    title_elem = soup.find('title') or soup.find('h1')
+    if title_elem:
+        title = title_elem.get_text(strip=True)
+    for elem in soup.find_all(['script', 'style', 'nav', 'header', 'footer', 'aside', 'iframe']):
+        elem.decompose()
+    main_elem = (
+        soup.find('article') or soup.find('main') or
+        soup.find(class_=re.compile(r'content|article|post', re.I)) or
+        soup.find('body')
+    )
+    content = ""
+    if main_elem:
+        paragraphs = main_elem.find_all('p')
+        content = '\n\n'.join(
+            p.get_text(strip=True) for p in paragraphs
+            if len(p.get_text(strip=True)) > MIN_PARAGRAPH_CHARS
+        )
+    return title, content
+
+
+def fetch_articles(urls, *, progress=None, cancel=None):
+    """Fetch each URL and extract listenable body text.
+
+    Returns one dict per URL, in order: {url, title, content, error}.
+    A failed or too-short fetch keeps its slot with content "" and an error
+    message, so callers can report exactly what was skipped.
+    """
+    articles = []
+    total = len(urls)
+    for i, raw_url in enumerate(urls):
+        _check_cancel(cancel)
+        url = strip_utm(raw_url.strip())
+        _say(progress, f"[1/5] Fetching article {i + 1}/{total}...")
+        rec = {"url": url, "title": url, "content": "", "error": None}
+        try:
+            resp = requests.get(url, timeout=FETCH_TIMEOUT, headers={'User-Agent': _UA})
+            resp.raise_for_status()
+            title, content = _extract_article(resp.text)
+            if title:
+                rec["title"] = title
+            if content and len(content.strip()) > MIN_ARTICLE_CHARS:
+                rec["content"] = content
+            else:
+                rec["error"] = "too short or empty after extraction"
+        except Exception as e:  # network, HTTP, parse — all recorded
+            rec["error"] = str(e)
+        articles.append(rec)
+    return articles
