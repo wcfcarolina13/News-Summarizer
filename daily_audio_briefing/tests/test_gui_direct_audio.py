@@ -15,8 +15,11 @@ import audio_jobs  # noqa: E402
 
 
 class _Stub:
-    def __init__(self, model_label="Fast (FREE)"):
+    def __init__(self, model_label="gemini-2.0-flash (Fast)"):
         self.model_var = types.SimpleNamespace(get=lambda: model_label)
+
+    # Real method, bound unbound-style like the function under test.
+    _selected_gemini_model = gui_app.AudioBriefingApp._selected_gemini_model
 
     def _get_active_article_instructions(self):
         return "INSTR"
@@ -61,10 +64,18 @@ def test_short_articles_skipped(monkeypatch):
     assert len(calls) == 1
 
 
-def test_unknown_model_label_falls_back_to_default(monkeypatch):
+def test_pro_model_label_resolves_to_model_id(monkeypatch):
     calls = []
     _patch_clean(monkeypatch, calls)
-    gui_app.AudioBriefingApp.clean_text_for_listening(_Stub("???"), "hello", "KEY")
+    gui_app.AudioBriefingApp.clean_text_for_listening(
+        _Stub("gemini-1.5-pro (Best, 50/day)"), "hello", "KEY")
+    assert calls[0]["model_name"] == "gemini-1.5-pro"
+
+
+def test_empty_model_label_falls_back_to_default(monkeypatch):
+    calls = []
+    _patch_clean(monkeypatch, calls)
+    gui_app.AudioBriefingApp.clean_text_for_listening(_Stub(""), "hello", "KEY")
     assert calls[0]["model_name"] == audio_jobs.DEFAULT_CLEAN_MODEL
 
 

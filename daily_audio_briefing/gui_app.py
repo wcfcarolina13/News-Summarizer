@@ -7037,12 +7037,7 @@ Transcript:
             api_key = self.gemini_key_entry.get().strip()
         except Exception:
             pass
-        model_map = {
-            "Fast (FREE)": "gemini-2.0-flash",
-            "Balanced (FREE)": "gemini-2.5-flash",
-            "Best (FREE, 50/day)": "gemini-2.5-pro",
-        }
-        model_name = model_map.get(self.model_var.get(), audio_jobs.DEFAULT_CLEAN_MODEL)
+        model_name = self._selected_gemini_model()
         instructions = self._get_active_article_instructions()
         voice = self.voice_var.get()
 
@@ -7558,17 +7553,13 @@ Transcript:
 
             threading.Thread(target=process_async, daemon=True).start()
 
+    def _selected_gemini_model(self) -> str:
+        """The model id from the Model combo label (e.g. "gemini-2.0-flash (Fast)")."""
+        return self.model_var.get().split(" (")[0].strip() or audio_jobs.DEFAULT_CLEAN_MODEL
+
     def clean_text_for_listening(self, text, api_key):
         """Clean and format text for audio listening via audio_jobs.clean_text."""
-        model_map = {
-            "Fast (FREE)": "gemini-2.0-flash",
-            "Balanced (FREE)": "gemini-2.5-flash",
-            "Best (FREE, 50/day)": "gemini-2.5-pro",
-        }
-        try:
-            model_name = model_map.get(self.model_var.get(), audio_jobs.DEFAULT_CLEAN_MODEL)
-        except Exception:
-            model_name = audio_jobs.DEFAULT_CLEAN_MODEL
+        model_name = self._selected_gemini_model()
         instructions = self._get_active_article_instructions()
 
         # If text contains multiple articles (separated by ---), clean each separately
@@ -7595,6 +7586,7 @@ Transcript:
 
         return audio_jobs.clean_text(
             text, api_key=api_key, instructions=instructions, model_name=model_name)
+
     def estimate_api_usage(self):
         """Estimate API requests and cost based on current settings."""
         # Count enabled channels - check user data dir first, then bundled

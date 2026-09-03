@@ -16,7 +16,7 @@ tags.
 - Reading List → Audio: a TTS timeout now reports a proper failure instead of a raw error; frozen builds run TTS from the data dir so Kokoro model downloads don't land in `Reading List/`.
 
 ### Notes
-- Direct Audio cleaning previously passed the combo-box label prefix ("Fast"/"Balanced") as the Gemini model id, so it always fell through to the free-provider chain; it now resolves the real model id like the Reading List path does.
+- Reading List → Audio previously mapped the model combo-box label through a stale lookup table and always cleaned with `gemini-2.5-flash` regardless of selection; both the Reading List and Direct Audio paths now use the selected model id via `_selected_gemini_model()`.
 - Follow-up filed in the vault: re-evaluate whether Gemini is still the right cleaning/summarizing model given the free-provider chain.
 
 ## 2026-08-03 (evening)

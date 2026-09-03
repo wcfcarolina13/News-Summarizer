@@ -21,10 +21,13 @@ class _Stub:
 
     def __init__(self):
         self.gemini_key_entry = types.SimpleNamespace(get=lambda: " key ")
-        self.model_var = types.SimpleNamespace(get=lambda: "Fast (FREE)")
+        self.model_var = types.SimpleNamespace(get=lambda: "gemini-2.0-flash (Fast)")
         self.voice_var = types.SimpleNamespace(get=lambda: "af_heart")
         self.reset_calls = []
         self.complete_calls = []
+
+    # Real method, bound unbound-style like the function under test.
+    _selected_gemini_model = gui_app.AudioBriefingApp._selected_gemini_model
 
     def _get_active_article_instructions(self):
         return "INSTR"
