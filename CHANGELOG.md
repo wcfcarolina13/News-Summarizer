@@ -21,6 +21,7 @@ tags.
 - MCP job records store only `{url, title, error}` per article instead of the full `content`/`cleaned` bodies, which were rewritten on every progress tick and returned to the agent.
 - `list_jobs` clamps `limit` to 1–200; `job_store` tolerates a stray non-job JSON file in the jobs directory.
 - Reading List → Audio: a TTS timeout now reports a proper failure instead of a raw error; frozen builds run TTS from the data dir so Kokoro model downloads don't land in `Reading List/`.
+- Starting a second MCP server process no longer marks a live sibling's running job as failed; recovery now checks the owning pid.
 
 ### Notes
 - Reading List → Audio previously mapped the model combo-box label through a stale lookup table and always cleaned with `gemini-2.5-flash` regardless of selection; both the Reading List and Direct Audio paths now use the selected model id via `_selected_gemini_model()`.

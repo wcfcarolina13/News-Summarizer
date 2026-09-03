@@ -17,6 +17,20 @@ def _now():
     return datetime.datetime.now().isoformat(timespec="microseconds")
 
 
+def _pid_alive(pid):
+    """True if `pid` names a currently-running process."""
+    if not isinstance(pid, int):
+        return False
+    try:
+        os.kill(pid, 0)
+    except ProcessLookupError:
+        return False
+    except PermissionError:
+        return True
+    else:
+        return True
+
+
 class JobStore:
     def __init__(self, jobs_dir):
         self.jobs_dir = jobs_dir
@@ -43,6 +57,7 @@ class JobStore:
             "error": None,
             "created": _now(),
             "finished": None,
+            "pid": os.getpid(),
         }
         with self._lock:
             self._write(job)
@@ -70,6 +85,8 @@ class JobStore:
             if job is None:
                 raise KeyError(job_id)
             job.update(fields)
+            if fields.get("state") == "running" and "pid" not in fields:
+                job["pid"] = os.getpid()
             if fields.get("state") in ("done", "failed"):
                 job["finished"] = _now()
             self._write(job)
@@ -88,7 +105,7 @@ class JobStore:
     def recover_interrupted(self):
         count = 0
         for job in self.list(limit=10_000):
-            if job.get("state") in ("queued", "running"):
+            if job.get("state") in ("queued", "running") and not _pid_alive(job.get("pid")):
                 self.update(job["job_id"], state="failed", error="server restarted")
                 count += 1
         return count
