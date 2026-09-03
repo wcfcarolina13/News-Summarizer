@@ -5,6 +5,23 @@ All notable changes to the Daily Audio Briefing, newest first. Format follows
 deployed from the working tree, so entries are dated rather than tied to release
 tags.
 
+## 2026-09-03 (LLM chain review)
+
+### Fixed
+- **Cerebras removed from the free chain.** Every chat completion has returned `402 payment_required` (param `quota`) since 2026-08-18 while `/v1/models` still answers — the key is valid, the free quota is gone (189 dead hops in the daemon log). Removed from `llm_fallback.py`, `stress_test_providers.py`, `.env.example` and the `free-llm-fallback-chain` skill, as SambaNova was in a0b4e0e. **Groq now leads** (fastest rung; its 10k-token ceiling routes big requests past it) so Cloudflare's 10,000-neuron daily allocation is spent only on what Groq cannot take.
+- **Long articles no longer fall through to the 3-minute local floor.** `audio_jobs.clean_text` splits inputs over ~6k tokens on paragraph boundaries (`text_chunks.split_text`, moved out of `source_fetcher`), cleans each chunk with `max_tokens` sized to it (floor 4096, cap 8192) and rejoins; a chunk every provider fails on is kept raw, never dropped. `generate_with_fallback` gains `max_tokens`. Before: a 20k-token article skipped Groq (ceiling), truncated on Cloudflare at the 4096 default (`finish_reason=length`) and went to local Ollama or failed outright — 8 of the Sep 3 MCP reading-list articles were voiced raw.
+
+### Added
+- **`DAB_SUMMARIZER=<provider>:<model>` A/B switch** — tried first at the summarizer call sites only (`fetcher._summarize_yt`, `fetcher._summarize_article`, `yt_news.summarize`, `gui._summarize_yt`), then the normal chain. Unset by default; behaviour unchanged.
+- **`scripts/ab_summarize.py`** — rebuilds the daemon's exact prompt (same `custom_instructions.txt`) for one day's processed videos, runs Gemini and a candidate on it, writes `docs/ab/<date>_*.md` side by side with cheap omit-rule/readability checks. First run: `docs/ab/2026-09-02_gemini-vs-groq-openai-gpt-oss-120b.md` (7 videos, Gemini est. $0.016).
+- **`docs/llm-call-inventory.md`** — every LLM call site, input sizes, daily volume, what actually answered Aug 12 → Sep 3, live per-provider probe results, candidate shortlist.
+- Tests: `tests/test_llm_fallback_chain.py` (chain shape, `max_tokens` plumbing, ceiling routing, override) and chunked-cleaning tests in `tests/test_audio_jobs.py`. 228 passing.
+
+### Notes
+- Live findings (2026-09-03): Groq `openai/gpt-oss-120b` is 1–2 s per call with an **8,000 tokens/minute** cap shared between input and output, so back-to-back big calls 429 and spill to Cloudflare; Cloudflare's free day was already exhausted by the morning reading-list job. Only Groq, Cloudflare (and the dead Cerebras) have keys in `.env` — Mistral, Ollama Cloud and OpenRouter do not, so the fallback chain is two providers deep plus local Ollama. 12 videos were dropped in the last month when Cloudflare's quota ran out, Groq 429'd and Ollama was not running.
+- Gemini has not been called by the pipeline since 2026-06-10 (`ENABLE_GEMINI` unset); the briefing has run on Cloudflare/Groq gpt-oss-120b for three months. The default stays as is until Bradley reads/listens to the A/B.
+- Daemon restarted after these edits (it does not hot-reload).
+
 ## 2026-09-03
 
 ### Added
