@@ -1,5 +1,8 @@
 #!/usr/bin/env python3
-"""A/B the briefing summarizer: Gemini vs a free-chain candidate on one day's videos.
+"""A/B the briefing summarizer: two free-chain candidates (or, only on request, Gemini) on one day's videos.
+
+ZERO-SPEND BY DEFAULT. Gemini is a paid API and is only called with --with-gemini;
+the normal comparison is free provider A vs free provider B.
 
 Rebuilds the exact prompt the daemon uses (SourceFetcher._summarize_youtube with
 custom_instructions.txt), fetches the transcripts for the videos the briefing
@@ -7,13 +10,11 @@ processed on --date (from processed_videos.json — transcripts are not cached, 
 they are re-fetched with yt-dlp), runs BOTH models on the same prompt, and writes
 a side-by-side markdown for Bradley to read/listen through.
 
-    python3 scripts/ab_summarize.py                       # yesterday, Gemini vs groq:openai/gpt-oss-120b
-    python3 scripts/ab_summarize.py --date 2026-09-02 --candidate cloudflare:@cf/moonshotai/kimi-k2.6
-    python3 scripts/ab_summarize.py --limit 3 --no-gemini  # candidate only, no paid call
+    python3 scripts/ab_summarize.py                       # yesterday: A=groq gpt-oss-120b vs B=cloudflare gpt-oss-120b
+    python3 scripts/ab_summarize.py --a groq:openai/gpt-oss-120b --b openrouter:nvidia/nemotron-3-super-120b-a12b:free
+    python3 scripts/ab_summarize.py --with-gemini --limit 3  # PAID: Gemini as side A (only when explicitly wanted)
 
-Gemini calls here are PAID and deliberately bypass api_usage_tracker (this is a
-one-off, explicitly requested A/B) — the estimated cost is printed and written
-into the report. Nothing here touches the daemon or the live chain.
+Nothing here touches the daemon or the live chain.
 """
 import argparse
 import datetime as dt
@@ -117,16 +118,19 @@ def _checks(text):
 def main():
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--date", default=(dt.date.today() - dt.timedelta(days=1)).isoformat())
-    ap.add_argument("--candidate", default="groq:openai/gpt-oss-120b", help="<provider>:<model> from llm_fallback._HTTP_PROVIDERS")
+    ap.add_argument("--a", default="groq:openai/gpt-oss-120b", help="side A: <provider>:<model> from llm_fallback._HTTP_PROVIDERS")
+    ap.add_argument("--b", "--candidate", dest="candidate", default="cloudflare:@cf/openai/gpt-oss-120b", help="side B: <provider>:<model>")
+    ap.add_argument("--with-gemini", action="store_true", help="PAID: use Gemini as side A instead of --a (costs money; off by default)")
     ap.add_argument("--gemini-model", default="gemini-2.5-flash")
-    ap.add_argument("--no-gemini", action="store_true", help="skip the paid Gemini side")
     ap.add_argument("--limit", type=int, default=0, help="only the first N videos")
     ap.add_argument("--out", default=os.path.join(os.path.dirname(HERE), "docs", "ab"))
     args = ap.parse_args()
 
-    api_key = "" if args.no_gemini else (llm_fallback._load_key("GEMINI_API_KEY") or "")
-    if not args.no_gemini and not api_key:
-        sys.exit("GEMINI_API_KEY not set — pass --no-gemini to run the candidate alone")
+    use_gemini = args.with_gemini
+    api_key = (llm_fallback._load_key("GEMINI_API_KEY") or "") if use_gemini else ""
+    if use_gemini and not api_key:
+        sys.exit("GEMINI_API_KEY not set")
+    side_a = args.gemini_model if use_gemini else args.a
     with open(os.path.join(APP, "custom_instructions.txt")) as f:
         instructions = f.read()
 
@@ -135,7 +139,7 @@ def main():
         ids = ids[: args.limit]
     if not ids:
         sys.exit(f"no processed videos on {args.date} in processed_videos.json")
-    print(f"{len(ids)} videos processed on {args.date}; candidate={args.candidate}; gemini={'off' if args.no_gemini else args.gemini_model}")
+    print(f"{len(ids)} videos processed on {args.date}; A={side_a}{' (PAID)' if use_gemini else ''}; B={args.candidate}")
 
     fetcher = SourceFetcher(api_key="", model_name=args.gemini_model, data_dir=APP)
     rows, cost, skipped = [], 0.0, []
@@ -152,31 +156,33 @@ def main():
             skipped.append((title, url, "prompt capture failed"))
             continue
         row = {"title": title, "channel": channel, "url": url, "transcript_chars": len(tx), "prompt_chars": len(prompt)}
-        if not args.no_gemini:
+        if use_gemini:
             text, secs, err = _gemini(prompt, args.gemini_model, api_key)
             cost += len(prompt) / 4 / 1e6 * GEMINI_IN_PER_M + len(text) / 4 / 1e6 * GEMINI_OUT_PER_M
-            row["A"] = {"model": args.gemini_model, "text": text, "secs": secs, "err": err, "checks": _checks(text)}
-            print(f"    A {args.gemini_model}: {len(text)} chars in {secs:.1f}s {err or ''}")
+        else:
+            text, secs, err = _candidate(prompt, args.a)
+        row["A"] = {"model": side_a, "text": text, "secs": secs, "err": err, "checks": _checks(text)}
+        print(f"    A {side_a}: {len(text)} chars in {secs:.1f}s {err or ''}")
         text, secs, err = _candidate(prompt, args.candidate)
         row["B"] = {"model": args.candidate, "text": text, "secs": secs, "err": err, "checks": _checks(text)}
         print(f"    B {args.candidate}: {len(text)} chars in {secs:.1f}s {err or ''}")
         rows.append(row)
 
     os.makedirs(args.out, exist_ok=True)
-    slug = re.sub(r"[^a-z0-9]+", "-", args.candidate.lower()).strip("-")
-    path = os.path.join(args.out, f"{args.date}_{'gemini-vs-' if not args.no_gemini else ''}{slug}.md")
+    slug = lambda x: re.sub(r"[^a-z0-9]+", "-", x.lower()).strip("-")
+    path = os.path.join(args.out, f"{args.date}_{slug(side_a)}-vs-{slug(args.candidate)}.md")
     with open(path, "w") as f:
         f.write(f"# Summarizer A/B — {args.date}\n\n")
-        f.write(f"- **A** = `{args.gemini_model}` (paid; est. cost this run **${cost:.4f}**)\n" if not args.no_gemini else "- A = (Gemini skipped)\n")
+        f.write(f"- **A** = `{side_a}`" + (f" (PAID Gemini; est. cost this run **${cost:.4f}**)\n" if use_gemini else " (free chain)\n"))
         f.write(f"- **B** = `{args.candidate}` (free chain)\n")
         f.write(f"- Same prompt as the daemon (`SourceFetcher._summarize_youtube` + `custom_instructions.txt`), {len(rows)} videos, {len(skipped)} skipped.\n")
         f.write("- Automated checks are only hints. Judge each pair on: **omit rules obeyed** (no promo, no TA, no price talk, no politics-only), **reads well aloud** (no markdown, numbers written out, no filler), **nothing important missing**.\n\n")
-        f.write("## Scorecard\n\n| # | Video | " + ("A words / A secs | " if not args.no_gemini else "") + "B words / B secs | A flags | B flags |\n|---|---|" + ("---|" if not args.no_gemini else "") + "---|---|---|\n")
+        f.write("## Scorecard\n\n| # | Video | A words / A secs | B words / B secs | A flags | B flags |\n|---|---|---|---|---|---|\n")
         for i, r in enumerate(rows, 1):
             fl = lambda c: ", ".join(f"{k} {v}" for k, v in c["checks"].items() if k not in ("words",) and v) or "clean"
             a = r.get("A")
-            f.write(f"| {i} | {r['title'][:50]} | " + (f"{a['checks']['words']} / {a['secs']:.0f}s | " if a else "") +
-                    f"{r['B']['checks']['words']} / {r['B']['secs']:.0f}s | {fl(a) if a else '—'} | {fl(r['B'])} |\n")
+            f.write(f"| {i} | {r['title'][:50]} | {a['checks']['words']} / {a['secs']:.0f}s | "
+                    f"{r['B']['checks']['words']} / {r['B']['secs']:.0f}s | {fl(a)} | {fl(r['B'])} |\n")
         f.write("\n")
         for i, r in enumerate(rows, 1):
             f.write(f"## {i}. {r['title']}\n\n{r['channel']} · {r['url']} · transcript {r['transcript_chars']:,} chars\n\n")
@@ -190,7 +196,7 @@ def main():
             f.write("**Verdict:** [ ] A better  [ ] B better  [ ] tie — notes:\n\n---\n\n")
         if skipped:
             f.write("## Skipped\n\n" + "".join(f"- {t} — {u} — {why}\n" for t, u, why in skipped))
-    print(f"\nwrote {path}" + ("" if args.no_gemini else f"  (Gemini est. cost ${cost:.4f})"))
+    print(f"\nwrote {path}" + (f"  (Gemini est. cost ${cost:.4f})" if use_gemini else "  ($0 spent)"))
 
 
 if __name__ == "__main__":

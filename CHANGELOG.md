@@ -13,13 +13,13 @@ tags.
 
 ### Added
 - **`DAB_SUMMARIZER=<provider>:<model>` A/B switch** — tried first at the summarizer call sites only (`fetcher._summarize_yt`, `fetcher._summarize_article`, `yt_news.summarize`, `gui._summarize_yt`), then the normal chain. Unset by default; behaviour unchanged.
-- **`scripts/ab_summarize.py`** — rebuilds the daemon's exact prompt (same `custom_instructions.txt`) for one day's processed videos, runs Gemini and a candidate on it, writes `docs/ab/<date>_*.md` side by side with cheap omit-rule/readability checks. First run: `docs/ab/2026-09-02_gemini-vs-groq-openai-gpt-oss-120b.md` (7 videos, Gemini est. $0.016).
+- **`scripts/ab_summarize.py`** — rebuilds the daemon's exact prompt (same `custom_instructions.txt`) for one day's processed videos, runs Gemini and a candidate on it, writes `docs/ab/<date>_*.md` side by side with cheap omit-rule/readability checks. Zero-spend by default: compares two free-chain models; Gemini only with `--with-gemini`. The first run (`docs/ab/2026-09-02_gemini-vs-groq-openai-gpt-oss-120b.md`, 7 videos) did call Gemini, est. $0.016 — that was a mistake against the zero-spend rule, and the script default was changed so it cannot recur.
 - **`docs/llm-call-inventory.md`** — every LLM call site, input sizes, daily volume, what actually answered Aug 12 → Sep 3, live per-provider probe results, candidate shortlist.
 - Tests: `tests/test_llm_fallback_chain.py` (chain shape, `max_tokens` plumbing, ceiling routing, override) and chunked-cleaning tests in `tests/test_audio_jobs.py`. 228 passing.
 
 ### Notes
 - Live findings (2026-09-03): Groq `openai/gpt-oss-120b` is 1–2 s per call with an **8,000 tokens/minute** cap shared between input and output, so back-to-back big calls 429 and spill to Cloudflare; Cloudflare's free day was already exhausted by the morning reading-list job. Only Groq, Cloudflare (and the dead Cerebras) have keys in `.env` — Mistral, Ollama Cloud and OpenRouter do not, so the fallback chain is two providers deep plus local Ollama. 12 videos were dropped in the last month when Cloudflare's quota ran out, Groq 429'd and Ollama was not running.
-- Gemini has not been called by the pipeline since 2026-06-10 (`ENABLE_GEMINI` unset); the briefing has run on Cloudflare/Groq gpt-oss-120b for three months. The default stays as is until Bradley reads/listens to the A/B.
+- Gemini has not been called by the pipeline since 2026-06-10 (`ENABLE_GEMINI` unset); the briefing has run on Cloudflare/Groq gpt-oss-120b for three months. Bradley confirmed the goal is zero spend, so Gemini stays off; the only open question is which free model leads, which the A/B script now answers free-vs-free.
 - Daemon restarted after these edits (it does not hot-reload).
 
 ## 2026-09-03
