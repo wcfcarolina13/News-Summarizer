@@ -97,7 +97,8 @@ class _Worker:
                 out = audio_jobs.text_to_audio(
                     params["text"], title=params.get("title"), voice=params["voice"],
                     quality=params["quality"], output_dir=out_dir, progress=progress)
-                self.store.update(job_id, state="done", output_path=out, progress="done")
+                text_path = os.path.splitext(out)[0] + ".txt"
+                update_kwargs = {"state": "done", "output_path": out, "progress": "done"}
             else:
                 res = audio_jobs.urls_to_audio(
                     params["urls"], title=params.get("title"), voice=params["voice"],
@@ -105,8 +106,20 @@ class _Worker:
                     output_dir=out_dir, progress=progress)
                 slim = [{"url": a["url"], "title": a["title"], "error": a["error"]}
                         for a in res["articles"]]
-                self.store.update(job_id, state="done", output_path=res["output_path"],
-                                  progress="done", articles=slim, skipped=res["skipped"])
+                out = res["output_path"]
+                text_path = res["text_path"]
+                update_kwargs = {"state": "done", "output_path": out, "progress": "done",
+                                 "articles": slim, "skipped": res["skipped"]}
+
+            if params.get("upload_to_drive"):
+                drive_result = audio_jobs.upload_outputs_to_drive(
+                    [out, text_path], params.get("drive_folder"),
+                    data_dir=self.data_dir, progress=progress)
+                update_kwargs["drive"] = drive_result
+                if drive_result.get("status") == "error":
+                    update_kwargs["progress"] = f"done (Drive upload failed: {drive_result.get('error')})"
+
+            self.store.update(job_id, **update_kwargs)
         except Exception as e:  # noqa: BLE001 — every pipeline failure becomes a failed job
             log.warning("job %s failed: %s", job_id, e)
             self.store.update(job_id, state="failed", error=str(e))
@@ -137,28 +150,45 @@ def build_server(data_dir: Optional[str] = None) -> FastMCP:
         "Turn text or article URLs into audio using the Daily Audio Briefing app. "
         "text_to_audio / urls_to_audio start a background job and return a job_id; "
         "poll get_job until state is done or failed. Output files land in the app's "
-        "'Reading List' folder."))
+        "'Reading List' folder. Set upload_to_drive=true to also push the MP3 and TXT "
+        "to the app's Drive folder, the one the daily briefing uses; drive_folder overrides it."))
+
+    def _validate_drive_folder(drive_folder):
+        if drive_folder is not None and not drive_folder.strip():
+            raise ValueError("drive_folder is empty; omit it to use the configured folder")
 
     @mcp.tool()
     def text_to_audio(text: str, title: Optional[str] = None,
-                      voice: str = audio_jobs.DEFAULT_VOICE, quality: str = "quality") -> dict:
-        """Start a job that converts TEXT to speech. quality: 'quality' (Kokoro) or 'fast' (gTTS)."""
+                      voice: str = audio_jobs.DEFAULT_VOICE, quality: str = "quality",
+                      upload_to_drive: bool = False, drive_folder: Optional[str] = None) -> dict:
+        """Start a job that converts TEXT to speech. quality: 'quality' (Kokoro) or 'fast' (gTTS).
+
+        Set upload_to_drive=true to also push the MP3 and TXT to the app's Drive folder,
+        the one the daily briefing uses; drive_folder overrides it.
+        """
         if not text or not text.strip():
             raise ValueError("text is empty")
         if len(text) > MAX_TEXT_CHARS:
             raise ValueError(f"text is {len(text)} chars; limit is {MAX_TEXT_CHARS}")
         _validate_common(voice, quality)
+        _validate_drive_folder(drive_folder)
         job = store.create("text_to_audio", {"title": title, "voice": voice, "quality": quality,
                                              "chars": len(text)}, None)
         worker.submit(job["job_id"], {"kind": "text_to_audio", "text": text, "title": title,
-                                      "voice": voice, "quality": quality})
+                                      "voice": voice, "quality": quality,
+                                      "upload_to_drive": upload_to_drive, "drive_folder": drive_folder})
         return {"job_id": job["job_id"], "state": "queued",
                 "output_dir": os.path.join(data_dir, audio_jobs.READING_LIST_SUBDIR)}
 
     @mcp.tool()
     def urls_to_audio(urls: list[str], title: Optional[str] = None,
-                      voice: str = audio_jobs.DEFAULT_VOICE, quality: str = "quality") -> dict:
-        """Start a job that fetches each URL, cleans the article text, and reads them in order."""
+                      voice: str = audio_jobs.DEFAULT_VOICE, quality: str = "quality",
+                      upload_to_drive: bool = False, drive_folder: Optional[str] = None) -> dict:
+        """Start a job that fetches each URL, cleans the article text, and reads them in order.
+
+        Set upload_to_drive=true to also push the MP3 and TXT to the app's Drive folder,
+        the one the daily briefing uses; drive_folder overrides it.
+        """
         if not urls:
             raise ValueError("urls is empty")
         if len(urls) > MAX_URLS:
@@ -172,10 +202,12 @@ def build_server(data_dir: Optional[str] = None) -> FastMCP:
                     f"refusing non-public or unresolvable URL: {u} "
                     f"(set {audio_jobs.ALLOW_PRIVATE_ENV}=1 to allow private hosts)")
         _validate_common(voice, quality)
+        _validate_drive_folder(drive_folder)
         job = store.create("urls_to_audio", {"title": title, "voice": voice, "quality": quality,
                                              "urls": urls}, None)
         worker.submit(job["job_id"], {"kind": "urls_to_audio", "urls": urls, "title": title,
-                                      "voice": voice, "quality": quality})
+                                      "voice": voice, "quality": quality,
+                                      "upload_to_drive": upload_to_drive, "drive_folder": drive_folder})
         return {"job_id": job["job_id"], "state": "queued",
                 "output_dir": os.path.join(data_dir, audio_jobs.READING_LIST_SUBDIR)}
 

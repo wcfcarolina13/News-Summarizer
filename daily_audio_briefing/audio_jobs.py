@@ -367,6 +367,65 @@ def load_gemini_api_key(data_dir=None):
     return key or os.environ.get("GEMINI_API_KEY", "")
 
 
+def load_drive_folder_id(data_dir=None):
+    """settings.json['drive_folder_id'] — the folder the daily briefing uploads into.
+
+    Missing file, missing key, or malformed JSON all resolve to "" rather than
+    raising, so callers can treat "" as "not configured".
+    """
+    data_dir = data_dir or get_data_directory()
+    path = os.path.join(data_dir, "settings.json")
+    if not os.path.exists(path):
+        return ""
+    try:
+        with open(path, "r", encoding="utf-8") as f:
+            data = json.load(f)
+    except Exception:
+        return ""
+    return data.get("drive_folder_id", "") or ""
+
+
+def upload_outputs_to_drive(paths, folder, *, data_dir=None, progress=None):
+    """Upload MCP-rendered files (MP3 + TXT) to the app's Drive folder.
+
+    Mirrors scheduler._pipeline_drive_upload's guard order (reauth -> signed-in
+    -> per-file upload) but is generic over a list of paths. Never raises —
+    every failure mode (reauth needed, not signed in, no folder, a per-file
+    error, or an unexpected exception) is reported in the returned dict so a
+    Drive problem never fails the enclosing render job.
+    """
+    data_dir = data_dir or get_data_directory()
+    folder = folder or load_drive_folder_id(data_dir)
+    if not folder:
+        return {"status": "error", "error": "no Drive folder configured",
+                "folder_id": None, "files": []}
+    _say(progress, "[6/6] Uploading to Drive...")
+    try:
+        import drive_manager
+        if drive_manager.is_reauth_needed():
+            error = "Drive token expired — re-authenticate in Settings"
+            _say(progress, f"Drive upload failed: {error}")
+            return {"status": "error", "error": error, "folder_id": None, "files": []}
+        if not drive_manager.is_signed_in():
+            error = "Drive not signed in"
+            _say(progress, f"Drive upload failed: {error}")
+            return {"status": "error", "error": error, "folder_id": None, "files": []}
+        folder_id = drive_manager.extract_folder_id_from_url(folder)
+        files = []
+        for path in paths:
+            r = drive_manager.upload_file(path, folder_id)
+            files.append({"path": path, "name": r.get("name"), "status": r.get("status"),
+                         "id": r.get("id"), "reason": r.get("reason")})
+        ok = all(f["status"] in ("uploaded", "skipped") for f in files)
+        error = None if ok else next((f["reason"] for f in files if f["status"] not in ("uploaded", "skipped")), "upload failed")
+        status = "uploaded" if ok else "error"
+        _say(progress, f"Drive upload {'done' if ok else 'failed: ' + str(error)}")
+        return {"status": status, "folder_id": folder_id, "files": files, "error": error}
+    except Exception as e:  # noqa: BLE001 — a Drive failure must not fail the render job
+        _say(progress, f"Drive upload failed: {e}")
+        return {"status": "error", "error": str(e), "folder_id": None, "files": []}
+
+
 _SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
 TTS_TIMEOUT = 3600
 

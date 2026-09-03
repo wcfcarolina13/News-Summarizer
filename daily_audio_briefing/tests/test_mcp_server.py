@@ -150,3 +150,82 @@ def test_worker_never_writes_to_stdout(tmp_path, stubbed, monkeypatch, capsys):
         job = _wait_done(server, out["job_id"])
     assert job["state"] == "done", job
     assert buf.getvalue() == ""
+
+
+def _fake_drive_module_for_mcp(status="uploaded", error=None):
+    import types as _types
+
+    def upload_file(local_path, folder_id, skip_existing=True):
+        name = os.path.basename(local_path)
+        if status == "error" and name.endswith(".txt"):
+            return {"status": "error", "reason": error or "boom", "name": name}
+        return {"status": "uploaded", "id": "1", "name": name, "size_bytes": 1}
+
+    return _types.SimpleNamespace(
+        upload_file=upload_file,
+        is_signed_in=lambda: True,
+        is_reauth_needed=lambda: False,
+        extract_folder_id_from_url=lambda x: x,
+    )
+
+
+def test_text_to_audio_with_drive_upload_succeeds(tmp_path, stubbed, monkeypatch):
+    import sys as _sys
+    monkeypatch.setitem(_sys.modules, "drive_manager", _fake_drive_module_for_mcp())
+    server = mcp_server.build_server(str(tmp_path))
+    out = _payload(_call(server, "text_to_audio", {
+        "text": "Hello there. This is a test.", "title": "Test Piece",
+        "upload_to_drive": True, "drive_folder": "folder123"}))
+    job = _wait_done(server, out["job_id"])
+    assert job["state"] == "done", job
+    assert job["drive"]["status"] == "uploaded"
+    names = [f["name"] for f in job["drive"]["files"]]
+    assert any(n.endswith(".mp3") or n.endswith(".wav") for n in names)
+    assert any(n.endswith(".txt") for n in names)
+
+
+def test_text_to_audio_drive_upload_failure_does_not_fail_job(tmp_path, stubbed, monkeypatch):
+    import sys as _sys
+    monkeypatch.setitem(_sys.modules, "drive_manager", _fake_drive_module_for_mcp(status="error", error="quota"))
+    server = mcp_server.build_server(str(tmp_path))
+    out = _payload(_call(server, "text_to_audio", {
+        "text": "Hello there. This is a test.",
+        "upload_to_drive": True, "drive_folder": "folder123"}))
+    job = _wait_done(server, out["job_id"])
+    assert job["state"] == "done", job
+    assert job["drive"]["status"] == "error"
+    assert "Drive upload failed" in job["progress"]
+
+
+def test_text_to_audio_without_drive_flag_has_no_drive_key(tmp_path, stubbed):
+    server = mcp_server.build_server(str(tmp_path))
+    out = _payload(_call(server, "text_to_audio", {"text": "no drive here please"}))
+    job = _wait_done(server, out["job_id"])
+    assert job["state"] == "done", job
+    assert not job.get("drive")
+
+
+def test_text_to_audio_empty_drive_folder_is_error(tmp_path, stubbed):
+    server = mcp_server.build_server(str(tmp_path))
+    res = _call(server, "text_to_audio", {"text": "ok text", "drive_folder": ""})
+    assert res.isError
+
+
+def test_urls_to_audio_empty_drive_folder_is_error(tmp_path, stubbed):
+    server = mcp_server.build_server(str(tmp_path))
+    res = _call(server, "urls_to_audio", {"urls": ["https://a.b"], "drive_folder": ""})
+    assert res.isError
+
+
+def test_urls_to_audio_with_drive_upload_succeeds(tmp_path, stubbed, monkeypatch):
+    import sys as _sys
+    from tests.test_audio_jobs import GOOD_HTML, _Resp
+    monkeypatch.setattr(audio_jobs.requests, "get", lambda url, **kw: _Resp(GOOD_HTML))
+    monkeypatch.setattr(audio_jobs, "is_public_http_url", lambda u: True)
+    monkeypatch.setitem(_sys.modules, "drive_manager", _fake_drive_module_for_mcp())
+    server = mcp_server.build_server(str(tmp_path))
+    out = _payload(_call(server, "urls_to_audio", {
+        "urls": ["https://x.y/1"], "upload_to_drive": True, "drive_folder": "folder123"}))
+    job = _wait_done(server, out["job_id"])
+    assert job["state"] == "done", job
+    assert job["drive"]["status"] == "uploaded"

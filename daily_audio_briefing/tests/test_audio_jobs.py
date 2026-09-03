@@ -342,3 +342,144 @@ def test_fetch_articles_blocks_redirect_to_private_address(monkeypatch):
     arts = audio_jobs.fetch_articles(["https://good.test/p"])
     assert arts[0]["content"] == ""
     assert "non-public" in arts[0]["error"]
+
+
+# ---------------------------------------------------------------------------
+# Drive upload of MCP renders (load_drive_folder_id / upload_outputs_to_drive)
+# ---------------------------------------------------------------------------
+import sys as _sys
+import types as _types
+
+
+def _write_settings(tmp_path, **kv):
+    import json as _json
+    with open(os.path.join(str(tmp_path), "settings.json"), "w", encoding="utf-8") as f:
+        _json.dump(kv, f)
+
+
+def test_load_drive_folder_id_present(tmp_path):
+    _write_settings(tmp_path, drive_folder_id="abc123")
+    assert audio_jobs.load_drive_folder_id(str(tmp_path)) == "abc123"
+
+
+def test_load_drive_folder_id_missing_file(tmp_path):
+    assert audio_jobs.load_drive_folder_id(str(tmp_path)) == ""
+
+
+def test_load_drive_folder_id_missing_key(tmp_path):
+    _write_settings(tmp_path, other="x")
+    assert audio_jobs.load_drive_folder_id(str(tmp_path)) == ""
+
+
+def test_load_drive_folder_id_bad_json(tmp_path):
+    with open(os.path.join(str(tmp_path), "settings.json"), "w", encoding="utf-8") as f:
+        f.write("{not json")
+    assert audio_jobs.load_drive_folder_id(str(tmp_path)) == ""
+
+
+def _fake_drive_module(upload_results, *, signed_in=True, reauth_needed=False, raise_exc=None):
+    calls = []
+
+    def upload_file(local_path, folder_id, skip_existing=True):
+        if raise_exc:
+            raise raise_exc
+        calls.append((local_path, folder_id))
+        return upload_results[os.path.basename(local_path)]
+
+    return _types.SimpleNamespace(
+        upload_file=upload_file,
+        is_signed_in=lambda: signed_in,
+        is_reauth_needed=lambda: reauth_needed,
+        extract_folder_id_from_url=lambda x: x,
+    ), calls
+
+
+def test_upload_outputs_to_drive_uploaded_and_skipped(tmp_path, monkeypatch):
+    mp3 = os.path.join(str(tmp_path), "a.mp3")
+    txt = os.path.join(str(tmp_path), "a.txt")
+    open(mp3, "w").close()
+    open(txt, "w").close()
+    fake, calls = _fake_drive_module({
+        "a.mp3": {"id": "1", "name": "a.mp3", "size_bytes": 10, "status": "uploaded"},
+        "a.txt": {"id": "2", "name": "a.txt", "size_bytes": 5, "status": "skipped"},
+    })
+    monkeypatch.setitem(_sys.modules, "drive_manager", fake)
+    result = audio_jobs.upload_outputs_to_drive([mp3, txt], "folder123", data_dir=str(tmp_path))
+    assert result["status"] == "uploaded"
+    assert result["folder_id"] == "folder123"
+    assert len(result["files"]) == 2
+    assert {f["status"] for f in result["files"]} == {"uploaded", "skipped"}
+    assert result["error"] is None
+    assert len(calls) == 2
+
+
+def test_upload_outputs_to_drive_one_error(tmp_path, monkeypatch):
+    mp3 = os.path.join(str(tmp_path), "a.mp3")
+    txt = os.path.join(str(tmp_path), "a.txt")
+    open(mp3, "w").close()
+    open(txt, "w").close()
+    fake, _ = _fake_drive_module({
+        "a.mp3": {"status": "uploaded", "id": "1", "name": "a.mp3", "size_bytes": 1},
+        "a.txt": {"status": "error", "reason": "quota exceeded"},
+    })
+    monkeypatch.setitem(_sys.modules, "drive_manager", fake)
+    result = audio_jobs.upload_outputs_to_drive([mp3, txt], "folder123", data_dir=str(tmp_path))
+    assert result["status"] == "error"
+    assert result["error"] == "quota exceeded"
+
+
+def test_upload_outputs_to_drive_reauth_needed(tmp_path, monkeypatch):
+    fake, _ = _fake_drive_module({}, reauth_needed=True)
+    monkeypatch.setitem(_sys.modules, "drive_manager", fake)
+    result = audio_jobs.upload_outputs_to_drive(["x.mp3"], "folder123", data_dir=str(tmp_path))
+    assert result["status"] == "error"
+    assert result["error"] == "Drive token expired — re-authenticate in Settings"
+
+
+def test_upload_outputs_to_drive_not_signed_in(tmp_path, monkeypatch):
+    fake, _ = _fake_drive_module({}, signed_in=False)
+    monkeypatch.setitem(_sys.modules, "drive_manager", fake)
+    result = audio_jobs.upload_outputs_to_drive(["x.mp3"], "folder123", data_dir=str(tmp_path))
+    assert result["status"] == "error"
+    assert result["error"] == "Drive not signed in"
+
+
+def test_upload_outputs_to_drive_no_folder_configured(tmp_path, monkeypatch):
+    fake, _ = _fake_drive_module({})
+    monkeypatch.setitem(_sys.modules, "drive_manager", fake)
+    result = audio_jobs.upload_outputs_to_drive(["x.mp3"], None, data_dir=str(tmp_path))
+    assert result["status"] == "error"
+    assert result["error"] == "no Drive folder configured"
+    assert result["folder_id"] is None
+    assert result["files"] == []
+
+
+def test_upload_outputs_to_drive_uses_settings_folder_when_none_passed(tmp_path, monkeypatch):
+    _write_settings(tmp_path, drive_folder_id="from-settings")
+    mp3 = os.path.join(str(tmp_path), "a.mp3")
+    open(mp3, "w").close()
+    fake, calls = _fake_drive_module({"a.mp3": {"status": "uploaded", "id": "1", "name": "a.mp3", "size_bytes": 1}})
+    monkeypatch.setitem(_sys.modules, "drive_manager", fake)
+    result = audio_jobs.upload_outputs_to_drive([mp3], "", data_dir=str(tmp_path))
+    assert result["folder_id"] == "from-settings"
+    assert result["status"] == "uploaded"
+
+
+def test_upload_outputs_to_drive_raises_exception_caught(tmp_path, monkeypatch):
+    fake, _ = _fake_drive_module({}, raise_exc=RuntimeError("boom"))
+    monkeypatch.setitem(_sys.modules, "drive_manager", fake)
+    mp3 = os.path.join(str(tmp_path), "a.mp3")
+    open(mp3, "w").close()
+    result = audio_jobs.upload_outputs_to_drive([mp3], "folder123", data_dir=str(tmp_path))
+    assert result["status"] == "error"
+    assert result["error"] == "boom"
+
+
+def test_upload_outputs_to_drive_reports_progress(tmp_path, monkeypatch):
+    mp3 = os.path.join(str(tmp_path), "a.mp3")
+    open(mp3, "w").close()
+    fake, _ = _fake_drive_module({"a.mp3": {"status": "uploaded", "id": "1", "name": "a.mp3", "size_bytes": 1}})
+    monkeypatch.setitem(_sys.modules, "drive_manager", fake)
+    msgs = []
+    audio_jobs.upload_outputs_to_drive([mp3], "folder123", data_dir=str(tmp_path), progress=msgs.append)
+    assert any("Uploading to Drive" in m for m in msgs)

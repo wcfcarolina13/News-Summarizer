@@ -58,7 +58,7 @@ The app ships an [MCP](https://modelcontextprotocol.io) server so an AI agent on
    - From source: `python3 daily_audio_briefing/mcp_server.py --install`
 3. Restart Claude Code / Claude Desktop. Ask: *"Read this article to me"* with a URL, or paste text and ask for audio. Files land in the app's **Reading List** folder.
 
-`--print-config` shows the JSON for other MCP clients; `--uninstall` removes it; `--check` verifies the install. Tools: `text_to_audio`, `urls_to_audio`, `get_job`, `list_jobs`, `list_voices`.
+`--print-config` shows the JSON for other MCP clients; `--uninstall` removes it; `--check` verifies the install. Tools: `text_to_audio`, `urls_to_audio`, `get_job`, `list_jobs`, `list_voices`. Pass `upload_to_drive=true` on either audio tool to also push the rendered MP3 and TXT to the app's Drive folder — the same one the daily scheduled briefing uploads into — or set `drive_folder` to send them somewhere else instead.
 
 ### Data Extraction
 - **Newsletter Extraction**: Extract article links from newsletters (Beehiiv, Substack, etc.)
