@@ -202,6 +202,12 @@ def test_pipeline_gate_defers_and_writes_manifest(tmp_path, monkeypatch):
 
     # Force the gate to report the machine busy.
     monkeypatch.setattr("briefing_gate.render_blocked", lambda *a, **k: (True, "app running: openmw"))
+    # Pin the cutoff above any wall-clock hour: with the default giveup_hour=22 this
+    # test gives up (returns None) instead of deferring when CI runs late in the
+    # UTC day — it failed at 22:56Z on 2026-09-03.
+    import json as _json
+    with open(os.path.join(data_dir, "briefing_gate.json"), "w") as f:
+        _json.dump({"giveup_hour": 25, "retry_interval_min": 15}, f)
 
     # Today's summary text exists but no audio → partial checkpoint → resume at TTS.
     today = _dt.date.today()
