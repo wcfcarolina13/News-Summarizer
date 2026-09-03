@@ -279,3 +279,66 @@ def test_urls_to_audio_passes_model_name(tmp_path, monkeypatch):
     audio_jobs.urls_to_audio(["https://x.y/1"], api_key="k", output_dir=str(tmp_path),
                              model_name="gemini-2.0-flash")
     assert seen["model"] == "gemini-2.0-flash"
+
+
+# ---------------------------------------------------------------------------
+# SSRF guard (used by the MCP server, which takes URLs from an agent).
+# ---------------------------------------------------------------------------
+def _fake_resolver(ip):
+    return lambda host, port, *a, **kw: [(2, 1, 6, "", (ip, 0))]
+
+
+def test_is_public_http_url_rejects_loopback(monkeypatch):
+    monkeypatch.setattr(audio_jobs.socket, "getaddrinfo", _fake_resolver("127.0.0.1"))
+    assert audio_jobs.is_public_http_url("http://evil.test/x") is False
+
+
+def test_is_public_http_url_rejects_private(monkeypatch):
+    monkeypatch.setattr(audio_jobs.socket, "getaddrinfo", _fake_resolver("10.0.0.1"))
+    assert audio_jobs.is_public_http_url("https://evil.test/x") is False
+
+
+def test_is_public_http_url_rejects_link_local_metadata(monkeypatch):
+    monkeypatch.setattr(audio_jobs.socket, "getaddrinfo", _fake_resolver("169.254.169.254"))
+    assert audio_jobs.is_public_http_url("http://metadata.test/latest") is False
+
+
+def test_is_public_http_url_allows_public(monkeypatch):
+    monkeypatch.setattr(audio_jobs.socket, "getaddrinfo", _fake_resolver("8.8.8.8"))
+    assert audio_jobs.is_public_http_url("https://good.test/x") is True
+
+
+def test_is_public_http_url_rejects_localhost_literal(monkeypatch):
+    monkeypatch.setattr(audio_jobs.socket, "getaddrinfo", _fake_resolver("8.8.8.8"))
+    assert audio_jobs.is_public_http_url("http://localhost:8080/x") is False
+    assert audio_jobs.is_public_http_url("http://127.0.0.1/x") is False
+
+
+def test_is_public_http_url_rejects_non_http(monkeypatch):
+    monkeypatch.setattr(audio_jobs.socket, "getaddrinfo", _fake_resolver("8.8.8.8"))
+    assert audio_jobs.is_public_http_url("file:///etc/passwd") is False
+
+
+def test_is_public_http_url_env_override(monkeypatch):
+    monkeypatch.setattr(audio_jobs.socket, "getaddrinfo", _fake_resolver("127.0.0.1"))
+    monkeypatch.setenv(audio_jobs.ALLOW_PRIVATE_ENV, "1")
+    assert audio_jobs.is_public_http_url("http://127.0.0.1:5000/x") is True
+
+
+class _RedirResp:
+    def __init__(self, location, status=302):
+        self.text = ""
+        self.status_code = status
+        self.headers = {"Location": location}
+
+    def raise_for_status(self):
+        pass
+
+
+def test_fetch_articles_blocks_redirect_to_private_address(monkeypatch):
+    monkeypatch.setattr(audio_jobs.socket, "getaddrinfo", _fake_resolver("8.8.8.8"))
+    monkeypatch.setattr(audio_jobs.requests, "get",
+                        lambda url, **kw: _RedirResp("http://169.254.169.254/latest/meta-data/"))
+    arts = audio_jobs.fetch_articles(["https://good.test/p"])
+    assert arts[0]["content"] == ""
+    assert "non-public" in arts[0]["error"]

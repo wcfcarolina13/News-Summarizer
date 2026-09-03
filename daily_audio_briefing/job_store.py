@@ -52,7 +52,11 @@ class JobStore:
         path = self._path(job_id)
         try:
             with open(path, "r", encoding="utf-8") as f:
-                return json.load(f)
+                job = json.load(f)
+            # A stray/hand-edited JSON file in the jobs dir is not a job record.
+            if not isinstance(job, dict) or "job_id" not in job:
+                return None
+            return job
         except FileNotFoundError:
             return None
         except (json.JSONDecodeError, OSError):
@@ -78,13 +82,13 @@ class JobStore:
                 job = self.get(name[:-5])
                 if job:
                     jobs.append(job)
-        jobs.sort(key=lambda j: j["created"], reverse=True)
+        jobs.sort(key=lambda j: j.get("created", "") or "", reverse=True)
         return jobs[:limit]
 
     def recover_interrupted(self):
         count = 0
         for job in self.list(limit=10_000):
-            if job["state"] in ("queued", "running"):
+            if job.get("state") in ("queued", "running"):
                 self.update(job["job_id"], state="failed", error="server restarted")
                 count += 1
         return count

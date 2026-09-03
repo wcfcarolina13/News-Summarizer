@@ -49,6 +49,10 @@ daily_audio_briefing/dist/
 daily_audio_briefing/gui_log.txt
 daily_audio_briefing/cli_launch_log.txt
 daily_audio_briefing/fetch_debug.log
+daily_audio_briefing/mcp_server.log
+daily_audio_briefing/**/audio_jobs.log
+daily_audio_briefing/Reading List/
+daily_audio_briefing/jobs/
 
 # =============================================================================
 # BACKUPS & TRAINING DATA

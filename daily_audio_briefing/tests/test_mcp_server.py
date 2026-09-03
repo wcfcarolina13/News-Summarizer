@@ -69,6 +69,7 @@ def test_text_to_audio_job_completes(tmp_path, stubbed):
 def test_urls_to_audio_job_completes(tmp_path, stubbed, monkeypatch):
     from tests.test_audio_jobs import GOOD_HTML, _Resp
     monkeypatch.setattr(audio_jobs.requests, "get", lambda url, **kw: _Resp(GOOD_HTML))
+    monkeypatch.setattr(audio_jobs, "is_public_http_url", lambda u: True)
     server = mcp_server.build_server(str(tmp_path))
     out = _payload(_call(server, "urls_to_audio", {"urls": ["https://x.y/1", "https://x.y/2"]}))
     job = _wait_done(server, out["job_id"])
@@ -103,3 +104,49 @@ def test_tts_failure_marks_job_failed(tmp_path, stubbed, monkeypatch):
     out = _payload(_call(server, "text_to_audio", {"text": "will fail here"}))
     job = _wait_done(server, out["job_id"])
     assert job["state"] == "failed" and "TTS failed" in job["error"]
+
+
+def test_urls_to_audio_rejects_loopback_url(tmp_path, stubbed):
+    server = mcp_server.build_server(str(tmp_path))
+    res = _call(server, "urls_to_audio", {"urls": ["http://127.0.0.1/x"]})
+    assert res.isError
+
+
+def test_job_articles_are_slim(tmp_path, stubbed, monkeypatch):
+    from tests.test_audio_jobs import GOOD_HTML, _Resp
+    monkeypatch.setattr(audio_jobs.requests, "get", lambda url, **kw: _Resp(GOOD_HTML))
+    monkeypatch.setattr(audio_jobs, "is_public_http_url", lambda u: True)
+    server = mcp_server.build_server(str(tmp_path))
+    out = _payload(_call(server, "urls_to_audio", {"urls": ["https://x.y/1"]}))
+    job = _wait_done(server, out["job_id"])
+    assert job["state"] == "done", job
+    art = job["articles"][0]
+    assert set(art) == {"url", "title", "error"}
+    assert "content" not in art and "cleaned" not in art
+
+
+def test_worker_never_writes_to_stdout(tmp_path, stubbed, monkeypatch, capsys):
+    """llm_fallback._log on the worker thread must not corrupt the stdio transport."""
+    import io
+    from contextlib import redirect_stdout
+    import llm_fallback
+    from tests.test_audio_jobs import GOOD_HTML, _Resp
+
+    monkeypatch.setattr(audio_jobs.requests, "get", lambda url, **kw: _Resp(GOOD_HTML))
+    monkeypatch.setattr(audio_jobs, "is_public_http_url", lambda u: True)
+    monkeypatch.setattr(audio_jobs, "load_gemini_api_key", lambda data_dir=None: "k")
+    monkeypatch.setattr(audio_jobs, "_configure_gemini", lambda *a, **kw: None)
+
+    def fake_generate(*a, **kw):
+        llm_fallback._log("provider x skipped")
+        return "cleaned"
+
+    monkeypatch.setattr(audio_jobs, "generate_with_fallback", fake_generate)
+
+    buf = io.StringIO()
+    with redirect_stdout(buf):
+        server = mcp_server.build_server(str(tmp_path))
+        out = _payload(_call(server, "urls_to_audio", {"urls": ["https://x.y/1"]}))
+        job = _wait_done(server, out["job_id"])
+    assert job["state"] == "done", job
+    assert buf.getvalue() == ""

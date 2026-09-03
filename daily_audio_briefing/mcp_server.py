@@ -18,6 +18,7 @@ from typing import Optional
 from mcp.server.fastmcp import FastMCP
 
 import audio_jobs
+import llm_fallback
 from file_manager import get_data_directory
 from job_store import JobStore
 
@@ -102,8 +103,10 @@ class _Worker:
                     params["urls"], title=params.get("title"), voice=params["voice"],
                     quality=params["quality"], api_key=api_key, instructions=instructions,
                     output_dir=out_dir, progress=progress)
+                slim = [{"url": a["url"], "title": a["title"], "error": a["error"]}
+                        for a in res["articles"]]
                 self.store.update(job_id, state="done", output_path=res["output_path"],
-                                  progress="done", articles=res["articles"], skipped=res["skipped"])
+                                  progress="done", articles=slim, skipped=res["skipped"])
         except Exception as e:  # noqa: BLE001 — every pipeline failure becomes a failed job
             log.warning("job %s failed: %s", job_id, e)
             self.store.update(job_id, state="failed", error=str(e))
@@ -117,6 +120,11 @@ def _validate_common(voice, quality):
 
 
 def build_server(data_dir: Optional[str] = None) -> FastMCP:
+    # stdout is the MCP transport — silence the LLM fallback chain's prints
+    # before anything can run on the worker thread.
+    os.environ.setdefault("DEBUG_FALLBACK", "0")
+    llm_fallback.LOG_TO_STDOUT = False
+
     data_dir = data_dir or get_data_directory()
     os.makedirs(data_dir, exist_ok=True)
     _configure_logging(data_dir)
@@ -158,6 +166,11 @@ def build_server(data_dir: Optional[str] = None) -> FastMCP:
         bad = [u for u in urls if not u.lower().startswith(("http://", "https://"))]
         if bad:
             raise ValueError(f"not http(s) URLs: {bad[:3]}")
+        for u in urls:
+            if not audio_jobs.is_public_http_url(u):
+                raise ValueError(
+                    f"refusing non-public or unresolvable URL: {u} "
+                    f"(set {audio_jobs.ALLOW_PRIVATE_ENV}=1 to allow private hosts)")
         _validate_common(voice, quality)
         job = store.create("urls_to_audio", {"title": title, "voice": voice, "quality": quality,
                                              "urls": urls}, None)
@@ -177,7 +190,7 @@ def build_server(data_dir: Optional[str] = None) -> FastMCP:
     @mcp.tool()
     def list_jobs(limit: int = 20) -> dict:
         """Most recent jobs, newest first."""
-        return {"jobs": store.list(limit=limit)}
+        return {"jobs": store.list(limit=max(1, min(int(limit), 200)))}
 
     @mcp.tool()
     def list_voices() -> dict:

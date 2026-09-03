@@ -12,7 +12,13 @@ tags.
 - **`audio_jobs.py`** — the Reading List → Audio and Direct Audio pipeline (fetch → Gemini/fallback clean → combine → Kokoro/gTTS) as Tk-free functions with progress and cancel callbacks. Both GUI dialogs now call it; 364 net lines deleted from `gui_app.py` (450 removed, 86 added) across the two GUI rewires (`_clean_single_article`, `generate_audio_filename`, the inline frozen/dev TTS branch, `get_data_directory` moved to `file_manager`).
 - Second PyInstaller executable `dab-mcp` inside the .app / beside the .exe (build not yet cut — lands with the next release).
 
+### Security
+- **SSRF guard on `urls_to_audio`.** URLs supplied by an agent are now resolved and rejected when any resulting address is loopback, private, link-local, reserved or multicast (and the literal host `localhost`), so the MCP server cannot be steered at cloud metadata endpoints or localhost-only services; redirects are no longer auto-followed — each `Location` hop (max 3) is re-validated against the same rule. Set `DAB_MCP_ALLOW_PRIVATE_URLS=1` to opt out when pointing it at a local dev server. The GUI path is unchanged (the user typed those URLs).
+
 ### Fixed
+- **stdout corruption of the MCP stdio transport.** `llm_fallback._log` printed to stdout and debug logging defaulted ON, so any URL job with cleaning enabled wrote `[LLM Fallback] …` straight into the JSON-RPC stream. `build_server()` now sets `DEBUG_FALLBACK=0` and flips `llm_fallback.LOG_TO_STDOUT` to False, routing those messages through the `dab.llm_fallback` logger instead; GUI and daemon behaviour is unchanged.
+- MCP job records store only `{url, title, error}` per article instead of the full `content`/`cleaned` bodies, which were rewritten on every progress tick and returned to the agent.
+- `list_jobs` clamps `limit` to 1–200; `job_store` tolerates a stray non-job JSON file in the jobs directory.
 - Reading List → Audio: a TTS timeout now reports a proper failure instead of a raw error; frozen builds run TTS from the data dir so Kokoro model downloads don't land in `Reading List/`.
 
 ### Notes

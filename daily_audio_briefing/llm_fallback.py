@@ -18,6 +18,7 @@ transcript) was removed because it silently emitted unsummarized, disfluency-
 laden transcript text into the audio brief. Set ALLOW_EXTRACTIVE=1 to opt back in.
 """
 
+import logging
 import os
 import re
 from typing import Optional
@@ -27,12 +28,22 @@ from typing import Optional
 _debug = os.environ.get("DEBUG_FALLBACK", "1").lower() in ("1", "true", "yes")
 _allow_extractive = os.environ.get("ALLOW_EXTRACTIVE", "").lower() in ("1", "true", "yes")
 
+# When False, _log routes through the logging module instead of print(). The MCP
+# stdio server sets this False in build_server() because stdout IS its transport
+# and a stray print corrupts the JSON-RPC stream. GUI/daemon keep the default.
+LOG_TO_STDOUT = True
+
+_logger = logging.getLogger("dab.llm_fallback")
+
 
 def _log(msg: str):
     if _debug:
         # Print to stdout (captured by the scheduler/web log) AND tee into
         # fetch_debug.log so post-mortems can see why a brief came up empty.
-        print(f"[LLM Fallback] {msg}")
+        if LOG_TO_STDOUT:
+            print(f"[LLM Fallback] {msg}")
+        else:
+            _logger.info("%s", msg)
         try:
             here = os.path.dirname(os.path.abspath(__file__))
             with open(os.path.join(here, "fetch_debug.log"), "a") as f:

@@ -7,10 +7,12 @@ Used by gui_app.py (dialogs) and mcp_server.py (agents). No Tk, no MCP here.
 """
 import datetime
 import importlib
+import ipaddress
 import io
 import json
 import os
 import re
+import socket
 import subprocess
 import sys
 import time
@@ -18,7 +20,7 @@ from contextlib import redirect_stdout, redirect_stderr
 
 import requests
 from bs4 import BeautifulSoup
-from urllib.parse import urlsplit, urlunsplit, parse_qsl, urlencode
+from urllib.parse import urlsplit, urlunsplit, parse_qsl, urlencode, urljoin
 
 from llm_fallback import generate_with_fallback
 from source_fetcher import _clean_title_for_audio
@@ -153,6 +155,90 @@ def _extract_article(html):
     return title, content
 
 
+# ---------------------------------------------------------------------------
+# SSRF guard — used by the MCP server, which accepts URLs from an agent and so
+# could otherwise be steered at cloud metadata endpoints or localhost services.
+# Not applied to the GUI path (the user typed those URLs themselves).
+# ---------------------------------------------------------------------------
+ALLOW_PRIVATE_ENV = "DAB_MCP_ALLOW_PRIVATE_URLS"
+
+
+def _allow_private_urls():
+    return os.environ.get(ALLOW_PRIVATE_ENV, "").strip().lower() in ("1", "true", "yes")
+
+
+def _addr_is_public(ip_str):
+    try:
+        ip = ipaddress.ip_address(ip_str)
+    except ValueError:
+        return False
+    return not (ip.is_private or ip.is_loopback or ip.is_link_local
+                or ip.is_reserved or ip.is_multicast or ip.is_unspecified)
+
+
+def is_public_http_url(url) -> bool:
+    """True when url is http(s) and every address its host resolves to is public.
+
+    Rejects loopback / private / link-local / reserved / multicast targets and
+    the literal hostname 'localhost'. Set DAB_MCP_ALLOW_PRIVATE_URLS=1 to bypass
+    (for local testing against a dev server).
+    """
+    try:
+        parts = urlsplit((url or "").strip())
+    except ValueError:
+        return False
+    if parts.scheme.lower() not in ("http", "https"):
+        return False
+    if _allow_private_urls():
+        return True
+    host = parts.hostname
+    if not host:
+        return False
+    if host.strip("[]").lower() in ("localhost", "localhost.localdomain"):
+        return False
+    # An IP literal is checked directly — no DNS involved.
+    try:
+        ipaddress.ip_address(host.strip("[]"))
+    except ValueError:
+        pass
+    else:
+        return _addr_is_public(host.strip("[]"))
+    try:
+        infos = socket.getaddrinfo(host, None)
+    except Exception:
+        return False
+    if not infos:
+        return False
+    for info in infos:
+        sockaddr = info[4]
+        if not sockaddr or not _addr_is_public(sockaddr[0]):
+            return False
+    return True
+
+
+MAX_REDIRECT_HOPS = 3
+
+
+def _get_with_guarded_redirects(url):
+    """requests.get that will not follow a redirect into a non-public address."""
+    if _allow_private_urls():
+        return requests.get(url, timeout=FETCH_TIMEOUT, headers={'User-Agent': _UA})
+    current = url
+    for _ in range(MAX_REDIRECT_HOPS + 1):
+        resp = requests.get(current, timeout=FETCH_TIMEOUT, headers={'User-Agent': _UA},
+                            allow_redirects=False)
+        status = getattr(resp, "status_code", 200)
+        if not (300 <= status < 400):
+            return resp
+        loc = (getattr(resp, "headers", None) or {}).get("Location")
+        if not loc:
+            return resp
+        current = urljoin(current, loc)
+        if not is_public_http_url(current):
+            raise ValueError(f"redirect to a non-public URL blocked: {current}")
+    raise ValueError(f"too many redirects (>{MAX_REDIRECT_HOPS}) for {url}")
+
+
 def fetch_articles(urls, *, progress=None, cancel=None):
     """Fetch each URL and extract listenable body text.
 
@@ -168,7 +254,7 @@ def fetch_articles(urls, *, progress=None, cancel=None):
         _say(progress, f"[1/5] Fetching article {i + 1}/{total}...")
         rec = {"url": url, "title": url, "content": "", "error": None}
         try:
-            resp = requests.get(url, timeout=FETCH_TIMEOUT, headers={'User-Agent': _UA})
+            resp = _get_with_guarded_redirects(url)
             resp.raise_for_status()
             title, content = _extract_article(resp.text)
             if title:

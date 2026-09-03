@@ -71,3 +71,14 @@ def test_list_and_recover_skip_corrupt_file(tmp_path):
     assert [j["job_id"] for j in listed] == [job["job_id"]]
     assert store.recover_interrupted() == 1
     assert store.get(job["job_id"])["state"] == "failed"
+
+
+def test_list_and_recover_tolerate_non_job_json(tmp_path):
+    store = JobStore(str(tmp_path / "jobs"))
+    real = store.create("text_to_audio", {}, None)
+    with open(os.path.join(store.jobs_dir, "weird.json"), "w") as f:
+        f.write("{}")
+    ids = [j["job_id"] for j in store.list()]
+    assert ids == [real["job_id"]]
+    assert store.get("weird") is None
+    assert store.recover_interrupted() == 1
