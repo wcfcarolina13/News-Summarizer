@@ -12,6 +12,7 @@ import tkinter.filedialog as filedialog
 import qrcode
 from PIL import Image # PIL is imported by qrcode, but explicit import helps CTkImage
 from file_manager import get_data_directory
+import audio_jobs
 
 
 def get_resource_path(filename):
@@ -6793,7 +6794,7 @@ Transcript:
             self.textbox.delete("0.0", "end")
             self.textbox.insert("0.0", cleaned_text)
 
-        filename = self.generate_audio_filename(cleaned_text, "mp3")
+        filename = audio_jobs.generate_audio_filename(cleaned_text, "mp3")
         self.run_script("make_audio_fast.py", filename, extra_args=["--output", filename])
 
     def _start_audio_generation_quality(self, cleaned_text: str):
@@ -6804,7 +6805,7 @@ Transcript:
             self.textbox.delete("0.0", "end")
             self.textbox.insert("0.0", cleaned_text)
 
-        filename = self.generate_audio_filename(cleaned_text, "wav")
+        filename = audio_jobs.generate_audio_filename(cleaned_text, "wav")
         voice = self.voice_var.get()
         self.run_script("make_audio_quality.py", filename, extra_args=["--voice", voice, "--output", filename])
 
@@ -6856,10 +6857,10 @@ Transcript:
             """Generate audio with URLs as literal text."""
             dialog.destroy()
             if generation_type == "fast":
-                filename = self.generate_audio_filename(text, "mp3")
+                filename = audio_jobs.generate_audio_filename(text, "mp3")
                 self.run_script("make_audio_fast.py", filename, extra_args=["--output", filename])
             else:
-                filename = self.generate_audio_filename(text, "wav")
+                filename = audio_jobs.generate_audio_filename(text, "wav")
                 voice = self.voice_var.get()
                 self.run_script("make_audio_quality.py", filename, extra_args=["--voice", voice, "--output", filename])
 
@@ -7026,7 +7027,6 @@ Transcript:
                                      btn_process, btn_cancel, cancel_event,
                                      _cancelled, _update):
         """Inner implementation — separated so top-level guard catches everything."""
-        import audio_jobs
         from file_manager import get_data_directory
 
         data_dir = get_data_directory()
@@ -7353,10 +7353,10 @@ Transcript:
 
             # Generate smart filename based on content
             if generation_type == "fast":
-                filename = self.generate_audio_filename(cleaned_text, "mp3")
+                filename = audio_jobs.generate_audio_filename(cleaned_text, "mp3")
                 self.run_script("make_audio_fast.py", filename, extra_args=["--output", filename])
             else:
-                filename = self.generate_audio_filename(cleaned_text, "wav")
+                filename = audio_jobs.generate_audio_filename(cleaned_text, "wav")
                 voice = self.voice_var.get()
                 self.run_script("make_audio_quality.py", filename, extra_args=["--voice", voice, "--output", filename])
 
@@ -7559,177 +7559,42 @@ Transcript:
             threading.Thread(target=process_async, daemon=True).start()
 
     def clean_text_for_listening(self, text, api_key):
-        """Use Gemini to clean and format text for audio listening."""
-        import google.generativeai as genai
-
-        try:
-            genai.configure(api_key=api_key)
-
-            # Extract model name from dropdown (format: "gemini-2.0-flash (Fast)")
-            model_name = self.model_var.get().split(" (")[0]
-
-            model = genai.GenerativeModel(model_name)
-
-            # If text contains multiple articles (separated by ---), clean each separately
-            # to avoid hitting Gemini output token limits
-            separator = "\n\n---\n\n"
-            if separator in text:
-                articles = text.split(separator)
-                print(f"[Clean] Found {len(articles)} articles, cleaning each separately...")
-                cleaned_articles = []
-                for i, article in enumerate(articles):
-                    if len(article.strip()) < 100:
-                        continue
-                    print(f"[Clean] Cleaning article {i+1}/{len(articles)} ({len(article)} chars)...")
-                    cleaned = self._clean_single_article(model, article)
-                    if cleaned:
-                        cleaned_articles.append(cleaned)
-                        print(f"[Clean] Article {i+1} cleaned: {len(cleaned)} chars")
-
-                # Join with clear separator for audio
-                result = "\n\n".join(cleaned_articles)
-                print(f"[Clean] Total cleaned text: {len(result)} chars from {len(cleaned_articles)} articles")
-                return result
-            else:
-                # Single article - clean directly
-                return self._clean_single_article(model, text)
-
-        except Exception as e:
-            print(f"Error cleaning text: {e}")
-            return text  # Return original text on error
-
-    def _clean_single_article(self, model, text):
-        """Clean a single article using Gemini with optional custom instructions."""
-        # Get custom article instructions from active profile
-        custom_instructions = self._get_active_article_instructions()
-
-        # Base prompt for article cleaning
-        base_prompt = """Clean and format this text for audio listening. Your task:
-
-1. EXTRACT only the main article/content body
-2. REMOVE all of the following:
-   - URLs, links, and email addresses
-   - Asterisks (*), bullet point markers, markdown formatting
-   - "Subscribe", "Click here", "Read more", "Share", "Follow us" and similar CTAs
-   - Author bios, bylines, and "About the author" sections
-   - "Related articles", "You might also like" sections
-   - Advertisements and promotional content
-   - Social media handles and hashtags
-   - Navigation elements, headers/footers
-   - Image captions and alt text descriptions
-   - Any text that wouldn't make sense when read aloud
-
-3. PRESERVE the original wording and structure of the actual content
-4. FORMAT for natural speech:
-   - Expand common abbreviations (e.g., "approx." → "approximately")
-   - Keep paragraph breaks for natural pauses
-   - Ensure sentences flow naturally when spoken"""
-
-        # Add custom instructions if present
-        if custom_instructions:
-            prompt = f"""{base_prompt}
-
-5. ADDITIONAL USER PREFERENCES:
-{custom_instructions}
-
-Return ONLY the cleaned text, nothing else.
-
-TEXT TO CLEAN:
-\"\"\"
-{text}
-\"\"\"
-"""
-        else:
-            prompt = f"""{base_prompt}
-
-Return ONLY the cleaned text, nothing else.
-
-TEXT TO CLEAN:
-\"\"\"
-{text}
-\"\"\"
-"""
-
-        try:
-            from llm_fallback import generate_with_fallback
-            cleaned = generate_with_fallback(prompt, gemini_model=model, caller="gui._process_audio")
-            if cleaned:
-                return cleaned.strip()
-            print(f"[Clean] All LLM providers failed, returning original text")
-            return text
-        except Exception as e:
-            print(f"[Clean] Error cleaning article: {e}")
-            return text  # Return original on error
-
-    def generate_audio_filename(self, text, extension="wav"):
-        """Generate a smart filename based on date and content topics.
-
-        Args:
-            text: The text content to analyze for topics
-            extension: File extension (wav or mp3)
-
-        Returns:
-            Filename like '2025-12-28_bitcoin-etf-approval.wav'
-        """
-        import re
-
-        date_str = datetime.datetime.now().strftime("%Y-%m-%d")
-
-        if not text or len(text.strip()) < 10:
-            return f"{date_str}_audio.{extension}"
-
-        # Try to extract a title from the first line/sentence
-        lines = text.strip().split('\n')
-        first_line = lines[0].strip() if lines else ""
-
-        # Check if first line looks like a title (short, no period at end)
-        if first_line and len(first_line) < 100 and not first_line.endswith('.'):
-            topic_source = first_line
-        else:
-            # Use first sentence or chunk
-            sentences = re.split(r'[.!?]', text[:500])
-            topic_source = sentences[0] if sentences else text[:100]
-
-        # Extract key words (remove common words)
-        stop_words = {
-            'the', 'a', 'an', 'and', 'or', 'but', 'in', 'on', 'at', 'to', 'for',
-            'of', 'with', 'by', 'from', 'as', 'is', 'was', 'are', 'were', 'been',
-            'be', 'have', 'has', 'had', 'do', 'does', 'did', 'will', 'would',
-            'could', 'should', 'may', 'might', 'must', 'this', 'that', 'these',
-            'those', 'it', 'its', 'they', 'their', 'we', 'our', 'you', 'your',
-            'he', 'she', 'him', 'her', 'his', 'i', 'my', 'me', 'what', 'which',
-            'who', 'how', 'when', 'where', 'why', 'all', 'each', 'every', 'both',
-            'few', 'more', 'most', 'other', 'some', 'such', 'no', 'not', 'only',
-            'own', 'same', 'so', 'than', 'too', 'very', 'just', 'also', 'now',
-            'new', 'says', 'said', 'according', 'report', 'reports', 'today'
+        """Clean and format text for audio listening via audio_jobs.clean_text."""
+        model_map = {
+            "Fast (FREE)": "gemini-2.0-flash",
+            "Balanced (FREE)": "gemini-2.5-flash",
+            "Best (FREE, 50/day)": "gemini-2.5-pro",
         }
+        try:
+            model_name = model_map.get(self.model_var.get(), audio_jobs.DEFAULT_CLEAN_MODEL)
+        except Exception:
+            model_name = audio_jobs.DEFAULT_CLEAN_MODEL
+        instructions = self._get_active_article_instructions()
 
-        # Clean and tokenize
-        words = re.findall(r'\b[a-zA-Z]{3,}\b', topic_source.lower())
-        key_words = [w for w in words if w not in stop_words][:5]
+        # If text contains multiple articles (separated by ---), clean each separately
+        # to avoid hitting Gemini output token limits
+        separator = "\n\n---\n\n"
+        if separator in text:
+            articles = text.split(separator)
+            print(f"[Clean] Found {len(articles)} articles, cleaning each separately...")
+            cleaned_articles = []
+            for i, article in enumerate(articles):
+                if len(article.strip()) < 100:
+                    continue
+                print(f"[Clean] Cleaning article {i+1}/{len(articles)} ({len(article)} chars)...")
+                cleaned = audio_jobs.clean_text(
+                    article, api_key=api_key, instructions=instructions,
+                    model_name=model_name)
+                if cleaned:
+                    cleaned_articles.append(cleaned)
+                    print(f"[Clean] Article {i+1} cleaned: {len(cleaned)} chars")
 
-        if not key_words:
-            # Fallback: just use first few words
-            key_words = words[:3] if words else ['audio']
+            result = "\n\n".join(cleaned_articles)
+            print(f"[Clean] Total cleaned text: {len(result)} chars from {len(cleaned_articles)} articles")
+            return result
 
-        # Create topic slug
-        topic_slug = '-'.join(key_words[:4])  # Max 4 words
-
-        # Sanitize for filename
-        topic_slug = re.sub(r'[^a-z0-9\-]', '', topic_slug)
-        topic_slug = re.sub(r'-+', '-', topic_slug).strip('-')
-
-        # Limit length
-        if len(topic_slug) > 40:
-            topic_slug = topic_slug[:40].rsplit('-', 1)[0]
-
-        if not topic_slug:
-            topic_slug = "audio"
-
-        filename = f"{date_str}_{topic_slug}.{extension}"
-        print(f"[Audio] Generated filename: {filename}")
-        return filename
-
+        return audio_jobs.clean_text(
+            text, api_key=api_key, instructions=instructions, model_name=model_name)
     def estimate_api_usage(self):
         """Estimate API requests and cost based on current settings."""
         # Count enabled channels - check user data dir first, then bundled
@@ -10352,12 +10217,7 @@ Open Settings and click '? Start Tutorial'!""",
         voice_label.grid(row=p_row, column=0, sticky="w", pady=(0, 5))
         p_row += 1
 
-        KOKORO_VOICES = [
-            "af_heart", "af_sarah", "af_nova", "af_sky", "af_bella",
-            "am_adam", "am_michael", "am_echo",
-            "bf_emma", "bf_isabella",
-            "bm_george", "bm_lewis",
-        ]
+        KOKORO_VOICES = audio_jobs.KOKORO_VOICES
         voice_var = ctk.StringVar(value=task.audio_voice if task.audio_voice in KOKORO_VOICES else "af_heart")
         voice_combo = ctk.CTkComboBox(pipeline_frame, variable=voice_var, values=KOKORO_VOICES, width=180, state="readonly")
         voice_combo.grid(row=p_row, column=0, columnspan=2, sticky="w", pady=(0, 15))
