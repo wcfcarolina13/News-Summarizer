@@ -6,6 +6,7 @@ via llm_fallback, optional), combine, and synthesize with Kokoro or gTTS.
 Used by gui_app.py (dialogs) and mcp_server.py (agents). No Tk, no MCP here.
 """
 import datetime
+import json
 import os
 import re
 import sys
@@ -13,6 +14,10 @@ import sys
 import requests
 from bs4 import BeautifulSoup
 from urllib.parse import urlsplit, urlunsplit, parse_qsl, urlencode
+
+from llm_fallback import generate_with_fallback
+from source_fetcher import _clean_title_for_audio
+from file_manager import FileManager, get_data_directory
 
 KOKORO_VOICES = [
     "af_heart", "af_sarah", "af_nova", "af_sky", "af_bella",
@@ -170,3 +175,101 @@ def fetch_articles(urls, *, progress=None, cancel=None):
             rec["error"] = str(e)
         articles.append(rec)
     return articles
+
+
+CLEAN_BASE_PROMPT = """Clean and format this text for audio listening. Your task:
+
+1. EXTRACT only the main article/content body
+2. REMOVE all of the following:
+   - URLs, links, and email addresses
+   - Asterisks (*), bullet point markers, markdown formatting
+   - "Subscribe", "Click here", "Read more", "Share", "Follow us" and similar CTAs
+   - Author bios, bylines, and "About the author" sections
+   - "Related articles", "You might also like" sections
+   - Advertisements and promotional content
+   - Social media handles and hashtags
+   - Navigation elements, headers/footers
+   - Image captions and alt text descriptions
+   - Any text that wouldn't make sense when read aloud
+
+3. PRESERVE the original wording and structure of the actual content
+4. FORMAT for natural speech:
+   - Expand common abbreviations (e.g., "approx." → "approximately")
+   - Keep paragraph breaks for natural pauses
+   - Ensure sentences flow naturally when spoken"""
+
+DEFAULT_CLEAN_MODEL = "gemini-2.5-flash"
+
+
+def build_clean_prompt(text, instructions=""):
+    """The Direct Audio / Reading List cleaning prompt (moved from gui_app._clean_single_article)."""
+    if instructions:
+        head = f"{CLEAN_BASE_PROMPT}\n\n5. ADDITIONAL USER PREFERENCES:\n{instructions}"
+    else:
+        head = CLEAN_BASE_PROMPT
+    return f'{head}\n\nReturn ONLY the cleaned text, nothing else.\n\nTEXT TO CLEAN:\n"""\n{text}\n"""\n'
+
+
+def _configure_gemini(api_key, model_name):
+    """Return a configured google.generativeai model, or None if the SDK is missing."""
+    try:
+        import google.generativeai as genai
+    except ImportError:
+        return None
+    genai.configure(api_key=api_key)
+    return genai.GenerativeModel(model_name)
+
+
+def clean_text(text, *, api_key, instructions="", model_name=DEFAULT_CLEAN_MODEL, progress=None):
+    """Clean text for listening. Never raises: on any failure the input is returned."""
+    if not api_key:
+        _say(progress, "[2/5] No Gemini API key — skipping cleaning, using raw text.")
+        return text
+    try:
+        model = _configure_gemini(api_key, model_name)
+        cleaned = generate_with_fallback(build_clean_prompt(text, instructions),
+                                         gemini_model=model, caller="audio_jobs.clean_text")
+        if cleaned and cleaned.strip():
+            return cleaned.strip()
+        _say(progress, "[2/5] All LLM providers failed — using raw text.")
+        return text
+    except Exception as e:
+        _say(progress, f"[2/5] Cleaning failed ({e}) — using raw text.")
+        return text
+
+
+def combine_articles(articles):
+    """Join cleaned articles with spoken separators, skipping ones with no content."""
+    parts = []
+    kept = [a for a in articles if a.get("cleaned") or a.get("content")]
+    for i, a in enumerate(kept):
+        body = a.get("cleaned") or a["content"]
+        if i > 0:
+            parts.append("\n\nNext article.\n\n")
+        parts.append(f"{_clean_title_for_audio(a['title'])}.\n\n")
+        parts.append(body)
+    return "".join(parts)
+
+
+def load_article_instructions(data_dir=None):
+    """Active profile's article_instructions from instruction_profiles.json, comments stripped."""
+    data_dir = data_dir or get_data_directory()
+    path = os.path.join(data_dir, "instruction_profiles.json")
+    if not os.path.exists(path):
+        return ""
+    try:
+        with open(path, "r", encoding="utf-8") as f:
+            data = json.load(f)
+    except Exception:
+        return ""
+    active = data.get("active_profile", "Default")
+    instructions = data.get("profiles", {}).get(active, {}).get("article_instructions", "") or ""
+    lines = [ln for ln in instructions.split("\n") if ln.strip() and not ln.strip().startswith("#")]
+    return "\n".join(lines).strip()
+
+
+def load_gemini_api_key(data_dir=None):
+    """.env in the data dir first (FileManager), then GEMINI_API_KEY env var."""
+    data_dir = data_dir or get_data_directory()
+    key = FileManager(base_dir=data_dir).load_api_key()
+    return key or os.environ.get("GEMINI_API_KEY", "")

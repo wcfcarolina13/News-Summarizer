@@ -107,3 +107,75 @@ def test_fetch_articles_cancel_raises(monkeypatch):
     import pytest
     with pytest.raises(audio_jobs.CancelledError):
         audio_jobs.fetch_articles(["https://x.y/1", "https://x.y/2"], cancel=lambda: True)
+
+
+def test_build_clean_prompt_with_and_without_instructions():
+    p = audio_jobs.build_clean_prompt("BODY", "")
+    assert "TEXT TO CLEAN" in p and "BODY" in p and "ADDITIONAL USER PREFERENCES" not in p
+    p2 = audio_jobs.build_clean_prompt("BODY", "drop sponsor reads")
+    assert "5. ADDITIONAL USER PREFERENCES:\ndrop sponsor reads" in p2
+
+
+def test_clean_text_no_key_returns_input(monkeypatch):
+    seen = []
+    out = audio_jobs.clean_text("raw text", api_key="", progress=seen.append)
+    assert out == "raw text"
+    assert any("skipping" in m.lower() for m in seen)
+
+
+def test_clean_text_uses_fallback_chain(monkeypatch):
+    calls = {}
+
+    def fake_generate(prompt, gemini_model=None, caller="", timeout=120):
+        calls["prompt"] = prompt
+        calls["caller"] = caller
+        return "  cleaned  "
+
+    monkeypatch.setattr(audio_jobs, "_configure_gemini", lambda key, model_name: "MODEL")
+    monkeypatch.setattr(audio_jobs, "generate_with_fallback", fake_generate)
+    assert audio_jobs.clean_text("raw", api_key="k") == "cleaned"
+    assert "raw" in calls["prompt"] and calls["caller"] == "audio_jobs.clean_text"
+
+
+def test_clean_text_failure_returns_input(monkeypatch):
+    monkeypatch.setattr(audio_jobs, "_configure_gemini", lambda key, model_name: "MODEL")
+
+    def boom(prompt, gemini_model=None, caller="", timeout=120):
+        raise RuntimeError("provider down")
+
+    monkeypatch.setattr(audio_jobs, "generate_with_fallback", boom)
+    seen = []
+    assert audio_jobs.clean_text("raw", api_key="k", progress=seen.append) == "raw"
+    assert any("provider down" in m for m in seen)
+
+
+def test_combine_articles_separators():
+    arts = [
+        {"url": "u1", "title": "First Title", "content": "x", "cleaned": "Body one.", "error": None},
+        {"url": "u2", "title": "Second", "content": "y", "cleaned": "Body two.", "error": None},
+        {"url": "u3", "title": "Bad", "content": "", "cleaned": "", "error": "too short"},
+    ]
+    out = audio_jobs.combine_articles(arts)
+    assert out.startswith("First Title.\n\nBody one.")
+    assert "\n\nNext article.\n\nSecond.\n\nBody two." in out
+    assert "Bad" not in out
+
+
+def test_load_article_instructions_strips_comments(tmp_path):
+    import json
+    (tmp_path / "instruction_profiles.json").write_text(json.dumps({
+        "active_profile": "P",
+        "profiles": {"P": {"article_instructions": "# comment\nkeep this\n\n  \nand this"}}
+    }))
+    assert audio_jobs.load_article_instructions(str(tmp_path)) == "keep this\nand this"
+
+
+def test_load_article_instructions_missing_file(tmp_path):
+    assert audio_jobs.load_article_instructions(str(tmp_path)) == ""
+
+
+def test_load_gemini_api_key_env_fallback(tmp_path, monkeypatch):
+    monkeypatch.setenv("GEMINI_API_KEY", "from-env")
+    assert audio_jobs.load_gemini_api_key(str(tmp_path)) == "from-env"
+    (tmp_path / ".env").write_text("GEMINI_API_KEY=from-file\n")
+    assert audio_jobs.load_gemini_api_key(str(tmp_path)) == "from-file"
