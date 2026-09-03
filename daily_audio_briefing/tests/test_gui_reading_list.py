@@ -4,6 +4,7 @@ The function is exercised unbound against a lightweight stub `self`, so no Tk
 window is created.
 """
 import os
+import subprocess
 import sys
 import types
 
@@ -108,6 +109,18 @@ def test_tts_failure_reports_failure_completion(monkeypatch):
 
     def fake(urls, **kw):
         raise RuntimeError("TTS failed (exit 1)")
+
+    monkeypatch.setattr(audio_jobs, "urls_to_audio", fake)
+    _run(stub)
+
+    assert stub.complete_calls == [(False, "", "", 0, "")]
+
+
+def test_tts_timeout_reports_failure_completion(monkeypatch):
+    stub = _Stub()
+
+    def fake(urls, **kw):
+        raise subprocess.TimeoutExpired(cmd="x", timeout=1)
 
     monkeypatch.setattr(audio_jobs, "urls_to_audio", fake)
     _run(stub)

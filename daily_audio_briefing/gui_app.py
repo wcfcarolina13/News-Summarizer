@@ -7069,6 +7069,13 @@ Transcript:
             self._on_reading_list_complete(dialog, progress_label, btn_process, btn_cancel,
                                            False, "", "", 0)
             return
+        except Exception as e:
+            # e.g. subprocess.TimeoutExpired from the TTS run, or ValueError from
+            # validation — surface as a failure completion, not a raw error string.
+            print(f"[ReadingList] {e!r}")
+            self._on_reading_list_complete(dialog, progress_label, btn_process, btn_cancel,
+                                           False, "", "", 0)
+            return
 
         out = result["output_path"]
         output_basename, final_ext = os.path.splitext(os.path.basename(out))
@@ -7132,7 +7139,7 @@ Transcript:
         else:
             try:
                 dialog.after(0, lambda: progress_label.configure(
-                    text="Error generating audio. Check gui_log.txt for details.",
+                    text="Error generating audio. Check Reading List/audio_jobs.log for details.",
                     text_color="red"))
             except Exception:
                 pass

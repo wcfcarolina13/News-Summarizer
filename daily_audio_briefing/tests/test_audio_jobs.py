@@ -183,10 +183,15 @@ def test_load_gemini_api_key_env_fallback(tmp_path, monkeypatch):
 
 def _stub_tts(monkeypatch):
     """Replace run_tts with a stub that writes the --output file and records argv."""
-    calls = []
+    class _Calls(list):
+        """List of (script, args); also records the cwd each call ran with."""
+
+    calls = _Calls()
+    calls.cwds = []
 
     def fake_run_tts(script, args, *, cwd, log_path):
         calls.append((script, list(args)))
+        calls.cwds.append(cwd)
         out = args[args.index("--output") + 1]
         with open(out, "wb") as f:
             f.write(b"RIFF")
@@ -206,6 +211,8 @@ def test_text_to_audio_quality_writes_file(tmp_path, monkeypatch):
     assert script == "make_audio_quality.py"
     assert args[args.index("--voice") + 1] == "af_nova"
     assert os.path.exists(args[args.index("--input") + 1])  # text saved beside audio
+    # frozen-mode chdir target: the data dir, not the output dir (Kokoro model lookup)
+    assert calls.cwds[0] == file_manager.get_data_directory()
 
 
 def test_text_to_audio_fast_uses_gtts_and_mp3(tmp_path, monkeypatch):

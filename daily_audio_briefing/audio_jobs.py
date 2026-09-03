@@ -369,7 +369,9 @@ def text_to_audio(text, *, title=None, voice=DEFAULT_VOICE, quality="quality",
 
     est = len(text.split('. '))
     _say(progress, f"[5/5] Generating audio (~{est} sentences, may take a few minutes)...")
-    code = run_tts(script, args, cwd=output_dir, log_path=log_path)
+    # Run from the data dir, not output_dir: in frozen builds run_tts chdir()s, and
+    # make_audio_quality resolves the Kokoro model/voices files relative to cwd.
+    code = run_tts(script, args, cwd=get_data_directory(), log_path=log_path)
     wav_fallback = os.path.join(output_dir, f"{base}.wav")
     if code == 0 and os.path.exists(out_path):
         return os.path.abspath(out_path)
