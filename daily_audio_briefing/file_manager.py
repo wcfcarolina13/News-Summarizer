@@ -3,6 +3,31 @@ import os
 import sys
 
 
+def get_data_directory():
+    """Get the appropriate data directory for storing output files.
+
+    When running as a frozen app (PyInstaller), uses Application Support.
+    When running in development, uses the script directory.
+    """
+    if getattr(sys, "frozen", False):
+        # Frozen app - use Application Support for persistent storage
+        if sys.platform == "darwin":
+            data_dir = os.path.expanduser("~/Library/Application Support/Daily Audio Briefing")
+        elif sys.platform == "win32":
+            data_dir = os.path.join(os.environ.get("APPDATA", ""), "Daily Audio Briefing")
+        else:
+            data_dir = os.path.expanduser("~/.daily-audio-briefing")
+
+        # Create if it doesn't exist
+        if not os.path.exists(data_dir):
+            os.makedirs(data_dir, exist_ok=True)
+
+        return data_dir
+    else:
+        # Development mode - use script directory
+        return os.path.dirname(os.path.abspath(__file__))
+
+
 class FileManager:
     """Handles all file I/O operations for the application."""
 
