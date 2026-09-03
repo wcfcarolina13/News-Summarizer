@@ -12,6 +12,10 @@ import sys
 SERVER_KEY = "daily-audio-briefing"
 
 
+class ConfigError(Exception):
+    """Raised when a client config file exists but is not valid JSON."""
+
+
 def server_command():
     if getattr(sys, "frozen", False):
         return [sys.executable]
@@ -38,7 +42,12 @@ def _load(path):
     if not os.path.exists(path):
         return {}
     with open(path, "r", encoding="utf-8") as f:
-        return json.load(f)
+        try:
+            return json.load(f)
+        except json.JSONDecodeError as e:
+            raise ConfigError(
+                f"{path} is not valid JSON ({e}); fix or restore it from {path}.bak if present, then retry"
+            ) from e
 
 
 def _save(path, data):

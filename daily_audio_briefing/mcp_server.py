@@ -11,6 +11,7 @@ import argparse
 import logging
 import os
 import queue
+import sys
 import threading
 from typing import Optional
 
@@ -202,13 +203,21 @@ def main(argv=None):
         print(json.dumps(mcp_config.snippet(mcp_config.server_command()), indent=2))
         return 0
     if args.install:
-        for p in mcp_config.install(mcp_config.server_command()):
-            print(f"installed {mcp_config.SERVER_KEY} -> {p}")
+        try:
+            for p in mcp_config.install(mcp_config.server_command()):
+                print(f"installed {mcp_config.SERVER_KEY} -> {p}")
+        except mcp_config.ConfigError as e:
+            print(str(e), file=sys.stderr)
+            return 1
         print("Restart Claude Code / Claude Desktop to pick it up.")
         return 0
     if args.uninstall:
-        for p in mcp_config.uninstall():
-            print(f"removed {mcp_config.SERVER_KEY} from {p}")
+        try:
+            for p in mcp_config.uninstall():
+                print(f"removed {mcp_config.SERVER_KEY} from {p}")
+        except mcp_config.ConfigError as e:
+            print(str(e), file=sys.stderr)
+            return 1
         return 0
     if args.check:
         server = build_server(args.data_dir)
@@ -221,5 +230,4 @@ def main(argv=None):
 
 
 if __name__ == "__main__":
-    import sys
     sys.exit(main())

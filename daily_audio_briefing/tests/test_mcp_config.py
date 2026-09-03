@@ -53,3 +53,29 @@ def test_config_paths_platform(monkeypatch):
     p = mcp_config.config_paths()
     assert p["claude_code"].endswith(".claude.json")
     assert p["claude_desktop"].endswith("Library/Application Support/Claude/claude_desktop_config.json")
+
+
+def test_install_malformed_config_raises_and_leaves_file(tmp_path):
+    code = tmp_path / ".claude.json"
+    code.write_text("{not json")
+    paths = {"claude_code": str(code), "claude_desktop": str(tmp_path / "claude_desktop_config.json")}
+    try:
+        mcp_config.install(["/p", "/s.py"], paths=paths)
+        assert False, "expected ConfigError"
+    except mcp_config.ConfigError:
+        pass
+    assert code.read_text() == "{not json"
+    assert not (tmp_path / ".claude.json.bak").exists()
+
+
+def test_uninstall_malformed_config_raises_and_leaves_file(tmp_path):
+    code = tmp_path / ".claude.json"
+    code.write_text("{not json")
+    paths = {"claude_code": str(code), "claude_desktop": str(tmp_path / "missing.json")}
+    try:
+        mcp_config.uninstall(paths=paths)
+        assert False, "expected ConfigError"
+    except mcp_config.ConfigError:
+        pass
+    assert code.read_text() == "{not json"
+    assert not (tmp_path / ".claude.json.bak").exists()
