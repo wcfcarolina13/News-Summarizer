@@ -12,6 +12,11 @@ burst from 429-dropping videos on any single provider's tokens/min cap.
 Override any provider model via the matching *_MODEL env var; local tier via
 ENABLE_LOCAL_FALLBACK, OLLAMA_HOST, LOCAL_LLM_MODEL, LOCAL_LLM_TIMEOUT.
 
+A/B switch for the briefing summarizer: set DAB_SUMMARIZER="<provider>:<model>"
+(e.g. "groq:openai/gpt-oss-120b" or "openrouter:nvidia/nemotron-3-super-120b-a12b:free")
+and the summarizer call sites (``_SUMMARIZER_CALLERS``) try that provider+model
+FIRST, before Gemini and the normal chain. Unset (the default) changes nothing.
+
 If all providers fail, ``generate_with_fallback`` returns None so the caller can
 skip the item. The previous "extractive" fallback (first-25-sentences of the raw
 transcript) was removed because it silently emitted unsummarized, disfluency-
@@ -233,6 +238,31 @@ _LOCAL_ENABLED = os.environ.get("ENABLE_LOCAL_FALLBACK", "1").lower() in ("1", "
 # regardless of any budget value in .env / api_usage.json.
 _GEMINI_ENABLED = os.environ.get("ENABLE_GEMINI", "0").lower() in ("1", "true", "yes")
 
+# A/B switch for the briefing summarizer (see module docstring). Only the
+# summarizer call sites honour it; cleaning / extraction keep the normal chain.
+_SUMMARIZER_CALLERS = frozenset({
+    "fetcher._summarize_yt", "fetcher._summarize_article",
+    "yt_news.summarize", "gui._summarize_yt",
+})
+
+
+def _summarizer_override() -> Optional[tuple]:
+    """Parse DAB_SUMMARIZER="<provider>:<model>" into (provider dict, model).
+
+    Read at call time (not import time) so a test or the A/B script can flip it.
+    Returns None when unset, malformed, or naming an unknown provider."""
+    raw = (os.environ.get("DAB_SUMMARIZER") or _load_key("DAB_SUMMARIZER") or "").strip()
+    if not raw or ":" not in raw:
+        return None
+    name, model = raw.split(":", 1)
+    name, model = name.strip().lower(), model.strip()
+    for p in _HTTP_PROVIDERS:
+        if p["name"] == name and model:
+            return p, model
+    _log(f"DAB_SUMMARIZER={raw!r} ignored: unknown provider {name!r}")
+    return None
+
+
 _OLLAMA_HOST = os.environ.get("OLLAMA_HOST", "http://localhost:11434").rstrip("/")
 _LOCAL_MODEL = os.environ.get("LOCAL_LLM_MODEL", "gpt-oss:20b-tuned")
 _LOCAL_TIMEOUT = int(os.environ.get("LOCAL_LLM_TIMEOUT", "300"))
@@ -339,6 +369,9 @@ def generate_with_fallback(
 ) -> Optional[str]:
     """Try Gemini → stacked free providers → local Ollama; first success wins.
 
+    If DAB_SUMMARIZER names a provider:model and ``caller`` is a summarizer call
+    site, that provider is tried first (A/B switch; default off).
+
     Gemini is tried first when a model is provided and within budget (it's off
     by default under the zero-spend budget). Then each configured provider in
     ``_HTTP_PROVIDERS`` is tried in priority order, skipping any whose per-
@@ -359,6 +392,20 @@ def generate_with_fallback(
         Generated text, or None if all providers fail.
     """
     gemini_failed_reason: Optional[str] = None
+
+    # --- Attempt 0: the A/B summarizer override (DAB_SUMMARIZER) ---
+    override = _summarizer_override() if caller in _SUMMARIZER_CALLERS else None
+    if override:
+        p, model = override
+        if not _load_key(p["key_env"]):
+            _log(f"DAB_SUMMARIZER wants {p['name']} but {p['key_env']} is not set — using normal chain")
+        else:
+            result = _http_provider_generate(p, prompt, max_tokens=max_tokens,
+                                             timeout=timeout, model=model)
+            if result:
+                _log(f"{p['name']} ({model}) [DAB_SUMMARIZER] succeeded for {caller}")
+                return result
+            _log(f"DAB_SUMMARIZER {p['name']}:{model} failed for {caller} — falling back to normal chain")
 
     # --- Attempt 1: Gemini (PAID — opt-in only) ---
     # Skipped entirely unless ENABLE_GEMINI=1. This is the zero-spend default:
