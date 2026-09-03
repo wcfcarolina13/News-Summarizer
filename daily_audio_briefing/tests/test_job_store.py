@@ -60,3 +60,14 @@ def test_recover_interrupted(tmp_path):
 
 def test_states_constant():
     assert STATES == ("queued", "running", "done", "failed")
+
+
+def test_list_and_recover_skip_corrupt_file(tmp_path):
+    store = JobStore(str(tmp_path))
+    job = store.create("text_to_audio", {}, None)
+    with open(tmp_path / "bad.json", "w", encoding="utf-8") as f:
+        f.write("{not valid json")
+    listed = store.list()
+    assert [j["job_id"] for j in listed] == [job["job_id"]]
+    assert store.recover_interrupted() == 1
+    assert store.get(job["job_id"])["state"] == "failed"

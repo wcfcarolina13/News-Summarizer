@@ -50,10 +50,13 @@ class JobStore:
 
     def get(self, job_id):
         path = self._path(job_id)
-        if not os.path.exists(path):
+        try:
+            with open(path, "r", encoding="utf-8") as f:
+                return json.load(f)
+        except FileNotFoundError:
             return None
-        with open(path, "r", encoding="utf-8") as f:
-            return json.load(f)
+        except (json.JSONDecodeError, OSError):
+            return None
 
     def update(self, job_id, **fields):
         if "state" in fields and fields["state"] not in STATES:
