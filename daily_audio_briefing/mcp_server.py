@@ -164,7 +164,8 @@ def build_server(data_dir: Optional[str] = None) -> FastMCP:
         """Start a job that converts TEXT to speech. quality: 'quality' (Kokoro) or 'fast' (gTTS).
 
         Set upload_to_drive=true to also push the MP3 and TXT to the app's Drive folder,
-        the one the daily briefing uses; drive_folder overrides it.
+        the one the daily briefing uses; drive_folder overrides it. Very long texts render
+        at roughly 1 minute per 5,000 characters.
         """
         if not text or not text.strip():
             raise ValueError("text is empty")
@@ -187,7 +188,8 @@ def build_server(data_dir: Optional[str] = None) -> FastMCP:
         """Start a job that fetches each URL, cleans the article text, and reads them in order.
 
         Set upload_to_drive=true to also push the MP3 and TXT to the app's Drive folder,
-        the one the daily briefing uses; drive_folder overrides it.
+        the one the daily briefing uses; drive_folder overrides it. Very long texts render
+        at roughly 1 minute per 5,000 characters.
         """
         if not urls:
             raise ValueError("urls is empty")

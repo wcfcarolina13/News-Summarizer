@@ -188,10 +188,12 @@ def _stub_tts(monkeypatch):
 
     calls = _Calls()
     calls.cwds = []
+    calls.timeouts = []
 
-    def fake_run_tts(script, args, *, cwd, log_path):
+    def fake_run_tts(script, args, *, cwd, log_path, timeout=None):
         calls.append((script, list(args)))
         calls.cwds.append(cwd)
+        calls.timeouts.append(timeout)
         out = args[args.index("--output") + 1]
         with open(out, "wb") as f:
             f.write(b"RIFF")
@@ -235,6 +237,28 @@ def test_text_to_audio_validation(tmp_path):
         audio_jobs.text_to_audio("x", quality="ultra", output_dir=str(tmp_path))
     with pytest.raises(ValueError):
         audio_jobs.text_to_audio("   ", output_dir=str(tmp_path))
+
+
+def test_tts_timeout_for_small_text():
+    chars = 8_746
+    expected = audio_jobs.TTS_TIMEOUT + int(chars * audio_jobs.TTS_SECONDS_PER_CHAR)
+    assert audio_jobs.tts_timeout_for(chars) == expected == 3862
+
+
+def test_tts_timeout_for_scales_with_length():
+    # 787,158-char reading list that previously died at the flat 3600s timeout.
+    chars = 787_158
+    expected = max(audio_jobs.TTS_TIMEOUT,
+                    int(chars * audio_jobs.TTS_SECONDS_PER_CHAR) + audio_jobs.TTS_TIMEOUT)
+    result = audio_jobs.tts_timeout_for(chars)
+    assert result == expected
+    assert result > 3 * 3600  # comfortably covers the ~3h real render
+
+
+def test_text_to_audio_passes_scaled_timeout(tmp_path, monkeypatch):
+    calls = _stub_tts(monkeypatch)
+    audio_jobs.text_to_audio("Hello World Title\n\nBody.", quality="quality", output_dir=str(tmp_path))
+    assert calls.timeouts[0] >= audio_jobs.TTS_TIMEOUT
 
 
 def test_text_to_audio_tts_failure_raises(tmp_path, monkeypatch):

@@ -461,9 +461,23 @@ def upload_outputs_to_drive(paths, folder, *, data_dir=None, progress=None):
 
 _SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
 TTS_TIMEOUT = 3600
+# Measured: 8,746 chars rendered in 117s including model load (~0.0134 s/char).
+# Use ~2x that rate as headroom, plus the 1h floor for model-load overhead on
+# short texts. A 787,158-char reading list (~3h of Kokoro) was previously
+# killed at the flat 3600s timeout.
+TTS_SECONDS_PER_CHAR = 0.03
 
 
-def run_tts(script, args, *, cwd, log_path):
+def tts_timeout_for(chars: int) -> int:
+    """Subprocess timeout (seconds) that scales with text length.
+
+    Never less than TTS_TIMEOUT (the 1h floor); grows linearly with chars
+    beyond that so long reading-list renders aren't killed mid-synthesis.
+    """
+    return max(TTS_TIMEOUT, int(chars * TTS_SECONDS_PER_CHAR) + TTS_TIMEOUT)
+
+
+def run_tts(script, args, *, cwd, log_path, timeout=None):
     """Run make_audio_quality.py / make_audio_fast.py; return its exit code.
 
     Frozen: import and call main() in-process with patched argv (PyInstaller has
@@ -492,7 +506,7 @@ def run_tts(script, args, *, cwd, log_path):
         stdout_text, stderr_text = out.getvalue(), err.getvalue()
     else:
         cmd = [sys.executable, os.path.join(_SCRIPT_DIR, script)] + list(args)
-        result = subprocess.run(cmd, capture_output=True, text=True, cwd=_SCRIPT_DIR, timeout=TTS_TIMEOUT)
+        result = subprocess.run(cmd, capture_output=True, text=True, cwd=_SCRIPT_DIR, timeout=timeout or TTS_TIMEOUT)
         code, stdout_text, stderr_text = result.returncode, result.stdout, result.stderr
     with open(log_path, "a", encoding="utf-8") as log:
         log.write(f"\n[{time.strftime('%Y-%m-%d %H:%M:%S')}] {script} {' '.join(args)}\n")
@@ -549,7 +563,8 @@ def text_to_audio(text, *, title=None, voice=DEFAULT_VOICE, quality="quality",
     _say(progress, f"[5/5] Generating audio (~{est} sentences, may take a few minutes)...")
     # Run from the data dir, not output_dir: in frozen builds run_tts chdir()s, and
     # make_audio_quality resolves the Kokoro model/voices files relative to cwd.
-    code = run_tts(script, args, cwd=get_data_directory(), log_path=log_path)
+    code = run_tts(script, args, cwd=get_data_directory(), log_path=log_path,
+                    timeout=tts_timeout_for(len(text)))
     wav_fallback = os.path.join(output_dir, f"{base}.wav")
     if code == 0 and os.path.exists(out_path):
         return os.path.abspath(out_path)

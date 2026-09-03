@@ -16,7 +16,7 @@ from mcp.shared.memory import create_connected_server_and_client_session as conn
 
 @pytest.fixture
 def stubbed(monkeypatch):
-    def fake_run_tts(script, args, *, cwd, log_path):
+    def fake_run_tts(script, args, *, cwd, log_path, timeout=None):
         out = args[args.index("--output") + 1]
         open(out, "wb").write(b"RIFF")
         return 0
