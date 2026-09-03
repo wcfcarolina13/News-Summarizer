@@ -4,7 +4,7 @@ LLM Fallback Chain — Gemini → stacked free providers → local Ollama.
 Provides a single generate_with_fallback() that tries providers in order, first
 success wins. Gemini is first (off by default under the zero-spend budget), then
 each configured free OpenAI-compatible provider in ``_HTTP_PROVIDERS`` (Cerebras,
-Cloudflare, Groq, SambaNova, Mistral, Ollama Cloud, OpenRouter — enable one by
+Cloudflare, Groq, Mistral, Ollama Cloud, OpenRouter — enable one by
 adding its key to .env), then local Ollama (gpt-oss:20b-tuned) as the always-
 available, no-rate-limit floor. Stacking independent free tiers stops the daily
 burst from 429-dropping videos on any single provider's tokens/min cap.
@@ -48,8 +48,10 @@ def _log(msg: str):
 # briefing burst across separate rate-limit pools so no single provider's
 # tokens/minute cap silently drops a video. All are security-audited (2026-06-03)
 # as safe for this zero-spend automated use: they don't train on free-tier API
-# data (Groq, Cerebras, Cloudflare, SambaNova, Ollama Cloud), or training is
-# user-disabled (Mistral, OpenRouter). Add a key to .env to enable a provider;
+# data (Groq, Cerebras, Cloudflare, Ollama Cloud), or training is
+# user-disabled (Mistral, OpenRouter). SambaNova was removed 2026-09-03: its
+# free tier was retired in June 2026 (402 after trial), so it only cost a dead hop.
+# Add a key to .env to enable a provider;
 # providers without a key are skipped silently.
 #
 # Ordered by priority — highest sustained throughput first. `ceiling` is the
@@ -71,9 +73,6 @@ _HTTP_PROVIDERS = [
     {"name": "groq",         "key_env": "GROQ_API_KEY",       "ceiling": 10000,
      "base": "https://api.groq.com/openai/v1",
      "model_env": "GROQ_MODEL",         "model": "openai/gpt-oss-120b"},
-    {"name": "sambanova",    "key_env": "SAMBANOVA_API_KEY",  "ceiling": 16000,
-     "base": "https://api.sambanova.ai/v1",
-     "model_env": "SAMBANOVA_MODEL",    "model": "Meta-Llama-3.3-70B-Instruct"},
     {"name": "mistral",      "key_env": "MISTRAL_API_KEY",    "ceiling": 30000,
      "base": "https://api.mistral.ai/v1",
      "model_env": "MISTRAL_MODEL",      "model": "mistral-medium-latest"},

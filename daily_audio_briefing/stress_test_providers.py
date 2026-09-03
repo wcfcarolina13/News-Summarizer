@@ -40,8 +40,6 @@ PROVIDERS = [
      "base": "https://api.groq.com/openai/v1"},
     {"id": "cerebras",    "key_env": "CEREBRAS_API_KEY",   "model": "gpt-oss-120b",
      "base": "https://api.cerebras.ai/v1"},
-    {"id": "sambanova",   "key_env": "SAMBANOVA_API_KEY",  "model": "Meta-Llama-3.3-70B-Instruct",
-     "base": "https://api.sambanova.ai/v1"},
     {"id": "openrouter",  "key_env": "OPENROUTER_API_KEY", "model": "meta-llama/llama-3.3-70b-instruct:free",
      "base": "https://openrouter.ai/api/v1"},
     {"id": "mistral",     "key_env": "MISTRAL_API_KEY",    "model": "mistral-medium-latest",
