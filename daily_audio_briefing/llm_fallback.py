@@ -100,7 +100,7 @@ _HTTP_PROVIDERS = [
      "model_env": "OLLAMA_CLOUD_MODEL", "model": "gpt-oss:120b"},
     {"name": "openrouter",   "key_env": "OPENROUTER_API_KEY", "ceiling": 30000,
      "base": "https://openrouter.ai/api/v1",
-     "model_env": "OPENROUTER_MODEL",   "model": "meta-llama/llama-3.3-70b-instruct:free"},
+     "model_env": "OPENROUTER_MODEL",   "model": "google/gemma-4-26b-a4b-it:free"},  # llama-3.3-70b:free retired (404 "unavailable for free", 2026-09-03); gemma-4 is the clean non-reasoning free prose model
 ]
 
 

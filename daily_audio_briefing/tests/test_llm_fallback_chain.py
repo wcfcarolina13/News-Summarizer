@@ -22,6 +22,12 @@ def test_cerebras_removed_and_groq_leads():
     assert _names()[:2] == ["groq", "cloudflare"]
 
 
+def test_openrouter_default_is_a_free_non_reasoning_model():
+    p = next(x for x in llm_fallback._HTTP_PROVIDERS if x["name"] == "openrouter")
+    assert p["model"].endswith(":free")
+    assert "llama-3.3-70b" not in p["model"]  # retired from the free tier 2026-09
+
+
 @pytest.fixture
 def isolated(monkeypatch):
     """Every provider 'configured', Gemini off, local floor off, no override."""

@@ -106,13 +106,14 @@ model lists from Groq and Cloudflare with the briefing keys.
 |---|---|---|---|
 | **Groq `qwen/qwen3.8-27b`** (also `qwen3.6-27b`) — new on Groq's menu | live `/v1/models` | Tested $0 on a 6k-char prose rewrite: 2.8 s, clean (no markdown, no reasoning channel) but left 14 digits vs 0 for gpt-oss-120b. Same 8k tokens/min pool as gpt-oss, so it adds no capacity. | Not a chain change. Valid free B-side for `scripts/ab_summarize.py --b groq:qwen/qwen3.8-27b`. |
 | **Cloudflare `@cf/zai-org/glm-5.3` / `glm-5.3-flash`**, `deepseek-v4-flash-0731`, `gemma-4-26b-a4b-it`, `qwen3.8-27b`, `kimi-k2.7-code` — new on the Workers AI catalog | live model search; GLM-5.3 weights noted in [[Wissner-Gross Smoothing the Singularity 2026-08-29]] | Same 10k-neuron/day pool as gpt-oss-120b, so no extra capacity; GLM/Kimi are reasoning models that spend the budget on the reasoning channel (skill field notes 2026-07-04). Untested today — Cloudflare's free day was already spent. | Candidates for a free-vs-free A/B on a fresh day (`--b cloudflare:@cf/zai-org/glm-5.3-flash`). Not a default change. |
-| **OpenRouter `nvidia/nemotron-3-super-120b-a12b:free`** | [[Nemotron 3 Super]] (2026-09-03) | 262k context, free; needs an OpenRouter key + training opt-out; reasoning-verbose. | The one option that adds a **new pool** for long inputs. Worth a key. |
+| **OpenRouter free pool** — default now `google/gemma-4-26b-a4b-it:free` | key found in `~/.hermes/.env` (valid, free tier, $0 used), never copied to the briefing `.env` | Tested on a real excerpt at $0: Gemma 4 26B clean prose, no reasoning channel, ~16 s. `nemotron-3-super:free` works (30 s) but reasoning-heavy and leaked its thinking at a small budget; GLM-5.2/MiniMax M2.7 return empty content. The old default `llama-3.3-70b:free` is retired (404). | **Adds a real third pool for long inputs.** Copy the key into the briefing `.env`; Gemma is the default rung. |
 | GLM-5.2 on Cloudflare + Cohere `north-mini-code:free` on OpenRouter | [[Free Coding Models via Cloudflare Workers AI and OpenRouter]] | Already evaluated and wired into Hermes (Jul 4); coding-oriented, reasoning-hungry. | No. |
 | FreeToken (local MoE inference engine) | [[FreeToken - Frontier MoE Models on Consumer GPUs]] | CUDA-only benchmarks; nothing for Apple Silicon. | No. |
 | Qwen3.8-27B MLX build | [[Qwen3.8-27B-Uncensored MLX Build]] | ~13.5 GB at 4-bit, fits the M2 Pro; could replace `gpt-oss:20b-tuned` as the local floor if it proves faster/cleaner. | Maybe, as a local-floor experiment; not a hosted rung. |
 | VibeVoice (Microsoft TTS/ASR) | [[GitHub Repos Evaluation 2026-09-03]] | TTS side, not LLM; research-only licence. | Out of scope here. |
 | FreeLLM API Aggregator's long tail (GitHub Models, Pollinations, LLM7, OVH, AI Horde, HF Router…) | [[FreeLLM API Aggregator]] audit | GitHub Models is "caution" (evaluation-only ToS); the rest are unaudited. | Run the skill's 7-question audit before adding any. |
 
-Net: nothing new displaces gpt-oss-120b on Groq/Cloudflare. The only change
-that adds real capacity is an OpenRouter key (Nemotron 3 Super free slot),
-which is a Bradley action (sign up, toggle the training opt-out, add the key).
+Net: nothing new displaces gpt-oss-120b on Groq/Cloudflare. The one change that
+adds real capacity is the OpenRouter key Bradley already has (in Hermes) landing
+in the briefing's `.env`, with Gemma 4 as its rung. The Hermes Ollama Cloud key
+is dead for completions (401).

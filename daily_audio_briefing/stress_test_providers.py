@@ -40,7 +40,7 @@ def _load_env():
 PROVIDERS = [
     {"id": "groq",        "key_env": "GROQ_API_KEY",       "model": "openai/gpt-oss-120b",
      "base": "https://api.groq.com/openai/v1"},
-    {"id": "openrouter",  "key_env": "OPENROUTER_API_KEY", "model": "meta-llama/llama-3.3-70b-instruct:free",
+    {"id": "openrouter",  "key_env": "OPENROUTER_API_KEY", "model": "google/gemma-4-26b-a4b-it:free",
      "base": "https://openrouter.ai/api/v1"},
     {"id": "mistral",     "key_env": "MISTRAL_API_KEY",    "model": "mistral-medium-latest",
      "base": "https://api.mistral.ai/v1"},
