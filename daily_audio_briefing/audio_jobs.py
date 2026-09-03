@@ -6,10 +6,15 @@ via llm_fallback, optional), combine, and synthesize with Kokoro or gTTS.
 Used by gui_app.py (dialogs) and mcp_server.py (agents). No Tk, no MCP here.
 """
 import datetime
+import importlib
+import io
 import json
 import os
 import re
+import subprocess
 import sys
+import time
+from contextlib import redirect_stdout, redirect_stderr
 
 import requests
 from bs4 import BeautifulSoup
@@ -18,6 +23,7 @@ from urllib.parse import urlsplit, urlunsplit, parse_qsl, urlencode
 from llm_fallback import generate_with_fallback
 from source_fetcher import _clean_title_for_audio
 from file_manager import FileManager, get_data_directory
+from convert_to_mp3 import check_ffmpeg
 
 KOKORO_VOICES = [
     "af_heart", "af_sarah", "af_nova", "af_sky", "af_bella",
@@ -273,3 +279,124 @@ def load_gemini_api_key(data_dir=None):
     data_dir = data_dir or get_data_directory()
     key = FileManager(base_dir=data_dir).load_api_key()
     return key or os.environ.get("GEMINI_API_KEY", "")
+
+
+_SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
+TTS_TIMEOUT = 3600
+
+
+def run_tts(script, args, *, cwd, log_path):
+    """Run make_audio_quality.py / make_audio_fast.py; return its exit code.
+
+    Frozen: import and call main() in-process with patched argv (PyInstaller has
+    no separate interpreter). Dev: subprocess with the current interpreter.
+    Both append stdout/stderr to log_path. Moved from gui_app step 5.
+    """
+    if getattr(sys, "frozen", False):
+        old_argv, old_cwd = sys.argv, os.getcwd()
+        out, err = io.StringIO(), io.StringIO()
+        sys.argv = [script] + list(args)
+        os.chdir(cwd)
+        try:
+            mod = importlib.import_module(script[:-3])
+            importlib.reload(mod)
+            with redirect_stdout(out), redirect_stderr(err):
+                mod.main()
+            code = 0
+        except SystemExit as e:
+            code = e.code if e.code else 0
+        except Exception as e:  # noqa: BLE001 — recorded, surfaced by return code
+            code = 1
+            err.write(f"{e!r}\n")
+        finally:
+            sys.argv = old_argv
+            os.chdir(old_cwd)
+        stdout_text, stderr_text = out.getvalue(), err.getvalue()
+    else:
+        cmd = [sys.executable, os.path.join(_SCRIPT_DIR, script)] + list(args)
+        result = subprocess.run(cmd, capture_output=True, text=True, cwd=_SCRIPT_DIR, timeout=TTS_TIMEOUT)
+        code, stdout_text, stderr_text = result.returncode, result.stdout, result.stderr
+    with open(log_path, "a", encoding="utf-8") as log:
+        log.write(f"\n[{time.strftime('%Y-%m-%d %H:%M:%S')}] {script} {' '.join(args)}\n")
+        log.write(f"TTS stdout:\n{stdout_text}\nTTS stderr:\n{stderr_text}\nReturn code: {code}\n")
+    return code
+
+
+def _validate(text, voice, quality):
+    if not text or not text.strip():
+        raise ValueError("text is empty")
+    if voice not in KOKORO_VOICES:
+        raise ValueError(f"unknown voice {voice!r}; choose one of {KOKORO_VOICES}")
+    if quality not in QUALITIES:
+        raise ValueError(f"unknown quality {quality!r}; choose one of {QUALITIES}")
+
+
+def _basename_for(text, title, now=None):
+    if title and title.strip():
+        slug = re.sub(r'[^a-z0-9]+', '-', title.lower().strip()).strip('-')[:60]
+        return f"{_date_str(now)}_{slug or 'audio'}"
+    # Reuse generate_audio_filename's slug logic for untitled text, then drop
+    # the ".x" placeholder extension it appends — the caller decides format/extension.
+    return generate_audio_filename(text, "x", now=now)[:-2]  # strip ".x"
+
+
+def text_to_audio(text, *, title=None, voice=DEFAULT_VOICE, quality="quality",
+                  output_dir, progress=None, basename=None):
+    """Synthesize text to a file in output_dir. Returns the absolute output path.
+
+    The text is saved next to the audio as <basename>.txt (what the reading-list
+    dialog does today) so a failed render can be re-run without re-fetching.
+    """
+    _validate(text, voice, quality)
+    os.makedirs(output_dir, exist_ok=True)
+    base = basename or _basename_for(text, title)
+    text_path = os.path.join(output_dir, f"{base}.txt")
+    with open(text_path, "w", encoding="utf-8") as f:
+        f.write(text)
+    log_path = os.path.join(output_dir, "audio_jobs.log")
+
+    if quality == "fast":
+        script = "make_audio_fast.py"
+        out_path = os.path.join(output_dir, f"{base}.mp3")
+        args = ["--input", text_path, "--output", out_path]
+    else:
+        script = "make_audio_quality.py"
+        use_mp3 = check_ffmpeg()
+        out_path = os.path.join(output_dir, f"{base}.{'mp3' if use_mp3 else 'wav'}")
+        args = ["--input", text_path, "--voice", voice,
+                "--output", os.path.join(output_dir, f"{base}.wav"),
+                "--format", "mp3" if use_mp3 else "wav", "--bitrate", "128k"]
+
+    est = len(text.split('. '))
+    _say(progress, f"[5/5] Generating audio (~{est} sentences, may take a few minutes)...")
+    code = run_tts(script, args, cwd=output_dir, log_path=log_path)
+    wav_fallback = os.path.join(output_dir, f"{base}.wav")
+    if code == 0 and os.path.exists(out_path):
+        return os.path.abspath(out_path)
+    if code == 0 and os.path.exists(wav_fallback):
+        return os.path.abspath(wav_fallback)
+    raise RuntimeError(f"TTS failed (exit {code}); see {log_path}")
+
+
+def urls_to_audio(urls, *, title=None, voice=DEFAULT_VOICE, quality="quality",
+                  api_key="", instructions="", output_dir, progress=None, cancel=None):
+    """fetch → clean → combine → text_to_audio. Returns dict(output_path, text_path, articles, skipped)."""
+    _validate("x", voice, quality)
+    articles = fetch_articles(urls, progress=progress, cancel=cancel)
+    good = [a for a in articles if a["content"]]
+    if not good:
+        raise RuntimeError("No article content could be fetched. Check URLs.")
+    _check_cancel(cancel)
+    for i, a in enumerate(good):
+        _check_cancel(cancel)
+        _say(progress, f"[2/5] Cleaning article {i + 1}/{len(good)}...")
+        a["cleaned"] = clean_text(a["content"], api_key=api_key, instructions=instructions, progress=progress)
+    _say(progress, "[3/5] Combining articles...")
+    combined = combine_articles(good)
+    _check_cancel(cancel)
+    base = _basename_for(combined, title) if title else reading_list_basename([a["title"] for a in good])
+    _say(progress, "[4/5] Saving text...")
+    out = text_to_audio(combined, voice=voice, quality=quality, output_dir=output_dir,
+                        progress=progress, basename=base)
+    return {"output_path": out, "text_path": os.path.join(output_dir, f"{base}.txt"),
+            "articles": articles, "skipped": len(articles) - len(good)}
