@@ -100,7 +100,11 @@ _HTTP_PROVIDERS = [
      "model_env": "OLLAMA_CLOUD_MODEL", "model": "gpt-oss:120b"},
     {"name": "openrouter",   "key_env": "OPENROUTER_API_KEY", "ceiling": 30000,
      "base": "https://openrouter.ai/api/v1",
-     "model_env": "OPENROUTER_MODEL",   "model": "google/gemma-4-26b-a4b-it:free"},  # llama-3.3-70b:free retired (404 "unavailable for free", 2026-09-03); gemma-4 is the clean non-reasoning free prose model
+     "model_env": "OPENROUTER_MODEL",   "model": "google/gemma-4-26b-a4b-it:free",  # llama-3.3-70b:free retired (404 "unavailable for free", 2026-09-03); gemma-4 is the clean non-reasoning free prose model
+     # OpenRouter free slots are shared upstream pools that go "temporarily rate-limited"
+     # for minutes at a time, so ask OpenRouter to route to the next free model in ONE
+     # request ("models" array) instead of burning the whole rung on a 429.
+     "fallback_models": ["google/gemma-4-31b-it:free", "nvidia/nemotron-3-super-120b-a12b:free"]},
 ]
 
 
@@ -171,12 +175,16 @@ def _http_provider_generate(p: dict, prompt: str, max_tokens: int = 4096,
         _log(f"{p['name']} skipped: unresolved URL (missing CF_ACCOUNT_ID?)")
         return None
     model = model or os.environ.get(p.get("model_env", "")) or p["model"]
-    payload = _json.dumps({
+    body = {
         "model": model,
         "messages": [{"role": "user", "content": prompt}],
         "max_tokens": max_tokens,
         "temperature": 0.3,
-    }).encode("utf-8")
+    }
+    if p.get("fallback_models"):
+        # OpenRouter routing: try these in order server-side if `model` is down/429.
+        body["models"] = [model] + [m for m in p["fallback_models"] if m != model]
+    payload = _json.dumps(body).encode("utf-8")
     headers = {
         "Content-Type": "application/json",
         "User-Agent": "daily-audio-briefing/1.0",

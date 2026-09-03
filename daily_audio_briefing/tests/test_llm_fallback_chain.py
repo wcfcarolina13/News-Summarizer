@@ -22,6 +22,30 @@ def test_cerebras_removed_and_groq_leads():
     assert _names()[:2] == ["groq", "cloudflare"]
 
 
+def test_provider_fallback_models_go_in_request_body(monkeypatch):
+    import io, json
+    sent = {}
+
+    class _Resp(io.BytesIO):
+        def __enter__(self): return self
+        def __exit__(self, *a): return False
+
+    def fake_urlopen(req, timeout=0):
+        sent["body"] = json.loads(req.data)
+        return _Resp(json.dumps({"choices": [{"message": {"content": "hi"}, "finish_reason": "stop"}]}).encode())
+
+    monkeypatch.setattr(llm_fallback._urlreq, "urlopen", fake_urlopen)
+    monkeypatch.setattr(llm_fallback, "_load_key", lambda env: "k")
+    monkeypatch.setattr(llm_fallback, "_debug", False)
+    p = next(x for x in llm_fallback._HTTP_PROVIDERS if x["name"] == "openrouter")
+    assert llm_fallback._http_provider_generate(p, "x") == "hi"
+    assert sent["body"]["models"][0] == p["model"] and len(sent["body"]["models"]) >= 2
+    assert all(m.endswith(":free") for m in sent["body"]["models"])
+    g = next(x for x in llm_fallback._HTTP_PROVIDERS if x["name"] == "groq")
+    llm_fallback._http_provider_generate(g, "x")
+    assert "models" not in sent["body"]
+
+
 def test_openrouter_default_is_a_free_non_reasoning_model():
     p = next(x for x in llm_fallback._HTTP_PROVIDERS if x["name"] == "openrouter")
     assert p["model"].endswith(":free")
