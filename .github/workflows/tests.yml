@@ -22,13 +22,13 @@ jobs:
         with:
           python-version: '3.12'
 
-      # The tested modules import only the standard library at load time (the
-      # heavy app deps are imported lazily inside functions), so the whole suite
-      # runs with just pytest — no need to install the desktop/web requirements.
-      - name: Install pytest
+      # audio_jobs imports requests + bs4 at load time (since 0714565) and the
+      # MCP tests need the mcp package, so install the light web requirements
+      # plus mcp. Still no desktop/TTS deps — those stay lazy.
+      - name: Install test dependencies
         run: |
           python -m pip install --upgrade pip
-          pip install pytest
+          pip install pytest -r daily_audio_briefing/requirements.txt "mcp>=1.0"
 
       - name: Run tests
         run: python -m pytest daily_audio_briefing/tests/ -q

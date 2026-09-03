@@ -7,6 +7,7 @@ tags.
 
 ## 2026-09-03 (LLM chain review)
 
+- **ci(tests)** — install the light web requirements + `mcp` in the Tests workflow (59ae04a). `audio_jobs` imports `requests`/`bs4` at load time since 0714565 and the MCP tests import `mcp`, so the pytest-only install failed at collection on all 5 pushes on 2026-09-03.
 ### Fixed
 - **Dev-mode TTS timeout scales with text length.** `audio_jobs.run_tts` ran the Kokoro/gTTS subprocess with a flat `TTS_TIMEOUT` (3600s); a 787,158-char reading-list render (~3h of Kokoro, measured rate 8,746 chars/117s incl. model load) was killed by `subprocess.TimeoutExpired` at the 1h mark. New `tts_timeout_for(chars)` scales the timeout (~2x measured rate + the 1h floor); `text_to_audio` passes it through. Frozen (in-process) mode is unaffected — it has no subprocess timeout.
 - **Cerebras removed from the free chain.** Every chat completion has returned `402 payment_required` (param `quota`) since 2026-08-18 while `/v1/models` still answers — the key is valid, the free quota is gone (189 dead hops in the daemon log). Removed from `llm_fallback.py`, `stress_test_providers.py`, `.env.example` and the `free-llm-fallback-chain` skill, as SambaNova was in a0b4e0e. **Groq now leads** (fastest rung; its 10k-token ceiling routes big requests past it) so Cloudflare's 10,000-neuron daily allocation is spent only on what Groq cannot take.
