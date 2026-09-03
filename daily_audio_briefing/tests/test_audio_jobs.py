@@ -126,7 +126,7 @@ def test_clean_text_no_key_returns_input(monkeypatch):
 def test_clean_text_uses_fallback_chain(monkeypatch):
     calls = {}
 
-    def fake_generate(prompt, gemini_model=None, caller="", timeout=120):
+    def fake_generate(prompt, gemini_model=None, caller="", timeout=120, max_tokens=4096):
         calls["prompt"] = prompt
         calls["caller"] = caller
         return "  cleaned  "
@@ -140,7 +140,7 @@ def test_clean_text_uses_fallback_chain(monkeypatch):
 def test_clean_text_failure_returns_input(monkeypatch):
     monkeypatch.setattr(audio_jobs, "_configure_gemini", lambda key, model_name: "MODEL")
 
-    def boom(prompt, gemini_model=None, caller="", timeout=120):
+    def boom(prompt, gemini_model=None, caller="", timeout=120, max_tokens=4096):
         raise RuntimeError("provider down")
 
     monkeypatch.setattr(audio_jobs, "generate_with_fallback", boom)
@@ -483,3 +483,70 @@ def test_upload_outputs_to_drive_reports_progress(tmp_path, monkeypatch):
     msgs = []
     audio_jobs.upload_outputs_to_drive([mp3], "folder123", data_dir=str(tmp_path), progress=msgs.append)
     assert any("Uploading to Drive" in m for m in msgs)
+
+
+# --- chunked cleaning (2026-09-03) -------------------------------------------
+
+def _para(i, n=60):
+    return " ".join(f"Sentence {i} number {j} of the article." for j in range(n))
+
+
+def test_clean_text_short_input_is_one_call(monkeypatch):
+    calls = []
+    monkeypatch.setattr(audio_jobs, "_configure_gemini", lambda key, model_name: "MODEL")
+    monkeypatch.setattr(audio_jobs, "generate_with_fallback",
+                        lambda prompt, **kw: calls.append(kw) or "cleaned")
+    assert audio_jobs.clean_text("short text", api_key="k") == "cleaned"
+    assert len(calls) == 1 and calls[0]["max_tokens"] == audio_jobs.CLEAN_MAX_TOKENS_FLOOR
+
+
+def test_clean_text_long_input_is_chunked_on_paragraphs_and_rejoined(monkeypatch):
+    text = "\n\n".join(_para(i) for i in range(30))  # ~63k chars → 3 chunks at 24k
+    assert len(text) > 2 * audio_jobs.CLEAN_CHUNK_CHARS
+    bodies, msgs = [], []
+    monkeypatch.setattr(audio_jobs, "_configure_gemini", lambda key, model_name: "MODEL")
+
+    def fake(prompt, **kw):
+        body = prompt.split('TEXT TO CLEAN:\n"""\n', 1)[1].rsplit('\n"""', 1)[0]
+        bodies.append(body)
+        return f"CLEAN<{len(body)}>"
+
+    monkeypatch.setattr(audio_jobs, "generate_with_fallback", fake)
+    out = audio_jobs.clean_text(text, api_key="k", progress=msgs.append)
+    assert len(bodies) >= 3
+    # every chunk fits the fast rungs, starts on a paragraph boundary, and nothing is lost
+    assert all(len(b) <= audio_jobs.CLEAN_CHUNK_CHARS for b in bodies)
+    assert all(b.startswith("Sentence") for b in bodies)
+    squash = lambda t: t.replace("\n", "").replace(" ", "")
+    assert squash("".join(bodies)) == squash(text)
+    assert out == "\n\n".join(f"CLEAN<{len(b)}>" for b in bodies)
+    assert any("cleaning in 3 chunks" in m for m in msgs)
+
+
+def test_clean_text_failed_chunk_is_kept_raw_not_dropped(monkeypatch):
+    text = "\n\n".join(_para(i) for i in range(20))
+    monkeypatch.setattr(audio_jobs, "_configure_gemini", lambda key, model_name: "MODEL")
+    n = {"i": 0}
+
+    def fake(prompt, **kw):
+        n["i"] += 1
+        return None if n["i"] == 2 else "cleaned"
+
+    monkeypatch.setattr(audio_jobs, "generate_with_fallback", fake)
+    msgs = []
+    out = audio_jobs.clean_text(text, api_key="k", progress=msgs.append)
+    parts = out.split("\n\n")
+    assert parts[0] == "cleaned" and "Sentence" in out  # raw chunk survived
+    assert any("Chunk 2/" in m and "keeping raw" in m for m in msgs)
+
+
+def test_clean_text_all_chunks_fail_returns_input(monkeypatch):
+    text = "\n\n".join(_para(i) for i in range(20))
+    monkeypatch.setattr(audio_jobs, "_configure_gemini", lambda key, model_name: "MODEL")
+    monkeypatch.setattr(audio_jobs, "generate_with_fallback", lambda prompt, **kw: None)
+    assert audio_jobs.clean_text(text, api_key="k") == text
+
+
+def test_clean_max_tokens_scales_with_chunk():
+    assert audio_jobs._clean_max_tokens("x" * 1000) == audio_jobs.CLEAN_MAX_TOKENS_FLOOR
+    assert audio_jobs._clean_max_tokens("x" * 24000) == audio_jobs.CLEAN_MAX_TOKENS_CAP

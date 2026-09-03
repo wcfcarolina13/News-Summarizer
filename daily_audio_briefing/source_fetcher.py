@@ -19,6 +19,7 @@ from datetime import datetime, timedelta, timezone
 from dataclasses import dataclass, field
 from enum import Enum
 from typing import List, Dict, Optional, Callable, Tuple
+from text_chunks import split_text
 from urllib.parse import urlparse
 from video_cache import load_cache, save_cache, article_key
 
@@ -1170,7 +1171,7 @@ Your output goes directly to TTS. Any markdown, preambles, or raw transcript spe
 
         # Long body: summarize each section, then fold the section summaries into
         # one briefing summary so nothing in the body is dropped.
-        chunks = _split_text(content, _ARTICLE_CHUNK_CHARS)
+        chunks = split_text(content, _ARTICLE_CHUNK_CHARS)
         _debug_log(f"[Article] Long body ({len(content)} chars), map-reduce over {len(chunks)} sections")
         partials = []
         for idx, chunk in enumerate(chunks, 1):
@@ -2074,31 +2075,6 @@ _AUDIO_REWRITE_RULE = (
     "write-out-every-number rule above for statistic runs. Also drop any leftover cross-references "
     "to other notes, citations, or raw links."
 )
-
-
-def _split_text(text: str, size: int) -> List[str]:
-    """Split text into chunks of at most `size` chars, preferring paragraph, then
-    line, then sentence boundaries so a chunk never starts mid-sentence."""
-    if len(text) <= size:
-        return [text]
-    chunks, start, n = [], 0, len(text)
-    while start < n:
-        if n - start <= size:
-            chunks.append(text[start:].strip())
-            break
-        window = text[start:start + size]
-        floor = int(size * 0.8)
-        cut = -1
-        for sep, keep in (("\n\n", 0), ("\n", 0), (". ", 1)):
-            pos = window.rfind(sep)
-            if pos >= floor:
-                cut = pos + keep
-                break
-        if cut < 0:
-            cut = size
-        chunks.append(text[start:start + cut].strip())
-        start += cut
-    return [c for c in chunks if c]
 
 
 def _clean_title_for_audio(title: str) -> str:

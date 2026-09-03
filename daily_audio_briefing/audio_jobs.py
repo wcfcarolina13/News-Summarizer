@@ -24,6 +24,7 @@ from urllib.parse import urlsplit, urlunsplit, parse_qsl, urlencode, urljoin
 
 from llm_fallback import generate_with_fallback
 from source_fetcher import _clean_title_for_audio
+from text_chunks import split_text
 from file_manager import FileManager, get_data_directory
 from convert_to_mp3 import check_ffmpeg
 
@@ -292,6 +293,14 @@ CLEAN_BASE_PROMPT = """Clean and format this text for audio listening. Your task
 
 DEFAULT_CLEAN_MODEL = "gemini-2.5-flash"
 
+# Long inputs are cleaned in chunks so the fast free rungs can take them: Groq
+# skips anything over ~10k prompt tokens and Cloudflare's gpt-oss truncates at
+# max_tokens on a 20k-token article (cleaning returns roughly its input length).
+# ~6k tokens of text per chunk (~4 chars/token) leaves headroom for the prompt.
+CLEAN_CHUNK_CHARS = int(os.environ.get("CLEAN_CHUNK_CHARS", 6000 * 4))
+CLEAN_MAX_TOKENS_FLOOR = 4096
+CLEAN_MAX_TOKENS_CAP = 8192
+
 
 def build_clean_prompt(text, instructions=""):
     """The Direct Audio / Reading List cleaning prompt (moved from gui_app._clean_single_article)."""
@@ -312,19 +321,43 @@ def _configure_gemini(api_key, model_name):
     return genai.GenerativeModel(model_name)
 
 
+def _clean_max_tokens(chunk):
+    """Output budget for cleaning one chunk: cleaned text is about as long as its
+    input, so size max_tokens to the chunk instead of the 4096 default."""
+    est = len(chunk) // 4
+    return max(CLEAN_MAX_TOKENS_FLOOR, min(CLEAN_MAX_TOKENS_CAP, int(est * 1.5)))
+
+
 def clean_text(text, *, api_key, instructions="", model_name=DEFAULT_CLEAN_MODEL, progress=None):
-    """Clean text for listening. Never raises: on any failure the input is returned."""
+    """Clean text for listening. Never raises: on any failure the input is returned.
+
+    Inputs longer than CLEAN_CHUNK_CHARS are split on paragraph boundaries,
+    cleaned chunk by chunk and rejoined; a chunk every provider fails on is kept
+    raw rather than dropped, so the listener never loses a section."""
     if not api_key:
         _say(progress, "[2/5] No Gemini API key — skipping cleaning, using raw text.")
         return text
     try:
         model = _configure_gemini(api_key, model_name)
-        cleaned = generate_with_fallback(build_clean_prompt(text, instructions),
-                                         gemini_model=model, caller="audio_jobs.clean_text")
-        if cleaned and cleaned.strip():
-            return cleaned.strip()
-        _say(progress, "[2/5] All LLM providers failed — using raw text.")
-        return text
+        chunks = split_text(text, CLEAN_CHUNK_CHARS)
+        if len(chunks) > 1:
+            _say(progress, f"[2/5] Long text ({len(text):,} chars) — cleaning in {len(chunks)} chunks...")
+        out, failed = [], 0
+        for i, chunk in enumerate(chunks, 1):
+            cleaned = generate_with_fallback(build_clean_prompt(chunk, instructions),
+                                             gemini_model=model, caller="audio_jobs.clean_text",
+                                             max_tokens=_clean_max_tokens(chunk))
+            if cleaned and cleaned.strip():
+                out.append(cleaned.strip())
+            else:
+                failed += 1
+                out.append(chunk.strip())
+                if len(chunks) > 1:
+                    _say(progress, f"[2/5] Chunk {i}/{len(chunks)}: all LLM providers failed — keeping raw.")
+        if failed == len(chunks):
+            _say(progress, "[2/5] All LLM providers failed — using raw text.")
+            return text
+        return "\n\n".join(out)
     except Exception as e:
         _say(progress, f"[2/5] Cleaning failed ({e}) — using raw text.")
         return text

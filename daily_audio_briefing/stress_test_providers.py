@@ -35,11 +35,11 @@ def _load_env():
 
 # Audited-safe OpenAI-compatible providers (see security audit 2026-06-03).
 # Model ids are best-effort current free models; a 404 from probe means update it.
+# Removed: SambaNova (free tier retired Jun 2026), Cerebras (402 on every chat
+# completion since 2026-08-18 — free quota gone). Models mirror llm_fallback.py.
 PROVIDERS = [
     {"id": "groq",        "key_env": "GROQ_API_KEY",       "model": "openai/gpt-oss-120b",
      "base": "https://api.groq.com/openai/v1"},
-    {"id": "cerebras",    "key_env": "CEREBRAS_API_KEY",   "model": "gpt-oss-120b",
-     "base": "https://api.cerebras.ai/v1"},
     {"id": "openrouter",  "key_env": "OPENROUTER_API_KEY", "model": "meta-llama/llama-3.3-70b-instruct:free",
      "base": "https://openrouter.ai/api/v1"},
     {"id": "mistral",     "key_env": "MISTRAL_API_KEY",    "model": "mistral-medium-latest",
@@ -47,7 +47,7 @@ PROVIDERS = [
     {"id": "ollama_cloud","key_env": "OLLAMA_API_KEY",     "model": "gpt-oss:120b",
      "base": "https://ollama.com/v1"},
     # Cloudflare needs the account id spliced into the base URL.
-    {"id": "cloudflare",  "key_env": "CF_API_TOKEN",       "model": "@cf/nvidia/nemotron-3-120b-a12b",
+    {"id": "cloudflare",  "key_env": "CF_API_TOKEN",       "model": "@cf/openai/gpt-oss-120b",
      "base": "https://api.cloudflare.com/client/v4/accounts/{CF_ACCOUNT_ID}/ai/v1"},
     # Local floor — no key, must be running.
     {"id": "local_ollama","key_env": None,                 "model": "gpt-oss:20b-tuned",

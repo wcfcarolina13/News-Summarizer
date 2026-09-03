@@ -3,8 +3,8 @@ LLM Fallback Chain — Gemini → stacked free providers → local Ollama.
 
 Provides a single generate_with_fallback() that tries providers in order, first
 success wins. Gemini is first (off by default under the zero-spend budget), then
-each configured free OpenAI-compatible provider in ``_HTTP_PROVIDERS`` (Cerebras,
-Cloudflare, Groq, Mistral, Ollama Cloud, OpenRouter — enable one by
+each configured free OpenAI-compatible provider in ``_HTTP_PROVIDERS`` (Groq,
+Cloudflare, Mistral, Ollama Cloud, OpenRouter — enable one by
 adding its key to .env), then local Ollama (gpt-oss:20b-tuned) as the always-
 available, no-rate-limit floor. Stacking independent free tiers stops the daily
 burst from 429-dropping videos on any single provider's tokens/min cap.
@@ -59,15 +59,21 @@ def _log(msg: str):
 # briefing burst across separate rate-limit pools so no single provider's
 # tokens/minute cap silently drops a video. All are security-audited (2026-06-03)
 # as safe for this zero-spend automated use: they don't train on free-tier API
-# data (Groq, Cerebras, Cloudflare, Ollama Cloud), or training is
+# data (Groq, Cloudflare, Ollama Cloud), or training is
 # user-disabled (Mistral, OpenRouter). SambaNova was removed 2026-09-03: its
 # free tier was retired in June 2026 (402 after trial), so it only cost a dead hop.
+# Cerebras was removed the same day for the same reason: every chat completion
+# has returned HTTP 402 "payment_required" (param "quota") since 2026-08-18,
+# while /v1/models still answers — the key is fine, the free quota is gone.
 # Add a key to .env to enable a provider;
 # providers without a key are skipped silently.
 #
 # Ordered by priority — highest sustained throughput first. `ceiling` is the
 # per-request token cap above which a provider would 429 on its per-minute
-# limit regardless of pacing, so we skip it for oversized requests.
+# limit regardless of pacing, so we skip it for oversized requests. Groq leads
+# (fastest rung; its 10k ceiling routes big requests straight past it), so
+# Cloudflare's 10,000-neuron/day free allocation is spent only on the requests
+# that Groq cannot take.
 # Override any model via the matching *_MODEL env var.
 # ---------------------------------------------------------------------------
 import json as _json
@@ -75,15 +81,12 @@ import urllib.request as _urlreq
 import urllib.error as _urlerr
 
 _HTTP_PROVIDERS = [
-    {"name": "cerebras",     "key_env": "CEREBRAS_API_KEY",   "ceiling": 60000,
-     "base": "https://api.cerebras.ai/v1",
-     "model_env": "CEREBRAS_MODEL",     "model": "gpt-oss-120b"},
-    {"name": "cloudflare",   "key_env": "CF_API_TOKEN",       "ceiling": 60000,
-     "base": "https://api.cloudflare.com/client/v4/accounts/{CF_ACCOUNT_ID}/ai/v1",
-     "model_env": "CF_MODEL",           "model": "@cf/openai/gpt-oss-120b"},  # matches Cerebras/Groq; nemotron-3-120b leaked reasoning + looped on long inputs
     {"name": "groq",         "key_env": "GROQ_API_KEY",       "ceiling": 10000,
      "base": "https://api.groq.com/openai/v1",
      "model_env": "GROQ_MODEL",         "model": "openai/gpt-oss-120b"},
+    {"name": "cloudflare",   "key_env": "CF_API_TOKEN",       "ceiling": 60000,
+     "base": "https://api.cloudflare.com/client/v4/accounts/{CF_ACCOUNT_ID}/ai/v1",
+     "model_env": "CF_MODEL",           "model": "@cf/openai/gpt-oss-120b"},  # matches Groq; nemotron-3-120b leaked reasoning + looped on long inputs
     {"name": "mistral",      "key_env": "MISTRAL_API_KEY",    "ceiling": 30000,
      "base": "https://api.mistral.ai/v1",
      "model_env": "MISTRAL_MODEL",      "model": "mistral-medium-latest"},
@@ -147,7 +150,7 @@ def _looks_degenerate(text: str) -> bool:
 
 
 def _http_provider_generate(p: dict, prompt: str, max_tokens: int = 4096,
-                            timeout: int = 120) -> Optional[str]:
+                            timeout: int = 120, model: Optional[str] = None) -> Optional[str]:
     """Call one OpenAI-compatible provider. None on any failure (caller moves on).
 
     A real User-Agent is required — several of these APIs are Cloudflare-fronted
@@ -162,7 +165,7 @@ def _http_provider_generate(p: dict, prompt: str, max_tokens: int = 4096,
     if not base:
         _log(f"{p['name']} skipped: unresolved URL (missing CF_ACCOUNT_ID?)")
         return None
-    model = os.environ.get(p.get("model_env", "")) or p["model"]
+    model = model or os.environ.get(p.get("model_env", "")) or p["model"]
     payload = _json.dumps({
         "model": model,
         "messages": [{"role": "user", "content": prompt}],
@@ -332,6 +335,7 @@ def generate_with_fallback(
     gemini_model=None,
     caller: str = "unknown",
     timeout: int = 120,
+    max_tokens: int = 4096,
 ) -> Optional[str]:
     """Try Gemini → stacked free providers → local Ollama; first success wins.
 
@@ -347,6 +351,9 @@ def generate_with_fallback(
         gemini_model: A google.generativeai model instance (or None to skip).
         caller: Caller identifier for tracking.
         timeout: Per-provider request timeout.
+        max_tokens: Output cap for the HTTP providers and the local floor. Size it
+            for the task — cleaning returns roughly its input length, so a long
+            chunk needs more than the 4096 default or gpt-oss truncates.
 
     Returns:
         Generated text, or None if all providers fail.
@@ -395,7 +402,7 @@ def generate_with_fallback(
         if est_tokens > p["ceiling"]:
             _log(f"Skipping {p['name']} for {caller}: ~{est_tokens} tok > ceiling {p['ceiling']}")
             continue
-        result = _http_provider_generate(p, prompt, timeout=timeout)
+        result = _http_provider_generate(p, prompt, max_tokens=max_tokens, timeout=timeout)
         if result:
             _log(f"{p['name']} succeeded for {caller}")
             return result
@@ -404,7 +411,7 @@ def generate_with_fallback(
     # Local Ollama floor — always-available, no rate limit.
     local_failed_reason = None
     if _LOCAL_ENABLED:
-        result = _ollama_generate(prompt)
+        result = _ollama_generate(prompt, max_tokens=max_tokens)
         if result:
             _log(f"Local ({_LOCAL_MODEL}) succeeded for {caller}")
             return result
