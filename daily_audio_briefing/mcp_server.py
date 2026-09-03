@@ -187,11 +187,39 @@ def build_server(data_dir: Optional[str] = None) -> FastMCP:
 
 
 def main(argv=None):
+    import json
+    import mcp_config
+
     parser = argparse.ArgumentParser(prog="dab-mcp", description="Daily Audio Briefing MCP server (stdio)")
-    parser.add_argument("--data-dir", default=None, help="override the data directory (tests)")
+    parser.add_argument("--data-dir", default=None, help="override the data directory")
+    parser.add_argument("--print-config", action="store_true", help="print the MCP client config snippet")
+    parser.add_argument("--install", action="store_true", help="add this server to Claude Code + Claude Desktop configs")
+    parser.add_argument("--uninstall", action="store_true", help="remove this server from those configs")
+    parser.add_argument("--check", action="store_true", help="build the server, list tools, exit 0")
     args = parser.parse_args(argv)
+
+    if args.print_config:
+        print(json.dumps(mcp_config.snippet(mcp_config.server_command()), indent=2))
+        return 0
+    if args.install:
+        for p in mcp_config.install(mcp_config.server_command()):
+            print(f"installed {mcp_config.SERVER_KEY} -> {p}")
+        print("Restart Claude Code / Claude Desktop to pick it up.")
+        return 0
+    if args.uninstall:
+        for p in mcp_config.uninstall():
+            print(f"removed {mcp_config.SERVER_KEY} from {p}")
+        return 0
+    if args.check:
+        server = build_server(args.data_dir)
+        import asyncio
+        names = [t.name for t in asyncio.run(server.list_tools())]
+        print("ok:", ", ".join(names))
+        return 0
     build_server(args.data_dir).run(transport="stdio")
+    return 0
 
 
 if __name__ == "__main__":
-    main()
+    import sys
+    sys.exit(main())
