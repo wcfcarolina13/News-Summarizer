@@ -28,7 +28,7 @@ jobs:
       - name: Install test dependencies
         run: |
           python -m pip install --upgrade pip
-          pip install pytest -r daily_audio_briefing/requirements.txt "mcp>=1.0"
+          pip install pytest -r daily_audio_briefing/requirements.txt "mcp>=1.0,<2"
 
       - name: Run tests
         run: python -m pytest daily_audio_briefing/tests/ -q

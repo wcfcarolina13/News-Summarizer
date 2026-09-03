@@ -49,4 +49,4 @@ gTTS>=2.3.0
 # Agent interface (MCP)
 # Powers `dab-mcp` / mcp_server.py — the stdio MCP server that lets Claude Code,
 # Claude Desktop, Cowork, Cursor etc. start audio jobs with the GUI closed.
-mcp>=1.0
+mcp>=1.0,<2  # 2.x renamed FastMCP -> MCPServer; mcp_server.py targets the 1.x API
