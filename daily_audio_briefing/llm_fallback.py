@@ -104,7 +104,9 @@ _HTTP_PROVIDERS = [
      # OpenRouter free slots are shared upstream pools that go "temporarily rate-limited"
      # for minutes at a time, so ask OpenRouter to route to the next free model in ONE
      # request ("models" array) instead of burning the whole rung on a 429.
-     "fallback_models": ["google/gemma-4-31b-it:free", "nvidia/nemotron-3-super-120b-a12b:free"]},
+     # minimax-m3: clean spoken prose on the real briefing prompt (2026-09-03 A/B), no reasoning
+     # channel, 5-7 s; gemma-4-31b dropped (429 upstream on every attempt that day).
+     "fallback_models": ["minimax/minimax-m3:free", "nvidia/nemotron-3-super-120b-a12b:free"]},
 ]
 
 
