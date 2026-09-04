@@ -63,18 +63,12 @@ def _debug_log(msg: str):
             pass
 
 # --- Verbatim feed passthrough --------------------------------------------
-# Feeds whose posts are already tight, hand-written digests are spoken
-# near-verbatim (NO LLM summarization), cleaned only for TTS. Matched by
-# substring against the source URL. Added Jun 2026 for @alexwg's "The Innermost
-# Loop" per Brad's "near-verbatim, tacked onto the end of the briefing" request.
-# Add more feed domains here to make them verbatim too.
-VERBATIM_FEEDS = (
-    "theinnermostloop.substack.com",
-)
-
-def _is_verbatim_feed(url: str) -> bool:
-    u = (url or "").lower()
-    return any(tag in u for tag in VERBATIM_FEEDS)
+# A source with "verbatim": true in sources.json (the "Verbatim" checkbox on an
+# RSS row in Edit Content Sources) is spoken near-verbatim (NO LLM
+# summarization), cleaned only for TTS. Added Jun 2026 for @alexwg's "The
+# Innermost Loop" per Brad's "near-verbatim, tacked onto the end of the
+# briefing" request. The per-source flag is the single source of truth; the old
+# hardcoded VERBATIM_FEEDS domain allowlist was removed 2026-09-03.
 
 def _verbatim_clean_html(raw_html: str) -> str:
     """HTML -> clean, paragraph-preserved prose for TTS (no summarization).
@@ -1384,7 +1378,7 @@ Your output goes directly to TTS. Any markdown or preambles will sound wrong whe
                     # format_combined_output emit item.content as-is, and RSS is the
                     # last section, so the digest lands at the end of the briefing.
                     summary = None
-                    if getattr(source, "verbatim", False) or _is_verbatim_feed(source.url):
+                    if getattr(source, "verbatim", False):
                         if raw_html:
                             content = _verbatim_clean_html(raw_html)
                         _debug_log(f"[RSS] VERBATIM passthrough (no summarization) for {source.url[:55]} - {len(content)} chars")

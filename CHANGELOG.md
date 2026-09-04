@@ -7,6 +7,7 @@ tags.
 
 ## 2026-09-03 (LLM chain review)
 
+- **refactor(rss): verbatim feeds have one source of truth.** Removed the hardcoded `VERBATIM_FEEDS` domain allowlist and `_is_verbatim_feed()` from `source_fetcher.py`; `_fetch_rss` now honours only the per-source `"verbatim": true` flag (the "Verbatim" checkbox on an RSS row in Edit Content Sources). Before, The Innermost Loop was verbatim via the allowlist while its checkbox showed unchecked. The flag is now set on that feed in both live `sources.json` copies (repo dev-mode file the daemon reads, and Application Support). Behaviour unchanged.
 - **fix(gui): 7 pyflakes undefined names in `gui_app.py`.** `estimate_api_usage` returned `model_name`, which was never assigned (`NameError` on the Summarize page's usage estimate); six `except Exception as e:` blocks passed a lambda/closure reading `e` to `self.after(...)`, but Python unbinds `e` when the except block exits, so every one of those error paths raised `NameError` inside the Tk callback instead of showing the message. Each now captures `err = str(e)` before deferring. CI gains a pyflakes undefined-name step over `daily_audio_briefing/*.py`.
 - **ci(tests)** — install the light web requirements + `mcp` in the Tests workflow (32a567d); pin `mcp>=1.0,<2` there and in requirements-desktop.txt — CI pulled mcp 2.x, which renamed FastMCP.
 - **tests: pin `giveup_hour` in `test_pipeline_gate_defers_and_writes_manifest`** — it read the real clock and gave up instead of deferring after 22:00, so it failed on CI at 22:56Z while passing locally in the afternoon.
