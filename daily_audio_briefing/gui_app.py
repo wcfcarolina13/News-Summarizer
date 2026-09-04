@@ -1736,8 +1736,9 @@ class AudioBriefingApp(ctk.CTk):
                         self.btn_drive_sign_in.configure(state="normal"),
                     ])
             except Exception as e:
+                err = str(e)[:60]
                 self.after(0, lambda: [
-                    self._update_status(f"Drive sign-in error: {str(e)[:60]}", "red"),
+                    self._update_status(f"Drive sign-in error: {err}", "red"),
                     self.btn_drive_sign_in.configure(state="normal"),
                 ])
 
@@ -1806,8 +1807,9 @@ class AudioBriefingApp(ctk.CTk):
                     self.after(0, lambda: self.drive_folder_status.configure(
                         text=msg, text_color=COLORS["danger"]))
             except Exception as e:
+                err = str(e)[:50]
                 self.after(0, lambda: self.drive_folder_status.configure(
-                    text=f"Error: {str(e)[:50]}", text_color=COLORS["danger"]))
+                    text=f"Error: {err}", text_color=COLORS["danger"]))
 
         threading.Thread(target=verify, daemon=True).start()
 
@@ -2063,8 +2065,9 @@ class AudioBriefingApp(ctk.CTk):
                         # Close storage dialog
                         self.after(0, dialog.destroy)
                     except Exception as e:
+                        err = str(e)[:50]
                         self.after(0, lambda: self._update_status(
-                            f"Delete error: {str(e)[:50]}", "red"
+                            f"Delete error: {err}", "red"
                         ))
 
                 threading.Thread(target=delete_task, daemon=True).start()
@@ -7651,8 +7654,8 @@ Transcript:
         estimated_requests = int(enabled_channels * days * avg_videos_per_channel_per_day)
         
         # Get model limits and costs
-        model_choice = self.model_var.get()
-        if "gemini-1.5-pro" in model_choice:  # Pro model
+        model_name = self.model_var.get()
+        if "gemini-1.5-pro" in model_name:  # Pro model
             free_limit = 50
             cost_per_1k = 1.25  # $1.25 per 1000 requests for Pro
         else:  # Flash models
@@ -7851,8 +7854,9 @@ Transcript:
 
                 except Exception as e:
                     print(f"Error extracting links from {source.url}: {e}")
+                    err = str(e)[:40]
                     self.after(0, lambda: self.label_status.configure(
-                        text=f"Error extracting links: {str(e)[:40]}",
+                        text=f"Error extracting links: {err}",
                         text_color="red"
                     ))
                     self.after(0, process_next_archive)
@@ -8017,9 +8021,10 @@ Transcript:
             except Exception as e:
                 print(f"[Get Summaries] Fatal error: {e}")
                 traceback.print_exc()
+                err = str(e)[:50]
                 def show_error():
                     self.label_status.configure(
-                        text=f"Error fetching sources: {str(e)[:50]}",
+                        text=f"Error fetching sources: {err}",
                         text_color="red"
                     )
                     self.btn_get_summaries.configure(state="normal")
@@ -9269,7 +9274,8 @@ Open Settings and click '? Start Tutorial'!""",
                                       capture_output=True, text=True, cwd=script_dir)
                 self.after(0, lambda: self.label_status.configure(text="Audio conversion complete.", text_color="green"))
             except Exception as e:
-                self.after(0, lambda: self.label_status.configure(text=f"Error converting: {e}", text_color="red"))
+                err = str(e)
+                self.after(0, lambda: self.label_status.configure(text=f"Error converting: {err}", text_color="red"))
         threading.Thread(target=task, daemon=True).start()
 
         data_dir = get_data_directory()

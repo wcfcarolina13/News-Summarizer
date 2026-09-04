@@ -7,6 +7,7 @@ tags.
 
 ## 2026-09-03 (LLM chain review)
 
+- **fix(gui): 7 pyflakes undefined names in `gui_app.py`.** `estimate_api_usage` returned `model_name`, which was never assigned (`NameError` on the Summarize page's usage estimate); six `except Exception as e:` blocks passed a lambda/closure reading `e` to `self.after(...)`, but Python unbinds `e` when the except block exits, so every one of those error paths raised `NameError` inside the Tk callback instead of showing the message. Each now captures `err = str(e)` before deferring. CI gains a pyflakes undefined-name step over `daily_audio_briefing/*.py`.
 - **ci(tests)** — install the light web requirements + `mcp` in the Tests workflow (32a567d); pin `mcp>=1.0,<2` there and in requirements-desktop.txt — CI pulled mcp 2.x, which renamed FastMCP.
 - **tests: pin `giveup_hour` in `test_pipeline_gate_defers_and_writes_manifest`** — it read the real clock and gave up instead of deferring after 22:00, so it failed on CI at 22:56Z while passing locally in the afternoon.
 - **tests: import hygiene guard** — `tests/test_import_hygiene.py` fails when any module the suite reaches gains a top-level import that the CI job does not install (stdlib, local modules, requirements.txt + mcp only). Turns the workflow's old "tested modules import only the stdlib" comment into a check. `audio_jobs` imports `requests`/`bs4` at load time since 0714565 and the MCP tests import `mcp`, so the pytest-only install failed at collection on all 5 pushes on 2026-09-03.
